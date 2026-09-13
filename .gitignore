@@ -1,0 +1,7 @@
+build/
+*.user
+*.aps
+*.idb
+*.pdb
+*.suo
+.vs/

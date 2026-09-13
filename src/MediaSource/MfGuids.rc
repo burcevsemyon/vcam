@@ -1,0 +1,6 @@
+#include <windows.h>
+#include <initguid.h>
+#include <mfapi.h>
+#include <mfobjects.h>
+#include <mfidl.h>
+#include <uninitguid.h>

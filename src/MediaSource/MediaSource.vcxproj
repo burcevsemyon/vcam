@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{ebd5cc86-35a7-4a59-95dd-baa88097dab8}</ProjectGuid>
+    <RootNamespace>VCamMediaSource</RootNamespace>
+    <ProjectName>MediaSource</ProjectName>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <OutDir>$(SolutionDir)build\$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(SolutionDir)build\obj\$(ProjectName)\$(Platform)\$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <PreprocessorDefinitions>NDEBUG;_WINDOWS;_USRDLL;_WIN32_WINNT=0x0A00;NTDDI_VERSION=0x0A000004;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)..\Common;C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <AdditionalDependencies>mfplat.lib;mf.lib;mfsensorgroup.lib;runtimeobject.lib;ole32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <ModuleDefinitionFile>MediaSource.def</ModuleDefinitionFile>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClInclude Include="MediaSource.h" />
+    <ClInclude Include="Activator.h" />
+    <ClInclude Include="MediaStream.h" />
+    <ClInclude Include="..\Common\GUIDs.h" />
+    <ClInclude Include="..\Common\SharedMemoryContract.h" />
+    <ClInclude Include="..\Common\SharedMemoryFrameSource.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="MediaSource.cpp" />
+    <ClCompile Include="Activator.cpp" />
+    <ClCompile Include="MediaStream.cpp" />
+    <ClCompile Include="MfGuids.cpp" />
+    <ClCompile Include="dllmain.cpp" />
+    <ClCompile Include="..\Common\SharedMemoryFrameSource.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="MediaSource.def" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>
