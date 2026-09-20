@@ -614,6 +614,26 @@ static void ConvertRgb32ToNv12(const BYTE* pSrc, BYTE* pDst, UINT32 width, UINT3
     }
 }
 
+static void WriteFrameData(const BYTE* pSrcFrame, BYTE* pDstBits, UINT32 w, UINT32 h, bool useNv12)
+{
+    const UINT32 rgbBytes = w * h * 4;
+    if (w == 640 && h == 480) {
+        BYTE rgb640[640 * 480 * 4];
+        DownsampleRgb32(pSrcFrame, rgb640, 1280, 720, 640, 480, vcam::VCamStride);
+        if (useNv12) {
+            ConvertRgb32ToNv12(rgb640, pDstBits, 640, 480, 640 * 4);
+        } else {
+            memcpy(pDstBits, rgb640, rgbBytes);
+        }
+    } else {
+        if (useNv12) {
+            ConvertRgb32ToNv12(pSrcFrame, pDstBits, 1280, 720, vcam::VCamStride);
+        } else {
+            memcpy(pDstBits, pSrcFrame, rgbBytes);
+        }
+    }
+}
+
 HRESULT CMediaStream::DeliverNextSample(IUnknown* pToken)
 {
     VCamDiagLog(L"Stream.DeliverNextSample");
@@ -663,21 +683,7 @@ HRESULT CMediaStream::DeliverNextSample(IUnknown* pToken)
         if (SUCCEEDED(hr)) {
             if (m_pNv12Scratch != nullptr) {
                 SharedMemoryFrameSource::Instance().AcquireFrame(m_pNv12Scratch, vcam::VCamReadyTimeoutMs);
-                if (w == 640 && h == 480) {
-                    BYTE rgb640[640 * 480 * 4];
-                    DownsampleRgb32(m_pNv12Scratch, rgb640, 1280, 720, 640, 480, vcam::VCamStride);
-                    if (useNv12) {
-                        ConvertRgb32ToNv12(rgb640, pBits, 640, 480, 640 * 4);
-                    } else {
-                        memcpy(pBits, rgb640, rgbBytes);
-                    }
-                } else {
-                    if (useNv12) {
-                        ConvertRgb32ToNv12(m_pNv12Scratch, pBits, 1280, 720, vcam::VCamStride);
-                    } else {
-                        memcpy(pBits, m_pNv12Scratch, rgbBytes);
-                    }
-                }
+                WriteFrameData(m_pNv12Scratch, pBits, w, h, useNv12);
             } else {
                 RtlZeroMemory(pBits, (DWORD)(useNv12 ? nv12Bytes : rgbBytes));
             }
@@ -704,25 +710,8 @@ HRESULT CMediaStream::DeliverNextSample(IUnknown* pToken)
             VCamDiagLog(L"Stream.DeliverNextSample before AcquireFrame");
             if (m_pNv12Scratch != nullptr && maxLen >= (DWORD)(useNv12 ? nv12Bytes : rgbBytes)) {
                 SharedMemoryFrameSource::Instance().AcquireFrame(m_pNv12Scratch, vcam::VCamReadyTimeoutMs);
-                if (w == 640 && h == 480) {
-                    BYTE rgb640[640 * 480 * 4];
-                    DownsampleRgb32(m_pNv12Scratch, rgb640, 1280, 720, 640, 480, vcam::VCamStride);
-                    if (useNv12) {
-                        ConvertRgb32ToNv12(rgb640, pBits, 640, 480, 640 * 4);
-                        hr = pBuffer->SetCurrentLength(nv12Bytes);
-                    } else {
-                        memcpy(pBits, rgb640, rgbBytes);
-                        hr = pBuffer->SetCurrentLength(rgbBytes);
-                    }
-                } else {
-                    if (useNv12) {
-                        ConvertRgb32ToNv12(m_pNv12Scratch, pBits, 1280, 720, vcam::VCamStride);
-                        hr = pBuffer->SetCurrentLength(nv12Bytes);
-                    } else {
-                        memcpy(pBits, m_pNv12Scratch, rgbBytes);
-                        hr = pBuffer->SetCurrentLength(rgbBytes);
-                    }
-                }
+                WriteFrameData(m_pNv12Scratch, pBits, w, h, useNv12);
+                hr = pBuffer->SetCurrentLength(useNv12 ? nv12Bytes : rgbBytes);
             }
             else {
                 RtlZeroMemory(pBits, maxLen);

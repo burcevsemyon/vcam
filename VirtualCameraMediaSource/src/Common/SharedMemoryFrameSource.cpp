@@ -19,6 +19,25 @@ bool IsRetryableOpenError(DWORD win32Error)
     return win32Error == ERROR_FILE_NOT_FOUND || win32Error == ERROR_ACCESS_DENIED;
 }
 
+static void PaintNoSignalPattern(BYTE* pDest, UINT32 width, UINT32 height, UINT32 stride)
+{
+    for (UINT32 y = 0; y < height; ++y) {
+        for (UINT32 x = 0; x < width; ++x) {
+            BYTE* pPixel = pDest + (SIZE_T)y * stride + (SIZE_T)x * 4;
+            bool isBorder = (x < 6 || x >= width - 6 || y < 6 || y >= height - 6);
+            bool isGrid = ((x % 160 == 0) || (y % 160 == 0) || (x == width / 2) || (y == height / 2));
+
+            if (isBorder) {
+                pPixel[0] = 50;  pPixel[1] = 120; pPixel[2] = 220; pPixel[3] = 0xFF; // Orange/Amber border
+            } else if (isGrid) {
+                pPixel[0] = 200; pPixel[1] = 200; pPixel[2] = 200; pPixel[3] = 0xFF; // White/Gray grid lines
+            } else {
+                pPixel[0] = 60;  pPixel[1] = 30;  pPixel[2] = 20;  pPixel[3] = 0xFF; // Dark blue/slate background
+            }
+        }
+    }
+}
+
 } // namespace
 
 SharedMemoryFrameSource& SharedMemoryFrameSource::Instance()
@@ -173,22 +192,7 @@ HRESULT SharedMemoryFrameSource::FallbackFrame(BYTE* pDest)
         memcpy(pDest, m_pCache, vcam::VCamFrameSize);
         return S_OK;
     }
-    // "No Signal" test pattern: Dark slate background with a prominent border and grid lines
-    for (UINT32 y = 0; y < vcam::VCamHeight; ++y) {
-        for (UINT32 x = 0; x < vcam::VCamWidth; ++x) {
-            BYTE* pPixel = pDest + (SIZE_T)y * vcam::VCamStride + (SIZE_T)x * 4;
-            bool isBorder = (x < 6 || x >= vcam::VCamWidth - 6 || y < 6 || y >= vcam::VCamHeight - 6);
-            bool isGrid = ((x % 160 == 0) || (y % 160 == 0) || (x == vcam::VCamWidth / 2) || (y == vcam::VCamHeight / 2));
-
-            if (isBorder) {
-                pPixel[0] = 50;  pPixel[1] = 120; pPixel[2] = 220; pPixel[3] = 0xFF; // Orange/Amber border
-            } else if (isGrid) {
-                pPixel[0] = 200; pPixel[1] = 200; pPixel[2] = 200; pPixel[3] = 0xFF; // White/Gray grid lines
-            } else {
-                pPixel[0] = 60;  pPixel[1] = 30;  pPixel[2] = 20;  pPixel[3] = 0xFF; // Dark blue/slate background
-            }
-        }
-    }
+    PaintNoSignalPattern(pDest, vcam::VCamWidth, vcam::VCamHeight, vcam::VCamStride);
     return S_OK;
 }
 
