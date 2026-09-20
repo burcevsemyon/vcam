@@ -126,7 +126,7 @@ HRESULT SharedMemoryFrameSource::Init()
         m_pHeader->width = vcam::VCamWidth;
         m_pHeader->height = vcam::VCamHeight;
         m_pHeader->stride = vcam::VCamStride;
-        m_pHeader->pixelFormat = 0; // RGB32
+        m_pHeader->pixelFormat = (UINT32)vcam::VCamPixelFormat::RGB32;
         m_pHeader->frameSize = vcam::VCamFrameSize;
         m_pHeader->slotCount = vcam::VCamSlotCount;
         m_pHeader->frameWriteIndex = 0;

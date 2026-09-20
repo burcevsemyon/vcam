@@ -59,7 +59,7 @@ int wmain(int argc, wchar_t* argv[])
     pHeader->width = vcam::VCamWidth;
     pHeader->height = vcam::VCamHeight;
     pHeader->stride = vcam::VCamStride;
-    pHeader->pixelFormat = 0; // RGB32
+    pHeader->pixelFormat = (UINT32)vcam::VCamPixelFormat::RGB32;
     pHeader->frameSize = vcam::VCamFrameSize;
     pHeader->slotCount = vcam::VCamSlotCount;
     pHeader->frameWriteIndex = 0;

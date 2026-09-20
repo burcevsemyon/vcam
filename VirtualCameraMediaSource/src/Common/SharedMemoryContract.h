@@ -3,6 +3,11 @@
 
 namespace vcam {
 
+enum class VCamPixelFormat : UINT32 {
+    RGB32 = 0,
+    NV12 = 1
+};
+
 constexpr UINT32 VCamMagic = 0x5643414D;        // 'V','C','A','M'
 constexpr UINT32 VCamVersion = 1;
 constexpr UINT32 VCamWidth = 1280;
@@ -20,7 +25,7 @@ struct VCamSectionHeader {
     UINT32 width;
     UINT32 height;
     UINT32 stride;
-    UINT32 pixelFormat;      // 0 = RGB32
+    UINT32 pixelFormat;      // vcam::VCamPixelFormat (RGB32 = 0, NV12 = 1)
     UINT32 frameSize;
     UINT32 slotCount;
     UINT32 frameWriteIndex;
