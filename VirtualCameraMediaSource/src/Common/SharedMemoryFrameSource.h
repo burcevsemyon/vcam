@@ -30,4 +30,5 @@ private:
     vcam::VCamSectionHeader* m_pHeader = nullptr;
     BYTE* m_pCache = nullptr;
     bool m_bHaveCache = false;
+    bool m_bOffline = false;
 };

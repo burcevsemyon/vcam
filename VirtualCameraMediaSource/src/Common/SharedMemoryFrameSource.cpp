@@ -66,43 +66,54 @@ HRESULT SharedMemoryFrameSource::Init()
             (DWORD)(totalSize >> 32), (DWORD)(totalSize & 0xFFFFFFFF), sectionName);
         if (m_hSection == nullptr && GetLastError() != ERROR_ACCESS_DENIED) break;
     }
-    if (m_hSection == nullptr) {
+    if (m_hSection == nullptr || m_hReadyEvent == nullptr) {
+        if (m_hReadyEvent) { CloseHandle(m_hReadyEvent); m_hReadyEvent = nullptr; }
+        if (m_hSection) { CloseHandle(m_hSection); m_hSection = nullptr; }
         if (pSecDesc) LocalFree(pSecDesc);
-        m_bShutDown = true;
-        return HRESULT_FROM_WIN32(GetLastError());
-    }
 
-    for (int prefix = 0; prefix < kNamePrefixCount && m_hReadyEvent == nullptr; ++prefix) {
-        wchar_t eventName[MAX_PATH] = {};
-        swprintf_s(eventName, ARRAYSIZE(eventName), L"%s%s", kNamePrefixes[prefix], ObjectBaseName(vcam::VCamReadyEventName));
-        m_hReadyEvent = OpenEventW(EVENT_ALL_ACCESS, FALSE, eventName);
-        if (m_hReadyEvent == nullptr && !IsRetryableOpenError(GetLastError())) break;
-    }
-    for (int prefix = 0; prefix < kNamePrefixCount && m_hReadyEvent == nullptr; ++prefix) {
-        wchar_t eventName[MAX_PATH] = {};
-        swprintf_s(eventName, ARRAYSIZE(eventName), L"%s%s", kNamePrefixes[prefix], ObjectBaseName(vcam::VCamReadyEventName));
-        m_hReadyEvent = CreateEventW(&sa, FALSE, FALSE, eventName);
-        if (m_hReadyEvent == nullptr && GetLastError() != ERROR_ACCESS_DENIED) break;
-    }
-    if (m_hReadyEvent == nullptr) {
-        CloseHandle(m_hSection); m_hSection = nullptr;
-        if (pSecDesc) LocalFree(pSecDesc);
-        m_bShutDown = true;
-        return HRESULT_FROM_WIN32(GetLastError());
+        m_pCache = new (std::nothrow) BYTE[vcam::VCamFrameSize];
+        if (m_pCache == nullptr) {
+            m_bShutDown = true;
+            return E_OUTOFMEMORY;
+        }
+        m_bOffline = true;
+        m_bInit = true;
+        return S_OK;
     }
 
     m_pBase = (BYTE*)MapViewOfFileEx(m_hSection, FILE_MAP_ALL_ACCESS, 0, 0, totalSize, nullptr);
-    if (m_pBase == nullptr) {
-        CloseHandle(m_hReadyEvent); m_hReadyEvent = nullptr;
-        CloseHandle(m_hSection); m_hSection = nullptr;
+    if (m_hSection == nullptr || m_hReadyEvent == nullptr || m_pBase == nullptr) {
+        if (m_pBase) { UnmapViewOfFile(m_pBase); m_pBase = nullptr; m_pHeader = nullptr; }
+        if (m_hReadyEvent) { CloseHandle(m_hReadyEvent); m_hReadyEvent = nullptr; }
+        if (m_hSection) { CloseHandle(m_hSection); m_hSection = nullptr; }
         if (pSecDesc) LocalFree(pSecDesc);
-        m_bShutDown = true;
-        return HRESULT_FROM_WIN32(GetLastError());
+
+        m_pCache = new (std::nothrow) BYTE[vcam::VCamFrameSize];
+        if (m_pCache == nullptr) {
+            m_bShutDown = true;
+            return E_OUTOFMEMORY;
+        }
+        m_bOffline = true;
+        m_bInit = true;
+        return S_OK;
     }
 
     if (pSecDesc) LocalFree(pSecDesc);
 
     m_pHeader = reinterpret_cast<vcam::VCamSectionHeader*>(m_pBase);
+    if (m_pHeader->magic != vcam::VCamMagic) {
+        m_pHeader->magic = vcam::VCamMagic;
+        m_pHeader->version = vcam::VCamVersion;
+        m_pHeader->width = vcam::VCamWidth;
+        m_pHeader->height = vcam::VCamHeight;
+        m_pHeader->stride = vcam::VCamStride;
+        m_pHeader->pixelFormat = 0; // RGB32
+        m_pHeader->frameSize = vcam::VCamFrameSize;
+        m_pHeader->slotCount = vcam::VCamSlotCount;
+        m_pHeader->frameWriteIndex = 0;
+        m_pHeader->seq = 0;
+        m_pHeader->lastFrameTime100ns = 0;
+    }
     m_pCache = new (std::nothrow) BYTE[vcam::VCamFrameSize];
     if (m_pCache == nullptr) {
         UnmapViewOfFile(m_pBase); m_pBase = nullptr; m_pHeader = nullptr;
@@ -120,6 +131,11 @@ HRESULT SharedMemoryFrameSource::AcquireFrame(BYTE* pDest, DWORD timeoutMs)
 {
     if (!m_bInit || m_bShutDown) return E_UNEXPECTED;
     if (pDest == nullptr) return E_POINTER;
+
+    if (m_bOffline) {
+        Sleep(33);
+        return FallbackFrame(pDest);
+    }
 
     if (WaitForSingleObject(m_hReadyEvent, timeoutMs) == WAIT_OBJECT_0) {
         ResetEvent(m_hReadyEvent);
@@ -157,7 +173,22 @@ HRESULT SharedMemoryFrameSource::FallbackFrame(BYTE* pDest)
         memcpy(pDest, m_pCache, vcam::VCamFrameSize);
         return S_OK;
     }
-    memset(pDest, 0, vcam::VCamFrameSize);
+    // "No Signal" test pattern: Dark slate background with a prominent border and grid lines
+    for (UINT32 y = 0; y < vcam::VCamHeight; ++y) {
+        for (UINT32 x = 0; x < vcam::VCamWidth; ++x) {
+            BYTE* pPixel = pDest + (SIZE_T)y * vcam::VCamStride + (SIZE_T)x * 4;
+            bool isBorder = (x < 6 || x >= vcam::VCamWidth - 6 || y < 6 || y >= vcam::VCamHeight - 6);
+            bool isGrid = ((x % 160 == 0) || (y % 160 == 0) || (x == vcam::VCamWidth / 2) || (y == vcam::VCamHeight / 2));
+
+            if (isBorder) {
+                pPixel[0] = 50;  pPixel[1] = 120; pPixel[2] = 220; pPixel[3] = 0xFF; // Orange/Amber border
+            } else if (isGrid) {
+                pPixel[0] = 200; pPixel[1] = 200; pPixel[2] = 200; pPixel[3] = 0xFF; // White/Gray grid lines
+            } else {
+                pPixel[0] = 60;  pPixel[1] = 30;  pPixel[2] = 20;  pPixel[3] = 0xFF; // Dark blue/slate background
+            }
+        }
+    }
     return S_OK;
 }
 
