@@ -292,9 +292,9 @@ static int RunDirectMode(int numFrames, const wchar_t* outputPrefix)
 // Usage: CaptureTest.exe device [nameFilter] [outputPrefix]
 // Exit: 0 = captured all frames, 1 = failure, 2 = no device matching filter.
 // ---------------------------------------------------------------------------
-static int RunDeviceMode(int numFrames, const wchar_t* nameFilter, const wchar_t* outputPrefix, bool strict)
+static int RunDeviceMode(int numFrames, const wchar_t* nameFilter, UINT32 reqW, UINT32 reqH, const wchar_t* outputPrefix, bool strict)
 {
-    LogW(L"--- device mode: filter='%s' strict=%d frames=%d out='%s'", nameFilter, (int)strict, numFrames, outputPrefix);
+    LogW(L"--- device mode: filter='%s' strict=%d frames=%d res=%ux%u out='%s'", nameFilter, (int)strict, numFrames, reqW, reqH, outputPrefix);
 
     HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     if (FAILED(hr)) { LogW(L"CoInitializeEx failed: 0x%08X", hr); return 1; }
@@ -443,6 +443,27 @@ static int RunDeviceMode(int numFrames, const wchar_t* nameFilter, const wchar_t
             IMFMediaTypeHandler* pMTH = nullptr;
             hr = pSD->GetMediaTypeHandler(&pMTH);
             if (SUCCEEDED(hr) && pMTH) {
+                if ((s == 0 || sid == 0) && reqW > 0 && reqH > 0) {
+                    DWORD countTypes = 0;
+                    pMTH->GetMediaTypeCount(&countTypes);
+                    for (DWORD t = 0; t < countTypes; ++t) {
+                        IMFMediaType* pMTType = nullptr;
+                        if (SUCCEEDED(pMTH->GetMediaTypeByIndex(t, &pMTType)) && pMTType) {
+                            UINT32 w = 0, h = 0;
+                            MFGetAttributeSize(pMTType, MF_MT_FRAME_SIZE, &w, &h);
+                            GUID sub = {};
+                            pMTType->GetGUID(MF_MT_SUBTYPE, &sub);
+                            if (w == reqW && h == reqH && sub == MFVideoFormat_RGB32) {
+                                pMTH->SetCurrentMediaType(pMTType);
+                                LogW(L"Set requested media type: %ux%u RGB32", w, h);
+                                pMTType->Release();
+                                break;
+                            }
+                            pMTType->Release();
+                        }
+                    }
+                }
+
                 // Capture the CURRENT media type of the stream we start (s==0 / sid==0):
                 // this is the format the sample buffers will actually be.
                 IMFMediaType* pCur = nullptr;
@@ -747,7 +768,7 @@ int wmain(int argc, wchar_t* argv[])
 {
     wprintf(L"VCam Capture Test - captures frames from the virtual camera\n");
     wprintf(L"Usage: CaptureTest.exe [numFrames] [outputPrefix]\n");
-    wprintf(L"       CaptureTest.exe device [strict] [nameFilter|index] [outputPrefix]\n");
+    wprintf(L"       CaptureTest.exe device [strict] [nameFilter|index] [width] [height] [outputPrefix]\n");
     wprintf(L"       CaptureTest.exe inspect\n");
     if (argc >= 2 && _wcsicmp(argv[1], L"inspect") == 0) {
         int rc = RunInspectMode();
@@ -761,8 +782,10 @@ int wmain(int argc, wchar_t* argv[])
         int a = 2;
         if (argc >= 3 && _wcsicmp(argv[2], L"strict") == 0) { strict = true; a = 3; }
         const wchar_t* nameFilter = (argc > a) ? argv[a] : L"VCam";
-        const wchar_t* outputPrefix = (argc > a + 1) ? argv[a + 1] : L"frame";
-        int rc = RunDeviceMode(10, nameFilter, outputPrefix, strict);
+        UINT32 reqW = (argc > a + 1) ? _wtoi(argv[a + 1]) : 0;
+        UINT32 reqH = (argc > a + 2) ? _wtoi(argv[a + 2]) : 0;
+        const wchar_t* outputPrefix = (argc > a + 3) ? argv[a + 3] : L"frame";
+        int rc = RunDeviceMode(10, nameFilter, reqW, reqH, outputPrefix, strict);
         wprintf(L"device mode exit code: %d\n", rc);
         return rc;
     }

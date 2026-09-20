@@ -8,10 +8,10 @@
 
 | Проект | Назначение |
 |---|---|
-| `src/MediaSource` (MediaSource.dll) | COM media source: один видео-поток, NV12 1280×720@30 (+ YUY2) на уровне устройства, RGB32→NV12 конверсия в потоке. `IMFMediaSourceEx`, `IKsControl`, `IMFGetService`, async worker + token queue. |
+| `src/MediaSource` (MediaSource.dll) | COM media source: видео-потоки 1280×720@30 и 640×480@30 (RGB32 + NV12), автоматический даунскейлинг и конверсия в потоке. `IMFMediaSourceEx`, `IKsControl`, `IMFGetService`, async worker + token queue. |
 | `src/Registrar` (Registrar.exe) | Регистрация камеры: `add [name] [hold]` / `remove`. Процесс нужно держать живым (Session lifetime). |
 | `src/ProducerTest` (ProducerTest.exe) | Пишет анимированный test pattern в общую память @30 fps. |
-| `src/CaptureTest` (CaptureTest.exe) | Диагностический захват: `inspect`, `device [strict] [name\|index] [prefix]`, bare `[numFrames] [prefix]`; сохраняет BMP. |
+| `src/CaptureTest` (CaptureTest.exe) | Диагностический захват: `inspect`, `device [strict] [name\|index] [width] [height] [prefix]`, bare `[numFrames] [prefix]`; сохраняет BMP. |
 
 ## Сборка
 
@@ -37,7 +37,8 @@
    Диагностика:
    ```bat
    build\x64\Release\CaptureTest.exe inspect
-   build\x64\Release\CaptureTest.exe device 1 10 C:\path\to\prefix
+   build\x64\Release\CaptureTest.exe device 1 1280 720 C:\path\to\prefix
+   build\x64\Release\CaptureTest.exe device 1 640 480 C:\path\to\prefix
    ```
 
 Важно:

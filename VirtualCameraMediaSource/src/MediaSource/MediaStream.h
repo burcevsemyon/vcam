@@ -87,12 +87,16 @@ private:
     CMediaSource* m_pSource = nullptr;          // not owned (source owns stream)
     IMFMediaEventQueue* m_pEventQueue = nullptr; // owned
     IMFStreamDescriptor* m_pStreamDescriptor = nullptr; // owned
-    IMFMediaType* m_pMediaType = nullptr;          // owned
-    IMFMediaType* m_pMediaTypeNv12 = nullptr;      // owned (secondary NV12 format)
+    IMFMediaType* m_pMediaType = nullptr;          // owned (1280x720 RGB32)
+    IMFMediaType* m_pMediaTypeNv12 = nullptr;      // owned (1280x720 NV12)
+    IMFMediaType* m_pMediaType640 = nullptr;       // owned (640x480 RGB32)
+    IMFMediaType* m_pMediaType640Nv12 = nullptr;   // owned (640x480 NV12)
     IMFAttributes* m_pStreamAttributes = nullptr;  // owned
     CAttrLogProxy* m_pStreamAttrsProxy = nullptr;  // owned (TEMP DIAGNOSTIC)
     IMFVideoSampleAllocator* m_pAllocator = nullptr; // owned (shared cross-session allocator from SetDefaultAllocator)
     BYTE* m_pNv12Scratch = nullptr;                  // owned, lazy (RGB32 staging buffer for NV12 conversion)
+    UINT32 m_selectedWidth = vcam::VCamWidth;        // negotiated width
+    UINT32 m_selectedHeight = vcam::VCamHeight;      // negotiated height
     bool m_selectedNv12 = false;                     // NV12 negotiated (SetMediaType / SD handler)
 
     MF_STREAM_STATE m_state = MF_STREAM_STATE_STOPPED;
