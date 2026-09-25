@@ -108,9 +108,9 @@ static void SaveBMP(const wchar_t* filename, const BYTE* rgb32Data, int width, i
     for (int y = height - 1; y >= 0; --y) {
         const BYTE* srcRow = rgb32Data + (SIZE_T)y * stride;
         for (int x = 0; x < width; ++x) {
-            dstRow[x * 3] = srcRow[x * 4 + 2];   // B
+            dstRow[x * 3] = srcRow[x * 4];     // B (buffer is BGRA, B at +0)
             dstRow[x * 3 + 1] = srcRow[x * 4 + 1]; // G
-            dstRow[x * 3 + 2] = srcRow[x * 4];    // R
+            dstRow[x * 3 + 2] = srcRow[x * 4 + 2]; // R
         }
         fwrite(dstRow, 1, paddedRow, f);
     }

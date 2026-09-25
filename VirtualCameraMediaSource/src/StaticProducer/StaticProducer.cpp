@@ -13,11 +13,19 @@
 #pragma comment(lib, "advapi32.lib")
 
 // Scale modes must stay in sync with VCamSettingsUi (C#) preview rendering.
-enum class ScaleMode { Fit, Cover };
+enum class ScaleMode { Fit, Cover, Crop };
+
+struct CropRect {
+    int x = 0, y = 0, w = 0, h = 0;
+    bool operator==(const CropRect& o) const { return x == o.x && y == o.y && w == o.w && h == o.h; }
+    bool IsZero() const { return w <= 0 || h <= 0; }
+};
 
 struct Settings {
     std::wstring imagePath;
     ScaleMode mode = ScaleMode::Fit;
+    CropRect crop;
+    bool cropKeepAspect = false; // crop mode: letterbox instead of stretch
 };
 
 static BYTE* g_pFrame = nullptr;
@@ -25,6 +33,8 @@ static CRITICAL_SECTION g_frameCs;
 static HANDLE g_hStopEvent = nullptr;
 static std::wstring g_currentImagePath;
 static ScaleMode g_currentMode = ScaleMode::Fit;
+static CropRect g_currentCrop;
+static bool g_currentCropKeepAspect = false;
 
 static std::wstring SettingsDirPath()
 {
@@ -102,6 +112,42 @@ static bool JsonGetString(const std::string& json, const char* key, std::wstring
     return true;
 }
 
+// Extracts an integer value for "key": <number>. Returns defaultVal when absent.
+static int JsonGetInt(const std::string& json, const char* key, int defaultVal)
+{
+    std::string k = std::string("\"") + key + "\"";
+    size_t p = json.find(k);
+    if (p == std::string::npos) return defaultVal;
+    p = json.find(':', p + k.size());
+    if (p == std::string::npos) return defaultVal;
+    p++;
+    while (p < json.size() && (json[p] == ' ' || json[p] == '\t' || json[p] == '\r' || json[p] == '\n')) p++;
+    bool neg = false;
+    if (p < json.size() && json[p] == '-') { neg = true; p++; }
+    if (p >= json.size() || json[p] < '0' || json[p] > '9') return defaultVal;
+    long v = 0;
+    for (; p < json.size() && json[p] >= '0' && json[p] <= '9'; p++) {
+        v = v * 10 + (json[p] - '0');
+        if (v > 1000000) break;
+    }
+    return neg ? (int)-v : (int)v;
+}
+
+// Extracts a bool value for "key": true|false. Returns defaultVal when absent.
+static bool JsonGetBool(const std::string& json, const char* key, bool defaultVal)
+{
+    std::string k = std::string("\"") + key + "\"";
+    size_t p = json.find(k);
+    if (p == std::string::npos) return defaultVal;
+    p = json.find(':', p + k.size());
+    if (p == std::string::npos) return defaultVal;
+    p++;
+    while (p < json.size() && (json[p] == ' ' || json[p] == '\t' || json[p] == '\r' || json[p] == '\n')) p++;
+    if (p + 4 <= json.size() && json.compare(p, 4, "true") == 0) return true;
+    if (p + 5 <= json.size() && json.compare(p, 5, "false") == 0) return false;
+    return defaultVal;
+}
+
 static bool LoadSettings(Settings& s)
 {
     std::wstring path = SettingsFilePath();
@@ -111,20 +157,36 @@ static bool LoadSettings(Settings& s)
     if (!JsonGetString(json, "imagePath", s.imagePath)) return false;
     std::wstring mode;
     if (JsonGetString(json, "scaleMode", mode)) {
-        s.mode = (mode == L"cover") ? ScaleMode::Cover : ScaleMode::Fit;
+        if (mode == L"cover") s.mode = ScaleMode::Cover;
+        else if (mode == L"crop") s.mode = ScaleMode::Crop;
+        else s.mode = ScaleMode::Fit;
+    }
+    if (s.mode == ScaleMode::Crop) {
+        s.crop.x = JsonGetInt(json, "cropX", 0);
+        s.crop.y = JsonGetInt(json, "cropY", 0);
+        s.crop.w = JsonGetInt(json, "cropW", 0);
+        s.crop.h = JsonGetInt(json, "cropH", 0);
+        s.cropKeepAspect = JsonGetBool(json, "cropKeepAspect", false);
     }
     return true;
 }
 
 static const wchar_t* ModeName(ScaleMode m)
 {
-    return m == ScaleMode::Cover ? L"cover" : L"fit";
+    switch (m) {
+        case ScaleMode::Cover: return L"cover";
+        case ScaleMode::Crop:  return L"crop";
+        default:               return L"fit";
+    }
 }
 
 // Loads an image, converts to 32bppBGRA and renders it into a 1280x720 RGB32 frame:
 //   Fit   - scale by min(w/tw, h/th), letterbox on black background
 //   Cover - scale by max(w/tw, h/th), center-crop to target
-static bool LoadAndScaleImage(const wchar_t* filePath, ScaleMode mode, BYTE* pTargetBuffer, UINT tw, UINT th, UINT tstride)
+//   Crop  - clip settings crop rect (source pixels); stretch to target,
+//           or letterbox it when keepAspect is set
+static bool LoadAndScaleImage(const wchar_t* filePath, ScaleMode mode, CropRect crop, bool keepAspect,
+                              BYTE* pTargetBuffer, UINT tw, UINT th, UINT tstride)
 {
     CoInitialize(nullptr);
 
@@ -144,38 +206,77 @@ static bool LoadAndScaleImage(const wchar_t* filePath, ScaleMode mode, BYTE* pTa
     pFrame->GetSize(&sw, &sh);
     if (sw == 0 || sh == 0) { pFrame->Release(); pDecoder->Release(); pFactory->Release(); CoUninitialize(); return false; }
 
-    double scale = (mode == ScaleMode::Fit)
-        ? ((double)tw < (double)th * sw / sh ? (double)tw / sw : (double)th / sh)
-        : ((double)tw > (double)th * sw / sh ? (double)tw / sw : (double)th / sh);
-    // Fit: never exceed target (fp rounding guard); Cover: never go below target.
-    UINT nw = (UINT)llround(sw * scale);
-    UINT nh = (UINT)llround(sh * scale);
-    if (mode == ScaleMode::Fit) { if (nw > tw) nw = tw; if (nh > th) nh = th; }
-    else { if (nw < tw) nw = tw; if (nh < th) nh = th; }
-    if (nw == 0) nw = 1;
-    if (nh == 0) nh = 1;
-
     IWICFormatConverter* pConverter = nullptr;
+    hr = pFactory->CreateFormatConverter(&pConverter);
     if (SUCCEEDED(hr)) {
-        hr = pFactory->CreateFormatConverter(&pConverter);
-        if (SUCCEEDED(hr)) {
-            hr = pConverter->Initialize(pFrame, GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom);
+        hr = pConverter->Initialize(pFrame, GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom);
+    }
+
+    IWICBitmapSource* pSource = pConverter;
+    IWICBitmapClipper* pCropClipper = nullptr;
+    UINT srcW = sw, srcH = sh;
+
+    if (SUCCEEDED(hr) && mode == ScaleMode::Crop) {
+        // Clamp crop rect to source bounds; fall back to full image if invalid.
+        WICRect rc = { 0, 0, (INT)sw, (INT)sh };
+        if (!crop.IsZero()) {
+            int x = crop.x < 0 ? 0 : crop.x;
+            int y = crop.y < 0 ? 0 : crop.y;
+            if (x >= (INT)sw) x = 0;
+            if (y >= (INT)sh) y = 0;
+            int w = crop.w, h = crop.h;
+            if (w > (INT)sw - x) w = (INT)sw - x;
+            if (h > (INT)sh - y) h = (INT)sh - y;
+            if (w > 0 && h > 0) { rc = { x, y, w, h }; }
+        }
+        hr = pFactory->CreateBitmapClipper(&pCropClipper);
+        if (SUCCEEDED(hr)) hr = pCropClipper->Initialize(pConverter, &rc);
+        if (SUCCEEDED(hr)) { pSource = pCropClipper; srcW = (UINT)rc.Width; srcH = (UINT)rc.Height; }
+        else pSource = nullptr;
+    }
+
+    UINT nw = sw, nh = sh;
+    if (SUCCEEDED(hr) && pSource && mode != ScaleMode::Crop) {
+        double scale = (mode == ScaleMode::Fit)
+            ? ((double)tw < (double)th * sw / sh ? (double)tw / sw : (double)th / sh)
+            : ((double)tw > (double)th * sw / sh ? (double)tw / sw : (double)th / sh);
+        // Fit: never exceed target (fp rounding guard); Cover: never go below target.
+        nw = (UINT)llround(sw * scale);
+        nh = (UINT)llround(sh * scale);
+        if (mode == ScaleMode::Fit) { if (nw > tw) nw = tw; if (nh > th) nh = th; }
+        else { if (nw < tw) nw = tw; if (nh < th) nh = th; }
+        if (nw == 0) nw = 1;
+        if (nh == 0) nh = 1;
+    }
+
+    // Crop: stretch clipped region to full target (aspect NOT preserved),
+    // or scale it to fit inside the target (letterbox) when keepAspect is set.
+    if (SUCCEEDED(hr) && mode == ScaleMode::Crop) {
+        if (keepAspect) {
+            double scale = ((double)tw / srcW < (double)th / srcH) ? (double)tw / srcW : (double)th / srcH;
+            nw = (UINT)llround(srcW * scale);
+            nh = (UINT)llround(srcH * scale);
+            if (nw > tw) nw = tw;
+            if (nh > th) nh = th;
+            if (nw == 0) nw = 1;
+            if (nh == 0) nh = 1;
+        } else {
+            nw = tw; nh = th;
         }
     }
 
     IWICBitmapScaler* pScaler = nullptr;
-    IWICBitmapSource* pSource = pConverter;
-    if (SUCCEEDED(hr) && (nw != sw || nh != sh)) {
+    if (SUCCEEDED(hr) && pSource && (nw != srcW || nh != srcH)) {
         hr = pFactory->CreateBitmapScaler(&pScaler);
         if (SUCCEEDED(hr)) {
-            hr = pScaler->Initialize(pConverter, nw, nh, WICBitmapInterpolationModeHighQualityCubic);
+            hr = pScaler->Initialize(pSource, nw, nh, WICBitmapInterpolationModeHighQualityCubic);
             if (SUCCEEDED(hr)) pSource = pScaler;
         }
     }
 
     bool ok = false;
     if (SUCCEEDED(hr) && pSource) {
-        if (mode == ScaleMode::Fit) {
+        if (mode == ScaleMode::Fit || (mode == ScaleMode::Crop && keepAspect)) {
             std::vector<BYTE> tmp((size_t)nw * nh * 4);
             if (SUCCEEDED(pSource->CopyPixels(nullptr, nw * 4, (UINT)tmp.size(), tmp.data()))) {
                 memset(pTargetBuffer, 0, (size_t)tstride * th);
@@ -200,6 +301,7 @@ static bool LoadAndScaleImage(const wchar_t* filePath, ScaleMode mode, BYTE* pTa
     }
 
     if (pScaler) pScaler->Release();
+    if (pCropClipper) pCropClipper->Release();
     if (pConverter) pConverter->Release();
     if (pFrame) pFrame->Release();
     if (pDecoder) pDecoder->Release();
@@ -212,7 +314,7 @@ static bool LoadAndScaleImage(const wchar_t* filePath, ScaleMode mode, BYTE* pTa
 static bool TryLoadIntoBuffer(const Settings& s, BYTE* pBuffer)
 {
     if (s.imagePath.empty()) return false;
-    if (!LoadAndScaleImage(s.imagePath.c_str(), s.mode, pBuffer, vcam::VCamWidth, vcam::VCamHeight, vcam::VCamStride)) {
+    if (!LoadAndScaleImage(s.imagePath.c_str(), s.mode, s.crop, s.cropKeepAspect, pBuffer, vcam::VCamWidth, vcam::VCamHeight, vcam::VCamStride)) {
         wprintf(L"[settings] failed to load image: %s\n", s.imagePath.c_str());
         fflush(stdout);
         return false;
@@ -243,7 +345,8 @@ static DWORD WINAPI SettingsWatcherThread(LPVOID)
 
         Settings s;
         if (!LoadSettings(s) || s.imagePath.empty()) continue;
-        if (s.imagePath == g_currentImagePath && s.mode == g_currentMode) continue;
+        if (s.imagePath == g_currentImagePath && s.mode == g_currentMode && s.crop == g_currentCrop
+            && s.cropKeepAspect == g_currentCropKeepAspect) continue;
 
         BYTE* tmp = new (std::nothrow) BYTE[vcam::VCamFrameSize];
         if (!tmp) continue;
@@ -253,6 +356,8 @@ static DWORD WINAPI SettingsWatcherThread(LPVOID)
             g_pFrame = tmp;
             g_currentImagePath = s.imagePath;
             g_currentMode = s.mode;
+            g_currentCrop = s.crop;
+            g_currentCropKeepAspect = s.cropKeepAspect;
             LeaveCriticalSection(&g_frameCs);
             wprintf(L"[settings] reloaded: %s (mode=%s)\n", g_currentImagePath.c_str(), ModeName(g_currentMode));
             fflush(stdout);
@@ -273,7 +378,7 @@ int wmain(int argc, wchar_t* argv[])
     } else if (!haveSettings || settings.imagePath.empty()) {
         wprintf(L"Usage: StaticProducer.exe [path_to_image]\n");
         wprintf(L"  Settings file: %s\n", SettingsFilePath().c_str());
-        wprintf(L"  { \"imagePath\": \"...\", \"scaleMode\": \"fit\"|\"cover\" }\n");
+        wprintf(L"  { \"imagePath\": \"...\", \"scaleMode\": \"fit\"|\"cover\"|\"crop\", \"cropX\":0, \"cropY\":0, \"cropW\":0, \"cropH\":0, \"cropKeepAspect\":false }\n");
         return 1;
     }
 
@@ -290,6 +395,8 @@ int wmain(int argc, wchar_t* argv[])
     g_pFrame = pFrame;
     g_currentImagePath = settings.imagePath;
     g_currentMode = settings.mode;
+    g_currentCrop = settings.crop;
+    g_currentCropKeepAspect = settings.cropKeepAspect;
     g_hStopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
 
     PSECURITY_DESCRIPTOR pSecDesc = nullptr;

@@ -12,7 +12,7 @@
 | `src/Registrar` (Registrar.exe) | Регистрация камеры: `add [name] [hold]` / `remove`. Процесс нужно держать живым (Session lifetime). |
 | `src/ProducerTest` (ProducerTest.exe) | Пишет анимированный test pattern в общую память @30 fps. |
 | `src/StaticProducer` (StaticProducer.exe) | Транслирует статическое изображение (PNG/JPG/BMP/…) в общую память @30 fps. Путь и режим масштабирования берёт из `%APPDATA%\VCam\settings.json` (hot-reload ~0.7 с), аргумент командной строки — fallback. |
-| `src/VCamSettingsUi` (VCamSettingsUi.dll) | C# WinForms UI: выбор картинки, предпросмотр fit/cover, просмотр 1:1 с зумом, сохранение настроек. |
+| `src/VCamSettingsUi` (VCamSettingsUi.dll) | C# WinForms UI: выбор картинки, предпросмотр fit/cover, интерактивный crop (рамка мышью), просмотр 1:1 с зумом, сохранение настроек. |
 | `src/CaptureTest` (CaptureTest.exe) | Диагностический захват: `inspect`, `device [strict] [name\|index] [width] [height] [prefix]`, bare `[numFrames] [prefix]`; сохраняет BMP. |
 
 ## Сборка
@@ -67,14 +67,21 @@
 ```json
 {
   "imagePath": "C:\\path\\to\\image.jfif",
-  "scaleMode": "fit"
+  "scaleMode": "fit",
+  "cropX": 0,
+  "cropY": 0,
+  "cropW": 1280,
+  "cropH": 720,
+  "cropKeepAspect": false
 }
 ```
 
 | Поле | Значения | Смысл |
 |---|---|---|
 | `imagePath` | путь к файлу | источник картинки (PNG/JPG/BMP/JFIF/…) |
-| `scaleMode` | `fit` \| `cover` | `fit` — вписать в 1280×720 с чёрными полосами; `cover` — заполнить, center-crop без искажений |
+| `scaleMode` | `fit` \| `cover` \| `crop` | `fit` — вписать в 1280×720 с чёрными полосами; `cover` — заполнить, center-crop без искажений; `crop` — обрезать по прямоугольнику ниже |
+| `cropX`, `cropY`, `cropW`, `cropH` | пиксели исходника | область обрезки (только для `crop`); невалидный прямоугольник → clamp к границам, нулевой → вся картинка. По умолчанию результат **растягивается на 1280×720 без сохранения пропорций** |
+| `cropKeepAspect` | `true` \| `false` | только для `crop`: `true` — вписать область с сохранением пропорций (чёрные полосы) вместо растяжки |
 
 - Сценарий работы: UI сохраняет файл → `StaticProducer` опрашивает его каждые 500 мс
   (debounce 200 мс) и перезагружает картинку/режим **без перезапуска** (~0.7 с).
@@ -83,7 +90,10 @@
 - Ошибка загрузки (удалённый файл) — лог в консоль, трансляция продолжается со старым кадром.
 
 UI (`src\VCamSettingsUi`): выбор файла → предпросмотр fit/cover (та же математика, что
-в C++), «Просмотр полный» (оригинал, колесо — зум 25–400 %), «Сохранить настройки».
+в C++), режим `crop` — интерактивная рамка мышью прямо на предпросмотре (перетаскивание
+центра = сдвиг, ручки по углам/краям = размер, перетаскивание вне рамки = новая область;
+поля X/Y/Ш/В синхронны в обе стороны, чекбокс «Сохранять пропорции» — letterbox вместо
+растяжки), «Просмотр полный» (оригинал, колесо — зум 25–400 %), «Сохранить настройки».
 
 ## Контракт общей памяти
 
@@ -126,8 +136,8 @@ src/MediaSource/
   MediaSource.def                экспорты
 src/Registrar/main.cpp           MFCreateVirtualCamera, add/hold/remove
 src/ProducerTest/main.cpp        test pattern → общая память
-src/StaticProducer/StaticProducer.cpp статическое изображение (WIC, fit/cover) → общая память, settings.json hot-reload
-src/VCamSettingsUi/               C# WinForms UI: выбор/предпросмотр/зум, settings.json
+src/StaticProducer/StaticProducer.cpp статическое изображение (WIC, fit/cover/crop) → общая память, settings.json hot-reload
+src/VCamSettingsUi/               C# WinForms UI: выбор/предпросмотр/зум/crop-рамка, settings.json
 src/CaptureTest/main.cpp         inspect/capture → BMP
 register.bat, unregister.bat     регистрация (от администратора)
 e2e_test.ps1                     автоматический E2E-тест
