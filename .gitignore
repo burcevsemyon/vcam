@@ -5,3 +5,5 @@ build/
 *.pdb
 *.suo
 .vs/
+e2e_output/
+test_input.bmp

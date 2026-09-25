@@ -31,6 +31,7 @@ static void LogW(const wchar_t* fmt, ...)
     _vsnwprintf_s(body, _countof(body), _TRUNCATE, fmt, ap);
     va_end(ap);
     wprintf(L"%02d:%02d:%02d.%03d %s\n", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, body);
+    fflush(stdout);
 }
 
 static void GuidToW(REFGUID g, wchar_t* out, size_t cch)
@@ -228,11 +229,13 @@ static int RunDirectMode(int numFrames, const wchar_t* outputPrefix)
             break;
         }
 
-        // Pump stream events
-        for (int j = 0; j < 10; ++j) {
+        // Pump stream events with timeout
+        ULONGLONG st0 = GetTickCount64();
+        bool gotSample = false;
+        while (!gotSample && (GetTickCount64() - st0) < 2000) {
             IMFMediaEvent* pEvent = nullptr;
             hr = pStream->GetEvent(MF_EVENT_FLAG_NO_WAIT, &pEvent);
-            if (FAILED(hr)) break; // queue empty (MF_E_NO_EVENTS_AVAILABLE) — pEvent not valid on failure
+            if (FAILED(hr)) { Sleep(20); continue; }
 
             MediaEventType met;
             pEvent->GetType(&met);
@@ -252,12 +255,10 @@ static int RunDirectMode(int numFrames, const wchar_t* outputPrefix)
                     DWORD maxLen, curLen;
                     pBuffer->Lock(&pBits, &maxLen, &curLen);
                     if (pBits) {
-                        // Save as BMP (every 5th frame or first frame)
-                        if (framesReceived == 0 || framesReceived % 5 == 0) {
-                            wchar_t bmpName[64];
-                            swprintf_s(bmpName, L"%s_%03d.bmp", outputPrefix, framesReceived);
-                            SaveBMP(bmpName, pBits, 1280, 720, 5120);
-                        }
+                        // Save as BMP (every frame)
+                        wchar_t bmpName[MAX_PATH];
+                        swprintf_s(bmpName, L"%s_%03d.bmp", outputPrefix, framesReceived);
+                        SaveBMP(bmpName, pBits, 1280, 720, 5120);
                     }
                     pBuffer->Unlock();
                     pBuffer->Release();
@@ -266,6 +267,8 @@ static int RunDirectMode(int numFrames, const wchar_t* outputPrefix)
                 pSample->Release();
                 framesReceived++;
                 LogW(L"Frame %d received.", framesReceived);
+                pEvent->Release();
+                gotSample = true;
                 break;
             }
             pEvent->Release();

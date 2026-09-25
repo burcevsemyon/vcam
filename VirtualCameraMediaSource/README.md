@@ -11,6 +11,7 @@
 | `src/MediaSource` (MediaSource.dll) | COM media source: видео-потоки 1280×720@30 и 640×480@30 (RGB32 + NV12), автоматический даунскейлинг и конверсия в потоке. `IMFMediaSourceEx`, `IKsControl`, `IMFGetService`, async worker + token queue. |
 | `src/Registrar` (Registrar.exe) | Регистрация камеры: `add [name] [hold]` / `remove`. Процесс нужно держать живым (Session lifetime). |
 | `src/ProducerTest` (ProducerTest.exe) | Пишет анимированный test pattern в общую память @30 fps. |
+| `src/StaticProducer` (StaticProducer.exe) | Транслирует статическое изображение (PNG/JPG/BMP) из настроек/файла в общую память @30 fps (WIC + качественный ресайз до 1280×720). |
 | `src/CaptureTest` (CaptureTest.exe) | Диагностический захват: `inspect`, `device [strict] [name\|index] [width] [height] [prefix]`, bare `[numFrames] [prefix]`; сохраняет BMP. |
 
 ## Сборка
@@ -29,8 +30,17 @@
    build\x64\Release\Registrar.exe add VCam hold
    ```
 3. Провайдер кадров (отдельная консоль):
-   ```bat
-   build\x64\Release\ProducerTest.exe
+   - Анимированный тестовый паттерн:
+     ```bat
+     build\x64\Release\ProducerTest.exe
+     ```
+   - Статическое изображение (из файла/настроек):
+     ```bat
+     build\x64\Release\StaticProducer.exe path\to\image.png
+     ```
+4. E2E тестирование:
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File e2e_test.ps1
    ```
 4. Проверка: камера видна в «Параметры → Bluetooth и устройства → Камеры» и в любых приложениях;
    без ProducerTest — чёрные кадры (fallback, штатное состояние).
@@ -89,7 +99,9 @@ src/MediaSource/
   MediaSource.def                экспорты
 src/Registrar/main.cpp           MFCreateVirtualCamera, add/hold/remove
 src/ProducerTest/main.cpp        test pattern → общая память
+src/StaticProducer/StaticProducer.cpp статическое изображение (WIC) → общая память
 src/CaptureTest/main.cpp         inspect/capture → BMP
 register.bat, unregister.bat     регистрация (от администратора)
+e2e_test.ps1                     автоматический E2E-тест
 memory.md                        состояние проекта (resume-документ)
 ```

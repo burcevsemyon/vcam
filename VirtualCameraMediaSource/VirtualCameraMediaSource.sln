@@ -10,6 +10,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ProducerTest", "src\Produce
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "CaptureTest", "src\CaptureTest\CaptureTest.vcxproj", "{F0B7A315-DDBB-43E9-A867-48E29ABF0D53}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "StaticProducer", "src\StaticProducer\StaticProducer.vcxproj", "{78542C4D-E510-4893-90C5-F8FBD6DF5F99}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Release|x64 = Release|x64
@@ -23,6 +25,8 @@ Global
 		{39505C4D-E510-4893-90C5-F8FBD6DF5F88}.Release|x64.Build.0 = Release|x64
 		{F0B7A315-DDBB-43E9-A867-48E29ABF0D53}.Release|x64.ActiveCfg = Release|x64
 		{F0B7A315-DDBB-43E9-A867-48E29ABF0D53}.Release|x64.Build.0 = Release|x64
+		{78542C4D-E510-4893-90C5-F8FBD6DF5F99}.Release|x64.ActiveCfg = Release|x64
+		{78542C4D-E510-4893-90C5-F8FBD6DF5F99}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
