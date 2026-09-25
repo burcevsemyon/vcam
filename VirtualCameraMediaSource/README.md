@@ -11,7 +11,8 @@
 | `src/MediaSource` (MediaSource.dll) | COM media source: видео-потоки 1280×720@30 и 640×480@30 (RGB32 + NV12), автоматический даунскейлинг и конверсия в потоке. `IMFMediaSourceEx`, `IKsControl`, `IMFGetService`, async worker + token queue. |
 | `src/Registrar` (Registrar.exe) | Регистрация камеры: `add [name] [hold]` / `remove`. Процесс нужно держать живым (Session lifetime). |
 | `src/ProducerTest` (ProducerTest.exe) | Пишет анимированный test pattern в общую память @30 fps. |
-| `src/StaticProducer` (StaticProducer.exe) | Транслирует статическое изображение (PNG/JPG/BMP) из настроек/файла в общую память @30 fps (WIC + качественный ресайз до 1280×720). |
+| `src/StaticProducer` (StaticProducer.exe) | Транслирует статическое изображение (PNG/JPG/BMP/…) в общую память @30 fps. Путь и режим масштабирования берёт из `%APPDATA%\VCam\settings.json` (hot-reload ~0.7 с), аргумент командной строки — fallback. |
+| `src/VCamSettingsUi` (VCamSettingsUi.dll) | C# WinForms UI: выбор картинки, предпросмотр fit/cover, просмотр 1:1 с зумом, сохранение настроек. |
 | `src/CaptureTest` (CaptureTest.exe) | Диагностический захват: `inspect`, `device [strict] [name\|index] [width] [height] [prefix]`, bare `[numFrames] [prefix]`; сохраняет BMP. |
 
 ## Сборка
@@ -34,10 +35,11 @@
      ```bat
      build\x64\Release\ProducerTest.exe
      ```
-   - Статическое изображение (из файла/настроек):
+   - Статическое изображение (настройки или файл):
      ```bat
      build\x64\Release\StaticProducer.exe path\to\image.png
      ```
+     без аргумента — путь из `%APPDATA%\VCam\settings.json` (создаёт UI).
 4. E2E тестирование:
    ```powershell
    powershell -ExecutionPolicy Bypass -File e2e_test.ps1
@@ -57,6 +59,31 @@
 - FRIENDLY_NAME устройства в перечислении может быть `(none)` — в `CaptureTest` device mode
   выбирать нашу камеру по **индексу** (`device 1`), а не по имени.
 - `register.bat` / `unregister.bat` — быстрые сценарии регистрации/снятия.
+
+## Настройки StaticProducer
+
+Файл `%APPDATA%\VCam\settings.json`:
+
+```json
+{
+  "imagePath": "C:\\path\\to\\image.jfif",
+  "scaleMode": "fit"
+}
+```
+
+| Поле | Значения | Смысл |
+|---|---|---|
+| `imagePath` | путь к файлу | источник картинки (PNG/JPG/BMP/JFIF/…) |
+| `scaleMode` | `fit` \| `cover` | `fit` — вписать в 1280×720 с чёрными полосами; `cover` — заполнить, center-crop без искажений |
+
+- Сценарий работы: UI сохраняет файл → `StaticProducer` опрашивает его каждые 500 мс
+  (debounce 200 мс) и перезагружает картинку/режим **без перезапуска** (~0.7 с).
+- Приоритет: `argv[1]` переопределяет `imagePath` при запуске, но `scaleMode`
+  всегда берётся из файла (его нет — `fit`).
+- Ошибка загрузки (удалённый файл) — лог в консоль, трансляция продолжается со старым кадром.
+
+UI (`src\VCamSettingsUi`): выбор файла → предпросмотр fit/cover (та же математика, что
+в C++), «Просмотр полный» (оригинал, колесо — зум 25–400 %), «Сохранить настройки».
 
 ## Контракт общей памяти
 
@@ -99,7 +126,8 @@ src/MediaSource/
   MediaSource.def                экспорты
 src/Registrar/main.cpp           MFCreateVirtualCamera, add/hold/remove
 src/ProducerTest/main.cpp        test pattern → общая память
-src/StaticProducer/StaticProducer.cpp статическое изображение (WIC) → общая память
+src/StaticProducer/StaticProducer.cpp статическое изображение (WIC, fit/cover) → общая память, settings.json hot-reload
+src/VCamSettingsUi/               C# WinForms UI: выбор/предпросмотр/зум, settings.json
 src/CaptureTest/main.cpp         inspect/capture → BMP
 register.bat, unregister.bat     регистрация (от администратора)
 e2e_test.ps1                     автоматический E2E-тест

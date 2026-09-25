@@ -3,18 +3,134 @@
 #include <sddl.h>
 #include <cstdio>
 #include <cwchar>
+#include <cmath>
+#include <string>
+#include <vector>
+#include <new>
 #include "../Common/SharedMemoryContract.h"
 
 #pragma comment(lib, "windowscodecs.lib")
 #pragma comment(lib, "advapi32.lib")
 
-bool LoadAndScaleImage(const wchar_t* filePath, BYTE* pTargetBuffer, UINT targetWidth, UINT targetHeight, UINT targetStride)
+// Scale modes must stay in sync with VCamSettingsUi (C#) preview rendering.
+enum class ScaleMode { Fit, Cover };
+
+struct Settings {
+    std::wstring imagePath;
+    ScaleMode mode = ScaleMode::Fit;
+};
+
+static BYTE* g_pFrame = nullptr;
+static CRITICAL_SECTION g_frameCs;
+static HANDLE g_hStopEvent = nullptr;
+static std::wstring g_currentImagePath;
+static ScaleMode g_currentMode = ScaleMode::Fit;
+
+static std::wstring SettingsDirPath()
+{
+    wchar_t appdata[MAX_PATH] = {};
+    DWORD n = GetEnvironmentVariableW(L"APPDATA", appdata, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return std::wstring();
+    return std::wstring(appdata) + L"\\VCam";
+}
+
+static std::wstring SettingsFilePath()
+{
+    std::wstring dir = SettingsDirPath();
+    if (dir.empty()) return std::wstring();
+    return dir + L"\\settings.json";
+}
+
+static bool ReadUtf8File(const std::wstring& path, std::string& out)
+{
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    LARGE_INTEGER sz;
+    if (!GetFileSizeEx(h, &sz) || sz.QuadPart <= 0 || sz.QuadPart > 1000000) { CloseHandle(h); return false; }
+    out.resize((size_t)sz.QuadPart);
+    DWORD read = 0;
+    BOOL ok = ReadFile(h, &out[0], (DWORD)out.size(), &read, nullptr);
+    CloseHandle(h);
+    return ok && read == out.size();
+}
+
+static std::wstring Utf8ToWide(const std::string& s)
+{
+    if (s.empty()) return std::wstring();
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), nullptr, 0);
+    if (n <= 0) return std::wstring();
+    std::wstring w((size_t)n, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), &w[0], n);
+    return w;
+}
+
+// Minimal flat-JSON string extractor: finds "key" then the quoted value after ':'.
+// Handles standard escapes (\\ \" \/ \n \r \t \b \f). Sufficient for our 2-key settings file.
+static bool JsonGetString(const std::string& json, const char* key, std::wstring& value)
+{
+    std::string k = std::string("\"") + key + "\"";
+    size_t p = json.find(k);
+    if (p == std::string::npos) return false;
+    p = json.find(':', p + k.size());
+    if (p == std::string::npos) return false;
+    p++;
+    while (p < json.size() && (json[p] == ' ' || json[p] == '\t' || json[p] == '\r' || json[p] == '\n')) p++;
+    if (p >= json.size() || json[p] != '"') return false;
+    std::string val;
+    for (p++; p < json.size() && json[p] != '"'; p++) {
+        if (json[p] == '\\' && p + 1 < json.size()) {
+            char c = json[++p];
+            switch (c) {
+                case 'n': val += '\n'; break;
+                case 'r': val += '\r'; break;
+                case 't': val += '\t'; break;
+                case 'b': val += '\b'; break;
+                case 'f': val += '\f'; break;
+                case 'u': // skip 4 hex digits (we do not expect non-ASCII in keys/paths we write)
+                    if (p + 4 < json.size()) p += 4;
+                    val += '?';
+                    break;
+                default: val += c; break; // covers \\ \" \/
+            }
+        } else {
+            val += json[p];
+        }
+    }
+    if (p >= json.size()) return false;
+    value = Utf8ToWide(val);
+    return true;
+}
+
+static bool LoadSettings(Settings& s)
+{
+    std::wstring path = SettingsFilePath();
+    if (path.empty()) return false;
+    std::string json;
+    if (!ReadUtf8File(path, json)) return false;
+    if (!JsonGetString(json, "imagePath", s.imagePath)) return false;
+    std::wstring mode;
+    if (JsonGetString(json, "scaleMode", mode)) {
+        s.mode = (mode == L"cover") ? ScaleMode::Cover : ScaleMode::Fit;
+    }
+    return true;
+}
+
+static const wchar_t* ModeName(ScaleMode m)
+{
+    return m == ScaleMode::Cover ? L"cover" : L"fit";
+}
+
+// Loads an image, converts to 32bppBGRA and renders it into a 1280x720 RGB32 frame:
+//   Fit   - scale by min(w/tw, h/th), letterbox on black background
+//   Cover - scale by max(w/tw, h/th), center-crop to target
+static bool LoadAndScaleImage(const wchar_t* filePath, ScaleMode mode, BYTE* pTargetBuffer, UINT tw, UINT th, UINT tstride)
 {
     CoInitialize(nullptr);
 
     IWICImagingFactory* pFactory = nullptr;
     HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pFactory));
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) { CoUninitialize(); return false; }
 
     IWICBitmapDecoder* pDecoder = nullptr;
     hr = pFactory->CreateDecoderFromFilename(filePath, nullptr, GENERIC_READ, WICDecodeMetadataCacheOnLoad, &pDecoder);
@@ -24,22 +140,63 @@ bool LoadAndScaleImage(const wchar_t* filePath, BYTE* pTargetBuffer, UINT target
     hr = pDecoder->GetFrame(0, &pFrame);
     if (FAILED(hr)) { pDecoder->Release(); pFactory->Release(); CoUninitialize(); return false; }
 
-    IWICFormatConverter* pConverter = nullptr;
-    hr = pFactory->CreateFormatConverter(&pConverter);
-    if (SUCCEEDED(hr)) {
-        hr = pConverter->Initialize(pFrame, GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom);
-    }
+    UINT sw = 0, sh = 0;
+    pFrame->GetSize(&sw, &sh);
+    if (sw == 0 || sh == 0) { pFrame->Release(); pDecoder->Release(); pFactory->Release(); CoUninitialize(); return false; }
 
-    IWICBitmapScaler* pScaler = nullptr;
+    double scale = (mode == ScaleMode::Fit)
+        ? ((double)tw < (double)th * sw / sh ? (double)tw / sw : (double)th / sh)
+        : ((double)tw > (double)th * sw / sh ? (double)tw / sw : (double)th / sh);
+    // Fit: never exceed target (fp rounding guard); Cover: never go below target.
+    UINT nw = (UINT)llround(sw * scale);
+    UINT nh = (UINT)llround(sh * scale);
+    if (mode == ScaleMode::Fit) { if (nw > tw) nw = tw; if (nh > th) nh = th; }
+    else { if (nw < tw) nw = tw; if (nh < th) nh = th; }
+    if (nw == 0) nw = 1;
+    if (nh == 0) nh = 1;
+
+    IWICFormatConverter* pConverter = nullptr;
     if (SUCCEEDED(hr)) {
-        hr = pFactory->CreateBitmapScaler(&pScaler);
+        hr = pFactory->CreateFormatConverter(&pConverter);
         if (SUCCEEDED(hr)) {
-            hr = pScaler->Initialize(pConverter, targetWidth, targetHeight, WICBitmapInterpolationModeHighQualityCubic);
+            hr = pConverter->Initialize(pFrame, GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom);
         }
     }
 
-    if (SUCCEEDED(hr)) {
-        hr = pScaler->CopyPixels(nullptr, targetStride, targetWidth * targetHeight * 4, pTargetBuffer);
+    IWICBitmapScaler* pScaler = nullptr;
+    IWICBitmapSource* pSource = pConverter;
+    if (SUCCEEDED(hr) && (nw != sw || nh != sh)) {
+        hr = pFactory->CreateBitmapScaler(&pScaler);
+        if (SUCCEEDED(hr)) {
+            hr = pScaler->Initialize(pConverter, nw, nh, WICBitmapInterpolationModeHighQualityCubic);
+            if (SUCCEEDED(hr)) pSource = pScaler;
+        }
+    }
+
+    bool ok = false;
+    if (SUCCEEDED(hr) && pSource) {
+        if (mode == ScaleMode::Fit) {
+            std::vector<BYTE> tmp((size_t)nw * nh * 4);
+            if (SUCCEEDED(pSource->CopyPixels(nullptr, nw * 4, (UINT)tmp.size(), tmp.data()))) {
+                memset(pTargetBuffer, 0, (size_t)tstride * th);
+                UINT xoff = (tw - nw) / 2;
+                UINT yoff = (th - nh) / 2;
+                for (UINT y = 0; y < nh; y++) {
+                    memcpy(pTargetBuffer + (size_t)(yoff + y) * tstride + (size_t)xoff * 4,
+                           &tmp[(size_t)y * nw * 4], (size_t)nw * 4);
+                }
+                ok = true;
+            }
+        } else {
+            IWICBitmapClipper* pClipper = nullptr;
+            if (SUCCEEDED(pFactory->CreateBitmapClipper(&pClipper))) {
+                WICRect rc = { (INT)((nw - tw) / 2), (INT)((nh - th) / 2), (INT)tw, (INT)th };
+                if (SUCCEEDED(pClipper->Initialize(pSource, &rc))) {
+                    ok = SUCCEEDED(pClipper->CopyPixels(nullptr, tstride, tstride * th, pTargetBuffer));
+                }
+                pClipper->Release();
+            }
+        }
     }
 
     if (pScaler) pScaler->Release();
@@ -49,25 +206,91 @@ bool LoadAndScaleImage(const wchar_t* filePath, BYTE* pTargetBuffer, UINT target
     pFactory->Release();
     CoUninitialize();
 
-    return SUCCEEDED(hr);
+    return ok;
+}
+
+static bool TryLoadIntoBuffer(const Settings& s, BYTE* pBuffer)
+{
+    if (s.imagePath.empty()) return false;
+    if (!LoadAndScaleImage(s.imagePath.c_str(), s.mode, pBuffer, vcam::VCamWidth, vcam::VCamHeight, vcam::VCamStride)) {
+        wprintf(L"[settings] failed to load image: %s\n", s.imagePath.c_str());
+        fflush(stdout);
+        return false;
+    }
+    return true;
+}
+
+// Polls settings.json every 500ms; on change reloads image+mode without restarting.
+static DWORD WINAPI SettingsWatcherThread(LPVOID)
+{
+    std::wstring path = SettingsFilePath();
+    ULARGE_INTEGER lastWrite = {};
+    for (;;) {
+        if (WaitForSingleObject(g_hStopEvent, 500) != WAIT_TIMEOUT) break;
+
+        WIN32_FILE_ATTRIBUTE_DATA fad;
+        if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad)) {
+            lastWrite.QuadPart = 0;
+            continue;
+        }
+        ULARGE_INTEGER ft;
+        ft.LowPart = fad.ftLastWriteTime.dwLowDateTime;
+        ft.HighPart = fad.ftLastWriteTime.dwHighDateTime;
+        if (ft.QuadPart == lastWrite.QuadPart) continue;
+
+        Sleep(200); // debounce: let the writer finish
+        lastWrite = ft;
+
+        Settings s;
+        if (!LoadSettings(s) || s.imagePath.empty()) continue;
+        if (s.imagePath == g_currentImagePath && s.mode == g_currentMode) continue;
+
+        BYTE* tmp = new (std::nothrow) BYTE[vcam::VCamFrameSize];
+        if (!tmp) continue;
+        if (TryLoadIntoBuffer(s, tmp)) {
+            EnterCriticalSection(&g_frameCs);
+            delete[] g_pFrame;
+            g_pFrame = tmp;
+            g_currentImagePath = s.imagePath;
+            g_currentMode = s.mode;
+            LeaveCriticalSection(&g_frameCs);
+            wprintf(L"[settings] reloaded: %s (mode=%s)\n", g_currentImagePath.c_str(), ModeName(g_currentMode));
+            fflush(stdout);
+        } else {
+            delete[] tmp;
+        }
+    }
+    return 0;
 }
 
 int wmain(int argc, wchar_t* argv[])
 {
-    if (argc < 2) {
-        wprintf(L"Usage: StaticProducer.exe <path_to_image>\n");
+    Settings settings;
+    bool haveSettings = LoadSettings(settings);
+
+    if (argc >= 2) {
+        settings.imagePath = argv[1]; // explicit CLI path overrides settings file path
+    } else if (!haveSettings || settings.imagePath.empty()) {
+        wprintf(L"Usage: StaticProducer.exe [path_to_image]\n");
+        wprintf(L"  Settings file: %s\n", SettingsFilePath().c_str());
+        wprintf(L"  { \"imagePath\": \"...\", \"scaleMode\": \"fit\"|\"cover\" }\n");
         return 1;
     }
 
-    const wchar_t* imagePath = argv[1];
-    wprintf(L"Loading static image: %s\n", imagePath);
+    wprintf(L"Loading static image: %s (mode=%s)\n", settings.imagePath.c_str(), ModeName(settings.mode));
 
-    BYTE* pStaticFrame = new BYTE[vcam::VCamFrameSize];
-    if (!LoadAndScaleImage(imagePath, pStaticFrame, vcam::VCamWidth, vcam::VCamHeight, vcam::VCamStride)) {
+    BYTE* pFrame = new (std::nothrow) BYTE[vcam::VCamFrameSize];
+    if (!pFrame || !TryLoadIntoBuffer(settings, pFrame)) {
         wprintf(L"Failed to load or scale image!\n");
-        delete[] pStaticFrame;
+        delete[] pFrame;
         return 1;
     }
+
+    InitializeCriticalSection(&g_frameCs);
+    g_pFrame = pFrame;
+    g_currentImagePath = settings.imagePath;
+    g_currentMode = settings.mode;
+    g_hStopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
 
     PSECURITY_DESCRIPTOR pSecDesc = nullptr;
     ConvertStringSecurityDescriptorToSecurityDescriptorW(vcam::VCamDacSddl, SDDL_REVISION_1, &pSecDesc, nullptr);
@@ -80,7 +303,9 @@ int wmain(int argc, wchar_t* argv[])
     if (!hSection) {
         wprintf(L"CreateFileMappingW failed: %lu\n", GetLastError());
         LocalFree(pSecDesc);
-        delete[] pStaticFrame;
+        delete[] g_pFrame; g_pFrame = nullptr;
+        CloseHandle(g_hStopEvent);
+        DeleteCriticalSection(&g_frameCs);
         return 1;
     }
 
@@ -99,13 +324,15 @@ int wmain(int argc, wchar_t* argv[])
     pHeader->frameWriteIndex = 0;
     pHeader->seq = 0;
 
+    HANDLE hWatcher = CreateThread(nullptr, 0, SettingsWatcherThread, nullptr, 0, nullptr);
+
     wprintf(L"Static Producer running @ 30 FPS. Press Ctrl+C or Esc to stop.\n");
+    fflush(stdout);
 
     LARGE_INTEGER freq, counter, startTime;
     QueryPerformanceFrequency(&freq);
     QueryPerformanceCounter(&startTime);
 
-    UINT32 frameIndex = 0;
     while (true) {
         if (GetAsyncKeyState(VK_ESCAPE) & 0x8000) break;
 
@@ -113,21 +340,28 @@ int wmain(int argc, wchar_t* argv[])
         BYTE* pFrameSlot = pBase + sizeof(vcam::VCamSectionHeader) + (SIZE_T)slot * vcam::VCamFrameSize;
 
         _InterlockedExchangeAdd64((volatile LONGLONG*)&pHeader->seq, 1);
-        memcpy(pFrameSlot, pStaticFrame, vcam::VCamFrameSize);
+        EnterCriticalSection(&g_frameCs);
+        memcpy(pFrameSlot, g_pFrame, vcam::VCamFrameSize);
+        LeaveCriticalSection(&g_frameCs);
         pHeader->frameWriteIndex = slot;
         QueryPerformanceCounter(&counter);
         pHeader->lastFrameTime100ns = (UINT64)((counter.QuadPart - startTime.QuadPart) * 10000000 / freq.QuadPart);
         _InterlockedExchangeAdd64((volatile LONGLONG*)&pHeader->seq, 1);
 
         SetEvent(hReadyEvent);
-        frameIndex++;
         Sleep(33);
     }
+
+    SetEvent(g_hStopEvent);
+    if (hWatcher) { WaitForSingleObject(hWatcher, 2000); CloseHandle(hWatcher); }
 
     UnmapViewOfFile(pBase);
     CloseHandle(hReadyEvent);
     CloseHandle(hSection);
     LocalFree(pSecDesc);
-    delete[] pStaticFrame;
+    CloseHandle(g_hStopEvent);
+    DeleteCriticalSection(&g_frameCs);
+    delete[] g_pFrame;
+    g_pFrame = nullptr;
     return 0;
 }
