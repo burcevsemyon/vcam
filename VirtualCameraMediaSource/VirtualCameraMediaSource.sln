@@ -18,6 +18,12 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "VCamSettingsUi", "src\VCamS
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "VCamPreview", "src\VCamPreview\VCamPreview.vcxproj", "{BD0A8099-A996-4EDF-BA33-C1130004C78A}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ProducerCore", "src\ProducerCore\ProducerCore.vcxproj", "{4259BECC-52DD-4B64-8ACC-B93D93DDA175}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "VCamVideoStreamProducer", "src\VCamVideoStreamProducer\VCamVideoStreamProducer.vcxproj", "{7C4E9A31-52B8-4D6F-9E17-A3B5C8D21F40}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "VCamProducerCli", "src\VCamProducerCli\VCamProducerCli.vcxproj", "{81302D8C-7CB8-4E2C-9224-B1BA3947C47A}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Release|x64 = Release|x64
@@ -39,6 +45,12 @@ Global
 		{A1B2C3D4-E5F6-4A7B-8C9D-0E1F2A3B4C5D}.Release|x64.Build.0 = Release|x64
 		{BD0A8099-A996-4EDF-BA33-C1130004C78A}.Release|x64.ActiveCfg = Release|x64
 		{BD0A8099-A996-4EDF-BA33-C1130004C78A}.Release|x64.Build.0 = Release|x64
+		{4259BECC-52DD-4B64-8ACC-B93D93DDA175}.Release|x64.ActiveCfg = Release|x64
+		{4259BECC-52DD-4B64-8ACC-B93D93DDA175}.Release|x64.Build.0 = Release|x64
+		{7C4E9A31-52B8-4D6F-9E17-A3B5C8D21F40}.Release|x64.ActiveCfg = Release|x64
+		{7C4E9A31-52B8-4D6F-9E17-A3B5C8D21F40}.Release|x64.Build.0 = Release|x64
+		{81302D8C-7CB8-4E2C-9224-B1BA3947C47A}.Release|x64.ActiveCfg = Release|x64
+		{81302D8C-7CB8-4E2C-9224-B1BA3947C47A}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

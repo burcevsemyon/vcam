@@ -1,0 +1,138 @@
+#include "SettingsWatcher.h"
+
+#include <cstring>
+
+namespace {
+
+bool ReadUtf8File(const std::wstring& path, std::string& out)
+{
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    LARGE_INTEGER sz;
+    if (!GetFileSizeEx(h, &sz) || sz.QuadPart <= 0 || sz.QuadPart > 1000000) { CloseHandle(h); return false; }
+    out.resize((size_t)sz.QuadPart);
+    DWORD read = 0;
+    BOOL ok = ReadFile(h, &out[0], (DWORD)out.size(), &read, nullptr);
+    CloseHandle(h);
+    return ok && read == out.size();
+}
+
+} // namespace
+
+SettingsWatcher::SettingsWatcher()
+{
+    InitializeCriticalSection(&cs_);
+    csInit_ = true;
+}
+
+SettingsWatcher::~SettingsWatcher()
+{
+    Stop();
+    if (csInit_) { DeleteCriticalSection(&cs_); csInit_ = false; }
+}
+
+bool SettingsWatcher::Start(const std::wstring& path, ChangeCallback cb)
+{
+    if (thread_) return false;
+    path_ = path;
+    cb_ = std::move(cb);
+    if (path_.empty()) return false;
+
+    Settings s;
+    bool loaded = s.Load(path_);
+    std::string raw;
+    if (!ReadUtf8File(path_, raw)) raw.clear();
+
+    EnterCriticalSection(&cs_);
+    current_ = s;
+    hasCurrent_ = loaded;
+    lastRaw_ = raw;
+    LeaveCriticalSection(&cs_);
+
+    stopEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!stopEvent_) return false;
+    thread_ = CreateThread(nullptr, 0, ThreadProc, this, 0, nullptr);
+    if (!thread_) {
+        CloseHandle(stopEvent_);
+        stopEvent_ = nullptr;
+        return false;
+    }
+    return true;
+}
+
+void SettingsWatcher::Stop()
+{
+    if (stopEvent_) SetEvent(stopEvent_);
+    if (thread_) {
+        WaitForSingleObject(thread_, 2000);
+        CloseHandle(thread_);
+        thread_ = nullptr;
+    }
+    if (stopEvent_) { CloseHandle(stopEvent_); stopEvent_ = nullptr; }
+    cb_ = nullptr;
+}
+
+bool SettingsWatcher::Current(Settings& out) const
+{
+    EnterCriticalSection(&cs_);
+    out = current_;
+    bool ok = hasCurrent_;
+    LeaveCriticalSection(&cs_);
+    return ok;
+}
+
+DWORD WINAPI SettingsWatcher::ThreadProc(LPVOID self)
+{
+    static_cast<SettingsWatcher*>(self)->PollLoop();
+    return 0;
+}
+
+void SettingsWatcher::PollLoop()
+{
+    for (;;) {
+        if (WaitForSingleObject(stopEvent_, 500) != WAIT_TIMEOUT) break;
+
+        std::string raw;
+        if (!ReadUtf8File(path_, raw)) {
+            // Файл исчез: сбрасываем базу, чтобы повторное появление сработало.
+            EnterCriticalSection(&cs_);
+            lastRaw_.clear();
+            LeaveCriticalSection(&cs_);
+            continue;
+        }
+
+        EnterCriticalSection(&cs_);
+        bool same = (raw == lastRaw_);
+        LeaveCriticalSection(&cs_);
+        if (same) continue;
+
+        Sleep(200); // debounce: let the writer finish
+        if (!ReadUtf8File(path_, raw)) continue;
+
+        EnterCriticalSection(&cs_);
+        same = (raw == lastRaw_);
+        if (!same) lastRaw_ = raw;
+        LeaveCriticalSection(&cs_);
+        if (same) continue;
+
+        Settings s;
+        if (!s.Load(path_)) continue;
+
+        bool changed;
+        ChangeCallback cb;
+        EnterCriticalSection(&cs_);
+        changed = (!hasCurrent_ || s != current_);
+        if (changed) { current_ = s; hasCurrent_ = true; }
+        cb = cb_;
+        LeaveCriticalSection(&cs_);
+
+        if (changed && cb) {
+            try {
+                cb(s);
+            } catch (...) {
+                // исключение наблюдателя не должно убивать поток
+            }
+        }
+    }
+}

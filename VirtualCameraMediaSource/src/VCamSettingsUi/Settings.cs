@@ -1,15 +1,21 @@
+using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 
 namespace VCamSettingsUi;
 
-// Flat settings file shared with StaticProducer.exe and VideoProducer.exe (C++).
-// Contract: { "imagePath": "...", "scaleMode": "fit" | "cover" | "crop",
-//            "cropX": int, "cropY": int, "cropW": int, "cropH": int,
-//            "cropKeepAspect": bool,
-//            "mediaMode": "static" | "video", "mediaPath": "..." }
+// Settings file shared with the C++ side (src/ProducerCore/Settings.cpp).
+// Contract - NEW schema (only format that is written):
+//   { "source": { "type": "static" | "video" },
+//     "static": { "path": "...", "scaleMode": "fit" | "cover" | "crop",
+//                 "cropX": int, "cropY": int, "cropW": int, "cropH": int,
+//                 "cropKeepAspect": bool },
+//     "video":  { "path": "..." },
+//     "autostart": bool }
+// Load also accepts the legacy flat format (imagePath/mediaMode/mediaPath/
+// scaleMode/crop*) and migrates it with the same rules as the C++ loader.
 // NOTE: field names and value tokens must stay in sync with
-// src/StaticProducer/StaticProducer.cpp and src/VideoProducer/VideoProducer.cpp
-// (JsonGetString/LoadSettings/EffectiveImagePath).
+// src/ProducerCore/Settings.cpp (ParseNewSchema/ParseLegacySchema/Serialize).
 public enum ScaleMode
 {
     Fit,
@@ -17,9 +23,8 @@ public enum ScaleMode
     Crop,
 }
 
-// Which provider feeds the camera: a still image (StaticProducer) or a video
-// clip (VideoProducer). Back-compat: a file without "mediaMode" means Static.
-public enum MediaMode
+// Which section feeds the camera: source.type in settings.json.
+public enum SourceType
 {
     Static,
     Video,
@@ -27,25 +32,32 @@ public enum MediaMode
 
 public sealed class Settings
 {
-    public string ImagePath { get; set; } = "";
+    // Section "static" (still image): crop rect is in SOURCE image pixels and is
+    // used only when ScaleMode == Crop.
+    public string StaticPath { get; set; } = "";
     public ScaleMode ScaleMode { get; set; } = ScaleMode.Fit;
-
-    // Crop rect in SOURCE image pixels; used only when ScaleMode == Crop.
-    // Field names must stay in sync with src/StaticProducer/StaticProducer.cpp (JsonGetInt).
     public int CropX { get; set; }
     public int CropY { get; set; }
     public int CropW { get; set; }
     public int CropH { get; set; }
-
-    // Crop mode: letterbox the region instead of stretching it to 1280x720.
     public bool CropKeepAspect { get; set; }
 
-    // Media selection: MediaPath is the active source file for the current
-    // MediaMode ("static" -> image, "video" -> clip). StaticProducer prefers
-    // mediaPath when mediaMode != "video" (EffectiveImagePath), VideoProducer
-    // prefers mediaPath over argv[1].
-    public MediaMode MediaMode { get; set; } = MediaMode.Static;
-    public string MediaPath { get; set; } = "";
+    // Section "video" (clip).
+    public string VideoPath { get; set; } = "";
+
+    // Section "source".
+    public SourceType SourceType { get; set; } = SourceType.Static;
+
+    // Root: single source of truth for the HKCU Run entry (host + UI).
+    public bool Autostart { get; set; } = true;
+
+    private static readonly JsonSerializerOptions SerializerOptions = new()
+    {
+        WriteIndented = true,
+        // Keep non-ASCII (Cyrillic paths) verbatim: the C++ reader decodes \uXXXX
+        // as '?', so escaping them would corrupt the path.
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
 
     public static string DirectoryPath =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "VCam");
@@ -62,29 +74,63 @@ public sealed class Settings
             if (!File.Exists(path)) return new Settings();
             using var doc = JsonDocument.Parse(File.ReadAllText(path));
             var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return new Settings();
             var s = new Settings();
-            if (root.TryGetProperty("imagePath", out var p)) s.ImagePath = p.GetString() ?? "";
-            if (root.TryGetProperty("scaleMode", out var m))
+
+            var isNew = root.TryGetProperty("source", out _) ||
+                        root.TryGetProperty("static", out _) ||
+                        root.TryGetProperty("video", out _);
+
+            if (isNew)
             {
-                var mode = m.GetString();
-                if (string.Equals(mode, "cover", StringComparison.OrdinalIgnoreCase)) s.ScaleMode = ScaleMode.Cover;
-                else if (string.Equals(mode, "crop", StringComparison.OrdinalIgnoreCase)) s.ScaleMode = ScaleMode.Crop;
+                if (root.TryGetProperty("source", out var src) && src.ValueKind == JsonValueKind.Object &&
+                    src.TryGetProperty("type", out var type) && type.ValueKind == JsonValueKind.String)
+                {
+                    // Unknown tokens map to Static for editing; the host keeps them verbatim.
+                    s.SourceType = string.Equals(type.GetString(), "video", StringComparison.OrdinalIgnoreCase)
+                        ? SourceType.Video
+                        : SourceType.Static;
+                }
+
+                if (root.TryGetProperty("static", out var st) && st.ValueKind == JsonValueKind.Object)
+                {
+                    s.StaticPath = GetString(st, "path");
+                    s.ScaleMode = ParseScaleMode(GetString(st, "scaleMode"));
+                    s.CropX = GetInt(st, "cropX");
+                    s.CropY = GetInt(st, "cropY");
+                    s.CropW = GetInt(st, "cropW");
+                    s.CropH = GetInt(st, "cropH");
+                    s.CropKeepAspect = GetBool(st, "cropKeepAspect");
+                }
+
+                if (root.TryGetProperty("video", out var vd) && vd.ValueKind == JsonValueKind.Object)
+                    s.VideoPath = GetString(vd, "path");
+
+                if (root.TryGetProperty("autostart", out var au))
+                    s.Autostart = au.ValueKind != JsonValueKind.False;
             }
-            if (root.TryGetProperty("cropX", out var cx)) s.CropX = cx.GetInt32();
-            if (root.TryGetProperty("cropY", out var cy)) s.CropY = cy.GetInt32();
-            if (root.TryGetProperty("cropW", out var cw)) s.CropW = cw.GetInt32();
-            if (root.TryGetProperty("cropH", out var ch)) s.CropH = ch.GetInt32();
-            if (root.TryGetProperty("cropKeepAspect", out var ka) && ka.ValueKind == JsonValueKind.True) s.CropKeepAspect = true;
-            // Back-compat: absent/unknown mediaMode -> Static, absent mediaPath -> "".
-            if (root.TryGetProperty("mediaMode", out var mm) && mm.ValueKind == JsonValueKind.String)
+            else
             {
-                var media = mm.GetString();
-                s.MediaMode = string.Equals(media, "video", StringComparison.OrdinalIgnoreCase)
-                    ? MediaMode.Video
-                    : MediaMode.Static;
+                // Legacy flat format - same migration rules as ProducerCore:
+                // imagePath -> static.path, scaleMode/crop* -> static section,
+                // mediaPath -> video.path, mediaMode=="video" -> source.type=video.
+                var mediaMode = GetString(root, "mediaMode");
+                var isVideo = string.Equals(mediaMode, "video", StringComparison.OrdinalIgnoreCase);
+                s.SourceType = isVideo ? SourceType.Video : SourceType.Static;
+                s.StaticPath = GetString(root, "imagePath");
+                if (string.IsNullOrEmpty(s.StaticPath) && !isVideo)
+                    s.StaticPath = GetString(root, "mediaPath");
+                s.VideoPath = GetString(root, "mediaPath");
+                s.ScaleMode = ParseScaleMode(GetString(root, "scaleMode"));
+                s.CropX = GetInt(root, "cropX");
+                s.CropY = GetInt(root, "cropY");
+                s.CropW = GetInt(root, "cropW");
+                s.CropH = GetInt(root, "cropH");
+                s.CropKeepAspect = GetBool(root, "cropKeepAspect");
+                if (root.TryGetProperty("autostart", out var au))
+                    s.Autostart = au.ValueKind != JsonValueKind.False;
             }
-            if (root.TryGetProperty("mediaPath", out var mp) && mp.ValueKind == JsonValueKind.String)
-                s.MediaPath = mp.GetString() ?? "";
+
             return s;
         }
         catch
@@ -93,42 +139,58 @@ public sealed class Settings
         }
     }
 
-    // Writer intentionally mirrors the C++ reader: ASCII keys, forward-slash-free JSON
-    // is produced by JsonSerializer; the C++ side unescapes \\ and \".
+    // Writes ONLY the new schema, UTF-8 without BOM (see SerializerOptions).
     public void Save(string? filePath = null)
     {
-        // Static mode mirrors EffectiveImagePath (StaticProducer.cpp): mediaPath is
-        // the source, so imagePath is kept in sync - an old StaticProducer that only
-        // reads imagePath still picks the same file. In video mode imagePath is left
-        // exactly as loaded (StaticProducer falls back to it while mediaMode == video).
-        var imagePath = ImagePath;
-        if (MediaMode == MediaMode.Static && !string.IsNullOrEmpty(MediaPath))
-            imagePath = MediaPath;
-
         var payload = new Dictionary<string, object>
         {
-            ["imagePath"] = imagePath,
-            ["mediaMode"] = MediaMode == MediaMode.Video ? "video" : "static",
-            ["mediaPath"] = MediaPath,
-            ["scaleMode"] = ScaleMode switch
+            ["source"] = new Dictionary<string, object>
             {
-                ScaleMode.Cover => "cover",
-                ScaleMode.Crop => "crop",
-                _ => "fit",
+                ["type"] = SourceType == SourceType.Video ? "video" : "static",
             },
-            ["cropX"] = CropX,
-            ["cropY"] = CropY,
-            ["cropW"] = CropW,
-            ["cropH"] = CropH,
-            ["cropKeepAspect"] = CropKeepAspect,
+            ["static"] = new Dictionary<string, object>
+            {
+                ["path"] = StaticPath,
+                ["scaleMode"] = ScaleMode switch
+                {
+                    ScaleMode.Cover => "cover",
+                    ScaleMode.Crop => "crop",
+                    _ => "fit",
+                },
+                ["cropX"] = CropX,
+                ["cropY"] = CropY,
+                ["cropW"] = CropW,
+                ["cropH"] = CropH,
+                ["cropKeepAspect"] = CropKeepAspect,
+            },
+            ["video"] = new Dictionary<string, object>
+            {
+                ["path"] = VideoPath,
+            },
+            ["autostart"] = Autostart,
         };
 
         var path = filePath ?? FilePath;
         var dir = Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-        File.WriteAllText(path, JsonSerializer.Serialize(payload, new JsonSerializerOptions
-        {
-            WriteIndented = true,
-        }));
+        File.WriteAllText(path, JsonSerializer.Serialize(payload, SerializerOptions), new UTF8Encoding(false));
     }
+
+    private static string GetString(JsonElement obj, string name) =>
+        obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String
+            ? v.GetString() ?? ""
+            : "";
+
+    private static int GetInt(JsonElement obj, string name) =>
+        obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var n)
+            ? n
+            : 0;
+
+    private static bool GetBool(JsonElement obj, string name) =>
+        obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.True;
+
+    private static ScaleMode ParseScaleMode(string mode) =>
+        string.Equals(mode, "cover", StringComparison.OrdinalIgnoreCase) ? ScaleMode.Cover
+        : string.Equals(mode, "crop", StringComparison.OrdinalIgnoreCase) ? ScaleMode.Crop
+        : ScaleMode.Fit;
 }

@@ -42,6 +42,15 @@ public sealed class MainForm : Form
     private string? _previewExe;
     private bool _updatingCropFields;
 
+    // Host (VCamVideoStreamProducer.exe): start/stop button + status indicator.
+    private readonly Button _hostButton = new();
+    private readonly Label _hostStatusLabel = new();
+    private readonly System.Windows.Forms.Timer _hostTimer = new();
+    private string? _hostExe;
+
+    private const string HostMutexName = "VCamVideoStreamProducer.Instance";
+    private const string HostStopEventName = "VCamVideoStreamProducer.Stop";
+
     private static readonly string[] ModeNames = { "fit — вписать с пололосами", "cover — заполнить (обрезка)", "crop — обрезка выбранной области" };
     private static readonly string[] MediaNames = { "статичная картинка", "видеоролик" };
 
@@ -112,6 +121,16 @@ public sealed class MainForm : Form
         _saveButton.Name = "saveButton";
         _saveButton.Click += OnSaveClicked;
 
+        _hostStatusLabel.Location = new Point(430, 538);
+        _hostStatusLabel.Size = new Size(244, 22);
+        _hostStatusLabel.ForeColor = Color.DimGray;
+        _hostStatusLabel.Name = "hostStatusLabel";
+
+        _hostButton.Location = new Point(680, 532);
+        _hostButton.Size = new Size(188, 30);
+        _hostButton.Name = "hostButton";
+        _hostButton.Click += OnHostButtonClicked;
+
         int fieldY = 566;
         PlaceCropField(_cropXLabel, _cropX, 12, fieldY, "X");
         PlaceCropField(_cropYLabel, _cropY, 140, fieldY, "Y");
@@ -128,13 +147,18 @@ public sealed class MainForm : Form
         _hintLabel.Location = new Point(12, 602);
         _hintLabel.Size = new Size(856, 50);
         _hintLabel.ForeColor = Color.DimGray;
-        _hintLabel.Text = $"Настройки: {Settings.FilePath} — StaticProducer подхватит их автоматически (~0.7 с).";
+        _hintLabel.Text = $"Настройки: {Settings.FilePath} — хост VCam подхватит их автоматически (~1 с).";
 
         Controls.AddRange(new Control[] { _preview, _cropView, _videoPanel, _pathLabel, _mediaLabel, _mediaCombo,
-            _mode, _openButton, _fullSizeButton, _saveButton,
+            _mode, _openButton, _fullSizeButton, _saveButton, _hostStatusLabel, _hostButton,
             _cropXLabel, _cropX, _cropYLabel, _cropY, _cropWLabel, _cropW, _cropHLabel, _cropH, _cropKeepAspect, _hintLabel });
 
         _previewExe = FindPreviewExe();
+        _hostExe = FindHostExe();
+        _hostTimer.Interval = 1000;
+        _hostTimer.Tick += (_, _) => UpdateHostStatus();
+        _hostTimer.Start();
+        UpdateHostStatus();
 
         _mode.SelectedIndexChanged += (_, _) => UpdateLayout();
         _mediaCombo.SelectedIndexChanged += (_, _) => UpdateLayout();
@@ -166,9 +190,9 @@ public sealed class MainForm : Form
         _videoInfoLabel.Size = new Size(820, 78);
         _videoInfoLabel.ForeColor = Color.DimGray;
         _videoInfoLabel.Text =
-            "Ролик декодируется VideoProducer.exe и всегда масштабируется letterbox в 1280×720.\r\n" +
-            "Настройки scaleMode и crop для видео не применяются.\r\n" +
-            "Смена файла подхватывается автоматически (~0.7 с), без перезапуска.";
+            "Ролик декодируется хостом VCamVideoStreamProducer.exe и всегда масштабируется letterbox в 1280×720.\r\n" +
+            "Настройки scaleMode и crop для видео не применяются (см. секцию static).\r\n" +
+            "Смена файла подхватывается автоматически (~1 с), без перезапуска.";
 
         _previewButton.Location = new Point(16, 176);
         _previewButton.Size = new Size(380, 40);
@@ -210,6 +234,102 @@ public sealed class MainForm : Form
         return null;
     }
 
+    // VCamVideoStreamProducer.exe lookup: (a) next to VCamSettingsUi.exe,
+    // (b) <walked-up root>\build\x64\Release.
+    private static string? FindHostExe()
+    {
+        var baseDir = AppContext.BaseDirectory;
+        var direct = Path.Combine(baseDir, "VCamVideoStreamProducer.exe");
+        if (File.Exists(direct)) return direct;
+        var dir = new DirectoryInfo(baseDir);
+        for (var i = 0; i < 10 && dir != null; i++, dir = dir.Parent)
+        {
+            var candidate = Path.Combine(dir.FullName, "build", "x64", "Release", "VCamVideoStreamProducer.exe");
+            if (File.Exists(candidate)) return candidate;
+        }
+        return null;
+    }
+
+    // The host owns the named mutex (WaitOne(0) times out while it runs); an
+    // abandoned/free mutex or a missing one means "not running".
+    private static bool IsHostRunning()
+    {
+        try
+        {
+            using var mutex = Mutex.OpenExisting(HostMutexName);
+            if (mutex.WaitOne(0))
+            {
+                mutex.ReleaseMutex();
+                return false;
+            }
+            return true; // WAIT_TIMEOUT: owned by the host
+        }
+        catch (WaitHandleCannotBeOpenedException)
+        {
+            return false;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    private void UpdateHostStatus()
+    {
+        var running = IsHostRunning();
+        _hostStatusLabel.Text = running ? "Хост: запущен" : "Хост: не запущен";
+        _hostStatusLabel.ForeColor = running ? Color.ForestGreen : Color.DimGray;
+        _hostButton.Text = running ? "Остановить хост" : "Запустить хост";
+    }
+
+    private void OnHostButtonClicked(object? sender, EventArgs e)
+    {
+        if (IsHostRunning())
+        {
+            try
+            {
+                using var stop = EventWaitHandle.OpenExisting(HostStopEventName);
+                stop.Set(); // SetEvent, не Kill: хост закрывает writer сам
+                _hostStatusLabel.Text = "Хост: останавливается…";
+            }
+            catch (WaitHandleCannotBeOpenedException)
+            {
+                MessageBox.Show(this, "Событие остановки хоста не найдено — хост уже завершён.", Text,
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                UpdateHostStatus();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, $"Не удалось остановить хост:\n{ex.Message}", Text,
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            return;
+        }
+
+        if (_hostExe is null || !File.Exists(_hostExe))
+        {
+            MessageBox.Show(this,
+                "VCamVideoStreamProducer.exe не найден: искал рядом с VCamSettingsUi.exe и в " +
+                "<корень репозитория>\\build\\x64\\Release.",
+                Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        try
+        {
+            Process.Start(new ProcessStartInfo(_hostExe)
+            {
+                WorkingDirectory = Path.GetDirectoryName(_hostExe) ?? AppContext.BaseDirectory,
+            });
+            _hostStatusLabel.Text = "Хост: запускается…";
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Не удалось запустить хост:\n{ex.Message}", Text,
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
     private void LoadCurrentSettings()
     {
         var s = Settings.Load();
@@ -220,18 +340,14 @@ public sealed class MainForm : Form
             ScaleMode.Crop => 2,
             _ => 0,
         };
-        _videoPath = s.MediaPath; // set before the combo: switching fires UpdateLayout
-        _mediaCombo.SelectedIndex = s.MediaMode == MediaMode.Video ? 1 : 0;
+        _videoPath = s.VideoPath; // set before the combo: switching fires UpdateLayout
+        _mediaCombo.SelectedIndex = s.SourceType == SourceType.Video ? 1 : 0;
 
-        // Mirror EffectiveImagePath (StaticProducer.cpp): mediaPath wins when the
-        // mode is not "video"; the image is loaded in both modes so switching back
-        // to "статичная картинка" keeps working.
-        var imagePath = s.MediaMode != MediaMode.Video && !string.IsNullOrEmpty(s.MediaPath)
-            ? s.MediaPath
-            : s.ImagePath;
-        if (!string.IsNullOrEmpty(imagePath) && File.Exists(imagePath))
+        // The static panel edits the "static" section; it is loaded in both modes
+        // so switching back to "статичная картинка" keeps working.
+        if (!string.IsNullOrEmpty(s.StaticPath) && File.Exists(s.StaticPath))
         {
-            SetSource(imagePath, new Rectangle(s.CropX, s.CropY, s.CropW, s.CropH));
+            SetSource(s.StaticPath, new Rectangle(s.CropX, s.CropY, s.CropW, s.CropH));
         }
     }
 
@@ -242,12 +358,12 @@ public sealed class MainForm : Form
         _ => ScaleMode.Fit,
     };
 
-    private MediaMode CurrentMediaMode => _mediaCombo.SelectedIndex == 1 ? MediaMode.Video : MediaMode.Static;
+    private SourceType CurrentSourceType => _mediaCombo.SelectedIndex == 1 ? SourceType.Video : SourceType.Static;
 
     // Single source of truth for control visibility (media mode x scale mode).
     private void UpdateLayout()
     {
-        bool video = CurrentMediaMode == MediaMode.Video;
+        bool video = CurrentSourceType == SourceType.Video;
         bool crop = !video && CurrentMode == ScaleMode.Crop;
 
         _videoPanel.Visible = video;
@@ -297,7 +413,7 @@ public sealed class MainForm : Form
 
     private void OnOpenClicked(object? sender, EventArgs e)
     {
-        if (CurrentMediaMode == MediaMode.Video)
+        if (CurrentSourceType == SourceType.Video)
         {
             using var dlg = new OpenFileDialog
             {
@@ -439,7 +555,11 @@ public sealed class MainForm : Form
 
     private void OnSaveClicked(object? sender, EventArgs e)
     {
-        if (CurrentMediaMode == MediaMode.Video)
+        // Start from what is on disk: autostart and the section that is not being
+        // edited right now stay untouched; "Сохранить" writes both sections + type.
+        var settings = Settings.Load();
+
+        if (CurrentSourceType == SourceType.Video)
         {
             if (string.IsNullOrEmpty(_videoPath))
             {
@@ -454,15 +574,10 @@ public sealed class MainForm : Form
                 return;
             }
 
-            // Video mode must not disturb the static fields: start from what is on
-            // disk (imagePath/scaleMode/crop stay byte-identical) and only update
-            // mediaMode/mediaPath. StaticProducer keeps working off imagePath while
-            // mediaMode == "video" (EffectiveImagePath fallback).
-            var videoSettings = Settings.Load();
-            videoSettings.MediaMode = MediaMode.Video;
-            videoSettings.MediaPath = _videoPath;
-            TrySave(videoSettings,
-                $"Сохранено: {Settings.FilePath} — VideoProducer подхватит mediaPath автоматически (~0.7 с).");
+            settings.VideoPath = _videoPath;
+            settings.SourceType = SourceType.Video;
+            TrySave(settings,
+                $"Сохранено: {Settings.FilePath} — хост подхватит source.type/video.path (~1 с).");
             return;
         }
 
@@ -473,13 +588,8 @@ public sealed class MainForm : Form
             return;
         }
 
-        var settings = new Settings
-        {
-            ImagePath = _sourcePath,
-            ScaleMode = CurrentMode,
-            MediaMode = MediaMode.Static,
-            MediaPath = _sourcePath, // Save() duplicates it into imagePath
-        };
+        settings.StaticPath = _sourcePath;
+        settings.ScaleMode = CurrentMode;
         if (CurrentMode == ScaleMode.Crop && _sourceImage != null)
         {
             var sel = PreviewRenderer.ClampCrop(_sourceImage, _cropView.Selection);
@@ -489,9 +599,10 @@ public sealed class MainForm : Form
             settings.CropH = sel.Height;
             settings.CropKeepAspect = _cropKeepAspect.Checked;
         }
+        settings.SourceType = SourceType.Static;
 
         TrySave(settings,
-            $"Сохранено: {Settings.FilePath} — StaticProducer применит автоматически (~0.7 с).");
+            $"Сохранено: {Settings.FilePath} — хост подхватит source.type/static (~1 с).");
     }
 
     private void TrySave(Settings settings, string okText)
