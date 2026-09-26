@@ -42,6 +42,7 @@ struct PreviewState {
     // seqlock / liveness
     LONGLONG lastSeq = 0;
     UINT64 lastSeqChange = 0;
+    UINT64 nextReconnectAt = 0;
     bool haveFrame = false;
     bool alive = false;
 
@@ -94,8 +95,8 @@ void Disconnect()
     g.cbMapped = 0;
     g.connected = false;
     g.alive = false;
-    g.lastSeq = 0;
-    g.lastSeqChange = 0;
+    // Keep lastSeq/lastSeqChange: reconnect must see that the old frame is stale
+    // instead of treating it as fresh (that caused flicker after provider stop).
 }
 
 bool ValidateHeader(const vcam::VCamSectionHeader* h)
@@ -161,8 +162,10 @@ bool TryConnect(UINT64 now)
     g.allocBytes = frameBytes;
     g.connected = true;
     g.haveFrame = false;
-    g.lastSeq = pHeader->seq;
-    g.lastSeqChange = now;
+    LONGLONG seqNow = pHeader->seq;
+    if (seqNow != g.lastSeq) g.lastSeqChange = now;  // only a NEW frame refreshes liveness
+    g.lastSeq = seqNow;
+    g.nextReconnectAt = now + kReconnectAfterMs;
     return true;
 }
 
@@ -256,9 +259,11 @@ void Tick(HWND hwnd)
                 g.lastSeqChange = now;
             }
             bool alive = g.haveFrame && (now - g.lastSeqChange) <= kSignalTimeoutMs;
-            if (!alive && (now - g.lastSeqChange) >= kReconnectAfterMs) {
+            if (!alive && now >= g.nextReconnectAt) {
                 // Provider is gone; our handle keeps the dead mapping alive.
                 // Drop it so the retry below can open a fresh section.
+                // Rate-limited by nextReconnectAt so a stale frame is not
+                // re-announced as fresh on every retry (flicker on stop).
                 Disconnect();
             } else {
                 g.alive = alive;

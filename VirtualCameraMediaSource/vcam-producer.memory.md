@@ -48,8 +48,10 @@ struct IFrameSource {
 - [x] **Subagent 3 — VCamProducerCli.exe + e2e + README** (DONE, см. `vcam-producer-cli.memory.md`): `run [--type/--path/--settings]` (Ctrl+C → exit 0), `status`; e2e_test.ps1 переписан на CLI (backup→фаза A→фаза B hot-switch→restore SHA256) = exit 0; README обновлён. **Важный фикс**: баг `ProducerCore/Settings.cpp` — FindObjectRange матчил `"video"` по значению (`"type":"video"`) → video.path читался из секции static; фикс FindKeyPos (после ключа обязатен `:`), задевает и tray-хост.
 - [x] **Контрольный smoke (основной, после sub3)**: хост 5816 + новая схема: type=video → движущиеся кадры (nonBlack=690/900, differ=True); type=static → identical (nonBlack=342/900). settings восстановлен байт-в-байт (legacy). Стек поднят: хост 5816, VCamPreview 23728, UI 28864.
 - [x] **Subagent 4 — Preview: GDI+ масштабирование (муар) + single-instance Preview/UI** (DONE, 1 раунд, см. `vcam-producer-previewfix.memory.md`): PaintFrame через GDI+ HighQualityBicubic (MAE 0.023 к эталону, vs nearest 7.174), GDI-утечек нет, ~11 мс/кадр (качество > скорость); мьютексы `VCamPreview.Instance` / `VCamSettingsUi.Instance` (второй запуск exit 0, 1 процесс/окно, разворачивает существующее); UI round-trip 25/25. **Питфолл**: PS P/Invoke `FindWindowW(cls,$null)` → marshals "" (не NULL) — в C++ nullptr работает.
-- [ ] Ручная проверка пользователем.
-- [ ] Коммит (спросить) — git status: ~13 новых/изменённых (новые проекты, UI, e2e, README, .sln, memory-файлы).
+- [x] Ручная проверка пользователем — «работает, изображение исправлено».
+- [x] **Дефект №3 — мигание Preview после остановки хоста** (фикс в основном чате): причина — `Disconnect()` обнулял `lastSeqChange`, `Connect()` ставил его заново → старый кадр снова «свежий» → цикл статика→NO SIGNAL каждые ~3 с. Фикс: не обнулять lastSeq/lastSeqChange в Disconnect, обновлять lastSeqChange при reconnect только если seq реально изменился, реконнект по `nextReconnectAt` (rate-limit). Живая проверка: 48.7 → stop → 1.5 с (timeout) → 15.5 стабильно 11 с (реконнекты не мигают) → рестарт хоста → 48.7.
+- [ ] **Дефект №4 — кракозябры кириллицы в заголовке Preview** (UTF-8 без BOM, MSVC без /utf-8 читает CP1251): единый Directory.Build.targets с /utf-8 для всех vcxproj, убрать локальные дубли из 2 vcxproj; проверить CLI/Preview глазами → коммит 2.
+- [x] Коммит — `1420d46` (4 файла, +192/−15), дерево чистое.
 
 ## Итог/риски
 - Старые exe (StaticProducer/VideoProducer) не тронуты (legacy/отладочные).
