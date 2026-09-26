@@ -1,10 +1,13 @@
 #include <windows.h>
 #include <windowsx.h>
+#include <gdiplus.h>
 #include <cstdio>
 #include <cwchar>
 #include <cstring>
 #include <new>
 #include "../Common/SharedMemoryContract.h"
+
+#pragma comment(lib, "gdiplus.lib")
 
 namespace {
 
@@ -19,6 +22,8 @@ constexpr UINT32 kMaxDimension = 4096;
 constexpr UINT64 kMaxFrameBytes = 64ull * 1024 * 1024;
 constexpr int kResizeMargin = 8;
 constexpr const wchar_t* kWindowTitle = L"VCam Preview";
+constexpr const wchar_t* kWndClass = L"VCamPreviewClass";
+constexpr const wchar_t* kInstanceMutexName = L"VCamPreview.Instance";
 
 struct PreviewState {
     // shared memory reader
@@ -53,6 +58,22 @@ struct PreviewState {
 };
 
 PreviewState g;
+
+ULONG_PTR gGdiplusToken = 0;
+
+bool InitGdiplus()
+{
+    Gdiplus::GdiplusStartupInput input;
+    return Gdiplus::GdiplusStartup(&gGdiplusToken, &input, nullptr) == Gdiplus::Ok;
+}
+
+void ShutdownGdiplus()
+{
+    if (gGdiplusToken) {
+        Gdiplus::GdiplusShutdown(gGdiplusToken);
+        gGdiplusToken = 0;
+    }
+}
 
 UINT64 NowMs() { return GetTickCount64(); }
 
@@ -289,14 +310,6 @@ void EnsureMemBuffer(HDC hdc, int w, int h)
 
 void PaintFrame(HDC memDC, int cw, int ch)
 {
-    BITMAPINFO bmi = {};
-    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bmi.bmiHeader.biWidth = (LONG)g.frameW;
-    bmi.bmiHeader.biHeight = -(LONG)g.frameH; // top-down BGRX
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 32;
-    bmi.bmiHeader.biCompression = BI_RGB;
-
     double scale = (double)cw / g.frameW;
     if ((double)ch / g.frameH < scale) scale = (double)ch / g.frameH;
     int dw = (int)(g.frameW * scale);
@@ -306,8 +319,20 @@ void PaintFrame(HDC memDC, int cw, int ch)
     int dx = (cw - dw) / 2;
     int dy = (ch - dh) / 2;
 
-    StretchDIBits(memDC, dx, dy, dw, dh, 0, 0, (int)g.frameW, (int)g.frameH,
-                  g.pFrame, &bmi, DIB_RGB_COLORS, SRCCOPY);
+    // g.pFrame is a top-down tightly packed BGRX staging buffer, filled by
+    // ReadFrame() on this same UI thread, so it is stable for the draw call.
+    Gdiplus::Bitmap src((INT)g.frameW, (INT)g.frameH, (INT)(g.frameW * 4),
+                        PixelFormat32bppRGB, g.pFrame);
+    if (src.GetLastStatus() != Gdiplus::Ok) return;
+
+    Gdiplus::Graphics gfx(memDC);
+    if (gfx.GetLastStatus() != Gdiplus::Ok) return;
+    gfx.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+    gfx.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+    gfx.SetCompositingQuality(Gdiplus::CompositingQualityHighQuality);
+    gfx.SetCompositingMode(Gdiplus::CompositingModeSourceCopy);
+    gfx.DrawImage(&src, Gdiplus::Rect(dx, dy, dw, dh),
+                  0, 0, (INT)g.frameW, (INT)g.frameH, Gdiplus::UnitPixel);
 }
 
 void PaintNoSignal(HDC memDC, int cw, int ch)
@@ -443,16 +468,61 @@ void PlaceTopRight(HWND hwnd)
 
 } // namespace
 
+namespace {
+
+void ActivateExistingInstance()
+{
+    HWND existing = FindWindowW(kWndClass, nullptr);
+    if (!existing) return;
+
+    const DWORD curTid = GetCurrentThreadId();
+    HWND fg = GetForegroundWindow();
+    DWORD fgTid = fg ? GetWindowThreadProcessId(fg, nullptr) : 0;
+    const bool attached = (fgTid != 0 && fgTid != curTid && AttachThreadInput(curTid, fgTid, TRUE));
+
+    if (IsIconic(existing)) SendNotifyMessageW(existing, WM_SYSCOMMAND, SC_RESTORE, 0);
+    ShowWindow(existing, SW_RESTORE);
+    BringWindowToTop(existing);
+    SetForegroundWindow(existing);
+
+    if (attached) AttachThreadInput(curTid, fgTid, FALSE);
+
+    if (GetForegroundWindow() != existing) {
+        SetWindowPos(existing, HWND_TOPMOST, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+        SetForegroundWindow(existing);
+    }
+}
+
+} // namespace
+
 int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow)
 {
+    HANDLE hInstanceMutex = CreateMutexW(nullptr, TRUE, kInstanceMutexName);
+    if (!hInstanceMutex) return 1;
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        ActivateExistingInstance();
+        CloseHandle(hInstanceMutex);
+        return 0;
+    }
+
+    if (!InitGdiplus()) {
+        CloseHandle(hInstanceMutex);
+        return 1;
+    }
+
     WNDCLASSEXW wc = { sizeof(wc) };
     wc.style = CS_HREDRAW | CS_VREDRAW;
     wc.lpfnWndProc = WndProc;
     wc.hInstance = hInst;
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
-    wc.lpszClassName = L"VCamPreviewClass";
-    if (!RegisterClassExW(&wc)) return 1;
+    wc.lpszClassName = kWndClass;
+    if (!RegisterClassExW(&wc)) {
+        ShutdownGdiplus();
+        CloseHandle(hInstanceMutex);
+        return 1;
+    }
 
     DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME;
     RECT rc = { 0, 0, (LONG)kDefaultWidth, (LONG)kDefaultHeight };
@@ -461,7 +531,12 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow)
     HWND hwnd = CreateWindowExW(WS_EX_TOPMOST, wc.lpszClassName, kWindowTitle, style,
                                 CW_USEDEFAULT, CW_USEDEFAULT, rc.right - rc.left, rc.bottom - rc.top,
                                 nullptr, nullptr, hInst, nullptr);
-    if (!hwnd) return 1;
+    if (!hwnd) {
+        ShutdownGdiplus();
+        ReleaseMutex(hInstanceMutex);
+        CloseHandle(hInstanceMutex);
+        return 1;
+    }
 
     NONCLIENTMETRICSW ncm = { sizeof(ncm) };
     if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0)) {
@@ -483,5 +558,9 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow)
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
+
+    ShutdownGdiplus();
+    ReleaseMutex(hInstanceMutex);
+    CloseHandle(hInstanceMutex);
     return (int)msg.wParam;
 }
