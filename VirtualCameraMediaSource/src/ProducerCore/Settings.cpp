@@ -228,6 +228,11 @@ void ParseNewSchema(const std::string& json, Settings& s)
     if (FindObjectRange(json, "video", b, e)) {
         JsonGetString(json.substr(b, e - b), "path", s.video.path);
     }
+    if (FindObjectRange(json, "camera", b, e)) {
+        std::string sec = json.substr(b, e - b);
+        JsonGetString(sec, "id", s.cam.id);
+        JsonGetString(sec, "name", s.cam.name);
+    }
     s.autostart = JsonGetBool(json, "autostart", true);
 }
 
@@ -273,7 +278,8 @@ bool Settings::Load(const std::wstring& path)
     size_t b = 0, e = 0;
     bool isNew = FindObjectRange(json, "source", b, e) ||
                  FindObjectRange(json, "static", b, e) ||
-                 FindObjectRange(json, "video", b, e);
+                 FindObjectRange(json, "video", b, e) ||
+                 FindObjectRange(json, "camera", b, e);
     if (isNew) ParseNewSchema(json, *this);
     else ParseLegacySchema(json, *this);
 
@@ -296,6 +302,8 @@ std::string Settings::Serialize() const
            ", \"cropH\": " + std::to_string(st.cropH) +
            ", \"cropKeepAspect\": " + (st.cropKeepAspect ? "true" : "false") + " },\n";
     out += "  \"video\": { \"path\": \"" + EscapeJson(video.path) + "\" },\n";
+    out += "  \"camera\": { \"id\": \"" + EscapeJson(cam.id) +
+           "\", \"name\": \"" + EscapeJson(cam.name) + "\" },\n";
     out += "  \"autostart\": ";
     out += autostart ? "true" : "false";
     out += "\n";
@@ -319,6 +327,9 @@ SourceConfig ToSourceConfig(const Settings& s, const std::wstring& type)
     if (type == L"video") {
         cfg.path = s.video.path;
         cfg.scaleMode = L"fit";
+    } else if (type == L"camera") {
+        cfg.path = s.cam.id;
+        cfg.camName = s.cam.name; // scaleMode/crop не задаём — для camera не имеют смысла
     } else if (type == L"static") {
         cfg.path = s.st.path;
         cfg.scaleMode = s.st.scaleMode;

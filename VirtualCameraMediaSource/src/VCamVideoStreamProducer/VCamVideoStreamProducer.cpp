@@ -230,10 +230,19 @@ void ToggleAutostart()
 
 enum class Phase { Switch, Active, Fallback };
 
+// Метка источника для статуса/логов: для camera — имя устройства (symlink
+// слишком длинный для трей-меню), для остальных — путь.
+std::wstring TargetLabel(const SourceConfig& cfg)
+{
+    if (!cfg.camName.empty()) return cfg.camName;
+    if (cfg.path.empty()) return cfg.type == L"camera" ? std::wstring(L"(камера не выбрана)")
+                                                       : std::wstring(L"(путь не задан)");
+    return cfg.path;
+}
+
 std::wstring ActiveStatus(const SourceConfig& cfg)
 {
-    return L"Источник: " + cfg.type + L" — " +
-           (cfg.path.empty() ? std::wstring(L"(путь не задан)") : cfg.path);
+    return L"Источник: " + cfg.type + L" — " + TargetLabel(cfg);
 }
 
 std::wstring FallbackStatus(const std::wstring& reason)
@@ -284,10 +293,11 @@ void SetActiveStatus(Machine& m)
 
 void BeginSwitch(Machine& m, const SourceConfig& want)
 {
+    std::wstring wantLabel = TargetLabel(want);
     Log(L"[host] switch: type=%s path=%s (was type=%s path=%s)",
-        want.type.c_str(), want.path.c_str(),
+        want.type.c_str(), wantLabel.c_str(),
         m.hasTarget ? m.target.type.c_str() : L"-",
-        m.hasTarget ? m.target.path.c_str() : L"-");
+        m.hasTarget ? TargetLabel(m.target).c_str() : L"-");
     CloseSource(m);
     m.target = want;
     m.hasTarget = true;
@@ -316,7 +326,7 @@ DWORD Step(Machine& m)
             if (cand->Open(m.target, err)) {
                 m.src = std::move(cand);
                 Log(L"[host] source opened: type=%s path=%s",
-                    m.target.type.c_str(), m.target.path.c_str());
+                    m.target.type.c_str(), TargetLabel(m.target).c_str());
             } else {
                 m.nextAttempt = now + kOpenRetryMs;
                 Log(L"[host] open failed: %s", err.c_str());
@@ -336,7 +346,7 @@ DWORD Step(Machine& m)
             m.phase = Phase::Active;
             SetActiveStatus(m);
             Log(L"[host] active: type=%s path=%s%s",
-                m.target.type.c_str(), m.target.path.c_str(),
+                m.target.type.c_str(), TargetLabel(m.target).c_str(),
                 written ? L"" : L" (write failed)");
             return 0;
         }
@@ -375,7 +385,7 @@ DWORD Step(Machine& m)
                         m.phase = Phase::Active;
                         SetActiveStatus(m);
                         Log(L"[host] signal restored: type=%s path=%s",
-                            m.target.type.c_str(), m.target.path.c_str());
+                            m.target.type.c_str(), TargetLabel(m.target).c_str());
                         return 0;
                     }
                 } else {

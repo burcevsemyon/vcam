@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "CameraDevices.h"
 #include "FrameWriter.h"
 #include "ProducerApi.h"
 #include "Settings.h"
@@ -27,7 +28,8 @@ HANDLE g_dirty = nullptr;
 HANDLE g_worker = nullptr;
 SettingsWatcher g_watcher;
 std::wstring g_fixType; // --type: фиксирует тип на весь запуск
-std::wstring g_fixPath; // --path: фиксирует путь на весь запуск
+std::wstring g_fixPath; // --path/--device: фиксирует путь (для camera — id) на весь запуск
+bool g_fixDevice = false; // --device: id камеры + camName очищается (не подмешиваем имя из settings)
 
 // Вывод без CRT-локалей: консоль -> WriteConsoleW, файл/пайп -> UTF-8 WriteFile.
 void Emit(bool err, const std::wstring& line)
@@ -75,6 +77,14 @@ void LogErr(const wchar_t* fmt, ...)
     va_end(ap);
 }
 
+// Метка источника для статуса/логов: для camera — имя, если задано (короткое),
+// иначе path (symlink длинный и засоряет консоль).
+std::wstring TargetLabel(const SourceConfig& c)
+{
+    if (c.type == L"camera" && !c.camName.empty()) return c.camName;
+    return c.path;
+}
+
 // 1 = мьютекс хоста занят (хост запущен), 0 = не запущен/не создан.
 int HostRunning()
 {
@@ -105,11 +115,11 @@ bool ReadSmallFile(const std::wstring& path, std::string& out)
     return ok && read == out.size();
 }
 
-// Новая схема = есть ключ-секция source/static/video (значение-строка "static" в
-// legacy-файле не считается ключом: после него нет ':').
+// Новая схема = есть ключ-секция source/static/video/camera (значение-строка
+// "video" в legacy-файле не считается ключом: после него нет ':').
 bool LooksNewSchema(const std::string& raw)
 {
-    const char* keys[] = { "\"source\"", "\"static\"", "\"video\"" };
+    const char* keys[] = { "\"source\"", "\"static\"", "\"video\"", "\"camera\"" };
     for (const char* k : keys) {
         size_t p = raw.find(k);
         while (p != std::string::npos) {
@@ -190,10 +200,11 @@ void EnterFallback(Machine& m, const std::wstring& reason)
 
 void BeginSwitch(Machine& m, const SourceConfig& want)
 {
+    const std::wstring wantLabel = TargetLabel(want);
+    const std::wstring wasLabel = m.hasTarget ? TargetLabel(m.target) : L"-";
     Log(L"[cli] switch: type=%s path=%s (was type=%s path=%s)",
-        want.type.c_str(), want.path.c_str(),
-        m.hasTarget ? m.target.type.c_str() : L"-",
-        m.hasTarget ? m.target.path.c_str() : L"-");
+        want.type.c_str(), wantLabel.c_str(),
+        m.hasTarget ? m.target.type.c_str() : L"-", wasLabel.c_str());
     CloseSource(m);
     m.target = want;
     m.hasTarget = true;
@@ -223,7 +234,7 @@ DWORD Step(Machine& m)
             if (cand->Open(m.target, err)) {
                 m.src = std::move(cand);
                 Log(L"[cli] source opened: type=%s path=%s",
-                    m.target.type.c_str(), m.target.path.c_str());
+                    m.target.type.c_str(), TargetLabel(m.target).c_str());
             } else {
                 m.nextAttempt = now + kOpenRetryMs;
                 Log(L"[cli] open failed: %s", err.c_str());
@@ -242,7 +253,7 @@ DWORD Step(Machine& m)
                            m.writer.WriteFrame(m.buf.data(), (int)vcam::VCamStride);
             m.phase = Phase::Active;
             Log(L"[cli] active: type=%s path=%s%s",
-                m.target.type.c_str(), m.target.path.c_str(),
+                m.target.type.c_str(), TargetLabel(m.target).c_str(),
                 written ? L"" : L" (write failed)");
             return 0;
         }
@@ -280,7 +291,7 @@ DWORD Step(Machine& m)
                             m.writer.WriteFrame(m.buf.data(), (int)vcam::VCamStride);
                         m.phase = Phase::Active;
                         Log(L"[cli] signal restored: type=%s path=%s",
-                            m.target.type.c_str(), m.target.path.c_str());
+                            m.target.type.c_str(), TargetLabel(m.target).c_str());
                         return 0;
                     }
                 } else {
@@ -301,6 +312,9 @@ SourceConfig ResolveTarget(const Settings& s)
 {
     SourceConfig want = ToSourceConfig(s, g_fixType.empty() ? s.sourceType : g_fixType);
     if (!g_fixPath.empty()) want.path = g_fixPath;
+    // --device: только id, имя из settings не подмешиваем — иначе несовпадающий id
+    // мог бы матчиться по имени чужой/устаревшей камеры и открыть не то устройство.
+    if (g_fixDevice) want.camName.clear();
     return want;
 }
 
@@ -361,7 +375,9 @@ void PrintHelp()
     Log(L"VCamProducerCli - console host for the VCam frame producer (debug/e2e).");
     Log(L"");
     Log(L"Usage:");
-    Log(L"  VCamProducerCli.exe run [--type static|video] [--path <file>] [--settings <path>]");
+    Log(L"  VCamProducerCli.exe run [--type static|video|camera] [--path <file>]");
+    Log(L"                           [--device <id>] [--settings <path>]");
+    Log(L"  VCamProducerCli.exe list-devices");
     Log(L"  VCamProducerCli.exe status [--settings <path>]");
     Log(L"  VCamProducerCli.exe            (no arguments - this help)");
     Log(L"");
@@ -370,19 +386,29 @@ void PrintHelp()
     Log(L"        hot-switch without restart (last good frame is flushed during the");
     Log(L"        switch); on source errors nothing is written -> camera fallback frame.");
     Log(L"        Logs go to stdout at 30 FPS pacing. Stop with Ctrl+C, Ctrl+Break or Esc.");
-    Log(L"  --type <static|video>  Fixes the source type for this run: source.type changes");
-    Log(L"                         in settings.json are ignored while running.");
+    Log(L"  --type <static|video|camera>  Fixes the source type for this run: source.type");
+    Log(L"                         changes in settings.json are ignored while running.");
     Log(L"  --path <file>          Fixes the source path for this run: path changes in");
     Log(L"                         settings.json are ignored while running.");
-    Log(L"  Omitted --type/--path keep following settings.json live (hot-switch works");
-    Log(L"  for them). All other parameters (scaleMode/crop*) always come from");
-    Log(L"  settings.json, even for a fixed type.");
+    Log(L"  --device <id>          Camera device for --type camera (required together");
+    Log(L"                         with --type camera): fixes SourceConfig.path = id and");
+    Log(L"                         clears camName, so only the exact device id matches");
+    Log(L"                         (the camera section of settings.json is ignored).");
+    Log(L"  Omitted --type/--path/--device keep following settings.json live");
+    Log(L"  (hot-switch works for them). All other parameters (scaleMode/crop*) always");
+    Log(L"  come from settings.json, even for a fixed type. --type camera without");
+    Log(L"  --device uses the settings camera section (empty section -> NO SIGNAL).");
     Log(L"  --settings <path>      Alternate settings file");
     Log(L"                         (default %%APPDATA%%\\VCam\\settings.json).");
     Log(L"");
-    Log(L"status  Print settings (path, schema, source.type, static/video sections,");
-    Log(L"        autostart), host state (VCamVideoStreamProducer.Instance mutex) and");
-    Log(L"        the shared memory writer section state.");
+    Log(L"list-devices  Enumerate camera devices. stdout: one device per line as");
+    Log(L"        \"<id>\\t<name>\" (UTF-8 - machine-readable, parse stdout only); the");
+    Log(L"        human-readable header/notes go to stderr. No devices -> no stdout");
+    Log(L"        rows, message on stderr, exit 0.");
+    Log(L"");
+    Log(L"status  Print settings (path, schema, source.type, static/video/camera");
+    Log(L"        sections, autostart), host state (VCamVideoStreamProducer.Instance");
+    Log(L"        mutex) and the shared memory writer section state.");
     Log(L"");
     Log(L"If VCamVideoStreamProducer.exe (tray host) is already running, `run` warns on");
     Log(L"stderr and continues - two producers writing the same shared memory is");
@@ -392,9 +418,11 @@ void PrintHelp()
 struct Options {
     bool run = false;
     bool status = false;
+    bool listDevices = false;
     bool help = false;
     std::wstring type;
     std::wstring path;
+    std::wstring device;
     std::wstring settings;
 };
 
@@ -404,18 +432,23 @@ bool ParseArgs(int argc, wchar_t* argv[], Options& o, std::wstring& err)
         std::wstring a = argv[i];
         if (a == L"run") o.run = true;
         else if (a == L"status") o.status = true;
+        else if (a == L"list-devices") o.listDevices = true;
         else if (a == L"--help" || a == L"-h" || a == L"/?" || a == L"-?") o.help = true;
-        else if (a == L"--type" || a == L"--path" || a == L"--settings") {
+        else if (a == L"--type" || a == L"--path" || a == L"--device" ||
+                 a == L"--settings") {
             if (i + 1 >= argc) { err = a + L" requires a value"; return false; }
             std::wstring v = argv[++i];
             if (a == L"--type") {
-                if (v != L"static" && v != L"video") {
-                    err = L"--type must be 'static' or 'video', got: " + v;
+                if (v != L"static" && v != L"video" && v != L"camera") {
+                    err = L"--type must be 'static', 'video' or 'camera', got: " + v;
                     return false;
                 }
                 o.type = v;
             } else if (a == L"--path") {
                 o.path = v;
+            } else if (a == L"--device") {
+                if (v.empty()) { err = L"--device requires a non-empty value"; return false; }
+                o.device = v;
             } else {
                 o.settings = v;
             }
@@ -447,10 +480,43 @@ int CmdStatus(const std::wstring& settingsPath)
     Log(L"static.crop: X=%d Y=%d W=%d H=%d keepAspect=%s", s.st.cropX, s.st.cropY,
         s.st.cropW, s.st.cropH, s.st.cropKeepAspect ? L"true" : L"false");
     Log(L"video.path: %s", s.video.path.empty() ? L"(empty)" : s.video.path.c_str());
+    Log(L"camera.id: %s", s.cam.id.empty() ? L"(empty)" : s.cam.id.c_str());
+    Log(L"camera.name: %s", s.cam.name.empty() ? L"(empty)" : s.cam.name.c_str());
+    if (s.sourceType == L"camera") {
+        // Человекочитаемая метка активного источника: имя, иначе id (см. TargetLabel).
+        Log(L"camera.source: %s",
+            !s.cam.name.empty() ? s.cam.name.c_str()
+                                 : (s.cam.id.empty() ? L"(empty)" : s.cam.id.c_str()));
+    }
     Log(L"autostart: %s", s.autostart ? L"true" : L"false");
     Log(L"host VCamVideoStreamProducer: %s",
         HostRunning() ? L"running" : L"not running");
     PrintSectionState();
+    return 0;
+}
+
+// list-devices: stdout = строки "<id>\t<name>" (UTF-8, парсит C#/UI), шапка и
+// сообщения — в stderr, чтобы не ломать парсинг stdout. Нет устройств -> пустой
+// stdout + сообщение в stderr, exit 0.
+int CmdListDevices()
+{
+    std::vector<CameraDeviceInfo> devs = EnumerateCameraDevices();
+    if (devs.empty()) {
+        LogErr(L"[cli] no camera devices found (0)");
+        return 0;
+    }
+    LogErr(L"[cli] %d camera device(s) - stdout rows: <id>\\t<name>",
+           (int)devs.size());
+    for (const CameraDeviceInfo& d : devs) {
+        std::wstring id = d.id;
+        std::wstring name = d.name;
+        // Таб/перевод строки в имени ломал бы построчный парсинг stdout.
+        for (wchar_t& c : id)
+            if (c == L'\t' || c == L'\n' || c == L'\r') c = L' ';
+        for (wchar_t& c : name)
+            if (c == L'\t' || c == L'\n' || c == L'\r') c = L' ';
+        Log(L"%s\t%s", id.c_str(), name.c_str());
+    }
     return 0;
 }
 
@@ -533,23 +599,34 @@ int wmain(int argc, wchar_t* argv[])
         PrintHelp();
         return 0;
     }
-    if (!o.run && !o.status) {
+    int cmdCount = (o.run ? 1 : 0) + (o.status ? 1 : 0) + (o.listDevices ? 1 : 0);
+    if (cmdCount == 0) {
         if (argc <= 1) {
             PrintHelp();
             return 0;
         }
-        LogErr(L"error: expected command 'run' or 'status'");
+        LogErr(L"error: expected command 'run', 'status' or 'list-devices'");
         PrintHelp();
         return 2;
     }
-    if (o.run && o.status) {
-        LogErr(L"error: 'run' and 'status' are mutually exclusive");
+    if (cmdCount > 1) {
+        LogErr(L"error: commands 'run', 'status' and 'list-devices' are mutually exclusive");
         return 2;
     }
-    if (o.status && (!o.type.empty() || !o.path.empty())) {
-        LogErr(L"error: --type/--path are only valid with 'run'");
+    if (!o.run && (!o.type.empty() || !o.path.empty() || !o.device.empty())) {
+        LogErr(L"error: --type/--path/--device are only valid with 'run'");
         return 2;
     }
+    if (!o.path.empty() && !o.device.empty()) {
+        LogErr(L"error: --path and --device are mutually exclusive");
+        return 2;
+    }
+    if (!o.device.empty() && o.type != L"camera") {
+        LogErr(L"error: --device requires --type camera");
+        return 2;
+    }
+
+    if (o.listDevices) return CmdListDevices();
 
     std::wstring settingsPath =
         o.settings.empty() ? DefaultSettingsPath() : o.settings;
@@ -558,7 +635,12 @@ int wmain(int argc, wchar_t* argv[])
         return 1;
     }
     g_fixType = o.type;
-    g_fixPath = o.path;
+    if (!o.device.empty()) {
+        g_fixPath = o.device;
+        g_fixDevice = true;
+    } else {
+        g_fixPath = o.path;
+    }
 
     if (o.status) return CmdStatus(settingsPath);
     return CmdRun(settingsPath);

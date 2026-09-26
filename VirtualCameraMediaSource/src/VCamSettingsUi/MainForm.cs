@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 
 namespace VCamSettingsUi;
 
@@ -24,6 +25,32 @@ public sealed class MainForm : Form
     private readonly Label _videoInfoLabel = new();
     private readonly Button _previewButton = new();
     private readonly Label _previewHint = new();
+
+    // Physical camera panel (replaces the preview in camera mode). The device
+    // list is produced by "VCamProducerCli list-devices" (stdout rows id\tname).
+    private readonly Panel _cameraPanel = new();
+    private readonly Label _cameraTitle = new();
+    private readonly Label _cameraDevLabel = new();
+    private readonly ComboBox _cameraCombo = new();
+    private readonly Button _cameraRefresh = new();
+    private readonly Label _cameraIdLabel = new();
+    private readonly Label _cameraHint = new();
+    private readonly Label _cameraStatus = new();
+
+    // One ComboBox row: a device (or the remembered device that is missing now).
+    private sealed class CameraItem(string id, string name, bool missing)
+    {
+        public string Id { get; } = id;
+        public string Name { get; } = name;
+        public bool Missing { get; } = missing;
+        public override string ToString() => Missing ? $"{Name} (недоступно)" : Name;
+    }
+
+    private readonly List<CameraItem> _cameraItems = new();
+    private bool _cameraListLoaded;
+    private string _cameraWishId = "";   // remembered choice from settings.json
+    private string _cameraWishName = "";
+    private string? _cliExe;
 
     // Crop rect fields (source pixels), visible only in crop mode.
     private readonly NumericUpDown _cropX = new();
@@ -52,7 +79,7 @@ public sealed class MainForm : Form
     private const string HostStopEventName = "VCamVideoStreamProducer.Stop";
 
     private static readonly string[] ModeNames = { "fit — вписать с пололосами", "cover — заполнить (обрезка)", "crop — обрезка выбранной области" };
-    private static readonly string[] MediaNames = { "статичная картинка", "видеоролик" };
+    private static readonly string[] MediaNames = { "статичная картинка", "видеоролик", "физическая камера" };
 
     public MainForm()
     {
@@ -76,6 +103,7 @@ public sealed class MainForm : Form
         _cropView.SelectionChanged += OnCropSelectionChanged;
 
         SetupVideoPanel();
+        SetupCameraPanel();
 
         _pathLabel.Location = new Point(12, 472);
         _pathLabel.Size = new Size(856, 20);
@@ -149,7 +177,7 @@ public sealed class MainForm : Form
         _hintLabel.ForeColor = Color.DimGray;
         _hintLabel.Text = $"Настройки: {Settings.FilePath} — хост VCam подхватит их автоматически (~1 с).";
 
-        Controls.AddRange(new Control[] { _preview, _cropView, _videoPanel, _pathLabel, _mediaLabel, _mediaCombo,
+        Controls.AddRange(new Control[] { _preview, _cropView, _videoPanel, _cameraPanel, _pathLabel, _mediaLabel, _mediaCombo,
             _mode, _openButton, _fullSizeButton, _saveButton, _hostStatusLabel, _hostButton,
             _cropXLabel, _cropX, _cropYLabel, _cropY, _cropWLabel, _cropW, _cropHLabel, _cropH, _cropKeepAspect, _hintLabel });
 
@@ -162,6 +190,8 @@ public sealed class MainForm : Form
 
         _mode.SelectedIndexChanged += (_, _) => UpdateLayout();
         _mediaCombo.SelectedIndexChanged += (_, _) => UpdateLayout();
+        _cameraCombo.SelectedIndexChanged += (_, _) => UpdateCameraPanel();
+        _cameraRefresh.Click += OnCameraRefreshClicked;
 
         LoadCurrentSettings();
         UpdateLayout();
@@ -208,6 +238,64 @@ public sealed class MainForm : Form
         _videoPanel.Controls.AddRange(new Control[] { _videoTitle, _videoPathLabel, _videoInfoLabel, _previewButton, _previewHint });
     }
 
+    // Same style as _videoPanel: white, FixedSingle, 856x455 over the preview.
+    private void SetupCameraPanel()
+    {
+        _cameraPanel.Location = new Point(12, 12);
+        _cameraPanel.Size = new Size(856, 455);
+        _cameraPanel.BorderStyle = BorderStyle.FixedSingle;
+        _cameraPanel.BackColor = Color.White;
+        _cameraPanel.Visible = false;
+        _cameraPanel.Name = "cameraPanel";
+
+        _cameraTitle.Font = new Font(Font.FontFamily, 11f, FontStyle.Bold);
+        _cameraTitle.Location = new Point(16, 16);
+        _cameraTitle.Size = new Size(820, 26);
+        _cameraTitle.Text = "Физическая камера";
+
+        _cameraDevLabel.Location = new Point(16, 56);
+        _cameraDevLabel.Size = new Size(62, 18);
+        _cameraDevLabel.Text = "Камера:";
+        _cameraDevLabel.Name = "cameraDevLabel";
+
+        _cameraCombo.Location = new Point(80, 52);
+        _cameraCombo.Size = new Size(556, 28);
+        _cameraCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+        _cameraCombo.Name = "cameraCombo";
+
+        _cameraRefresh.Location = new Point(648, 51);
+        _cameraRefresh.Size = new Size(190, 30);
+        _cameraRefresh.Text = "Обновить список";
+        _cameraRefresh.Name = "cameraRefresh";
+
+        _cameraIdLabel.Location = new Point(16, 94);
+        _cameraIdLabel.Size = new Size(820, 42);
+        _cameraIdLabel.AutoEllipsis = true;
+        _cameraIdLabel.ForeColor = Color.DimGray;
+        _cameraIdLabel.Name = "cameraIdLabel";
+
+        _cameraHint.Location = new Point(16, 146);
+        _cameraHint.Size = new Size(820, 172);
+        _cameraHint.ForeColor = Color.DimGray;
+        _cameraHint.Name = "cameraHint";
+        _cameraHint.Text =
+            "Выберите камеру — она будет транслироваться в виртуальную камеру VCam.\r\n" +
+            "Список формирует VCamProducerCli list-devices; кнопка «Обновить список» перечитывает устройства\r\n" +
+            "(можно нажать после подключения новой камеры, перезапуск не нужен).\r\n\r\n" +
+            "Если камера отсутствует, отключена или занята другой программой — хост покажет NO SIGNAL\r\n" +
+            "и продолжит попытки открыть её (штатные ретраи). Пустая секция camera тоже даёт NO SIGNAL.\r\n\r\n" +
+            "Устройство с пометкой «(недоступно)» — сохранённый выбор, которого сейчас нет в системе:\r\n" +
+            "его id сохраняется, пока вы не выберете другую камеру.";
+
+        _cameraStatus.Location = new Point(16, 336);
+        _cameraStatus.Size = new Size(820, 60);
+        _cameraStatus.ForeColor = Color.DimGray;
+        _cameraStatus.Name = "cameraStatus";
+
+        _cameraPanel.Controls.AddRange(new Control[]
+            { _cameraTitle, _cameraDevLabel, _cameraCombo, _cameraRefresh, _cameraIdLabel, _cameraHint, _cameraStatus });
+    }
+
     private static void PlaceCropField(Label label, NumericUpDown input, int x, int y, string text)
     {
         label.Location = new Point(x, y + 4);
@@ -245,6 +333,22 @@ public sealed class MainForm : Form
         for (var i = 0; i < 10 && dir != null; i++, dir = dir.Parent)
         {
             var candidate = Path.Combine(dir.FullName, "build", "x64", "Release", "VCamVideoStreamProducer.exe");
+            if (File.Exists(candidate)) return candidate;
+        }
+        return null;
+    }
+
+    // VCamProducerCli.exe lookup, same pattern as VCamPreview.exe:
+    // (a) next to VCamSettingsUi.exe, (b) <walked-up root>\build\x64\Release.
+    private static string? FindCliExe()
+    {
+        var baseDir = AppContext.BaseDirectory;
+        var direct = Path.Combine(baseDir, "VCamProducerCli.exe");
+        if (File.Exists(direct)) return direct;
+        var dir = new DirectoryInfo(baseDir);
+        for (var i = 0; i < 10 && dir != null; i++, dir = dir.Parent)
+        {
+            var candidate = Path.Combine(dir.FullName, "build", "x64", "Release", "VCamProducerCli.exe");
             if (File.Exists(candidate)) return candidate;
         }
         return null;
@@ -341,7 +445,14 @@ public sealed class MainForm : Form
             _ => 0,
         };
         _videoPath = s.VideoPath; // set before the combo: switching fires UpdateLayout
-        _mediaCombo.SelectedIndex = s.SourceType == SourceType.Video ? 1 : 0;
+        _cameraWishId = s.CameraId;   // remembered device; applied when the list loads
+        _cameraWishName = s.CameraName;
+        _mediaCombo.SelectedIndex = s.SourceType switch
+        {
+            SourceType.Video => 1,
+            SourceType.Camera => 2,
+            _ => 0,
+        };
 
         // The static panel edits the "static" section; it is loaded in both modes
         // so switching back to "статичная картинка" keeps working.
@@ -358,28 +469,42 @@ public sealed class MainForm : Form
         _ => ScaleMode.Fit,
     };
 
-    private SourceType CurrentSourceType => _mediaCombo.SelectedIndex == 1 ? SourceType.Video : SourceType.Static;
+    private SourceType CurrentSourceType => _mediaCombo.SelectedIndex switch
+    {
+        1 => SourceType.Video,
+        2 => SourceType.Camera,
+        _ => SourceType.Static,
+    };
 
     // Single source of truth for control visibility (media mode x scale mode).
     private void UpdateLayout()
     {
         bool video = CurrentSourceType == SourceType.Video;
-        bool crop = !video && CurrentMode == ScaleMode.Crop;
+        bool camera = CurrentSourceType == SourceType.Camera;
+        bool crop = !video && !camera && CurrentMode == ScaleMode.Crop;
 
         _videoPanel.Visible = video;
-        _preview.Visible = !video && !crop;
+        _cameraPanel.Visible = camera;
+        _preview.Visible = !video && !camera && !crop;
         _cropView.Visible = crop;
         foreach (var c in new Control[] { _mode, _fullSizeButton })
-            c.Visible = !video;
+            c.Visible = !video && !camera;
         foreach (var c in new Control[] { _cropXLabel, _cropX, _cropYLabel, _cropY, _cropWLabel, _cropW, _cropHLabel, _cropH, _cropKeepAspect })
             c.Visible = crop;
 
+        _openButton.Visible = !camera;
+        _pathLabel.Visible = !camera;
         _openButton.Text = video ? "Выбрать видео…" : "Открыть картинку…";
         _pathLabel.Text = video
             ? (string.IsNullOrEmpty(_videoPath) ? "(ролик не выбран)" : _videoPath)
             : (string.IsNullOrEmpty(_sourcePath) ? "(файл не выбран)" : _sourcePath);
 
-        if (video)
+        if (camera)
+        {
+            EnsureCameraList(); // lazy: enumerate on the first switch to camera
+            UpdateCameraPanel();
+        }
+        else if (video)
         {
             UpdateVideoPanel();
         }
@@ -409,6 +534,146 @@ public sealed class MainForm : Form
               "Запускается отдельным процессом, поверх всех окон (always-on-top). Esc — выход."
             : "VCamPreview.exe не найден: искал рядом с VCamSettingsUi.exe и в " +
               "<корень репозитория>\\build\\x64\\Release — окно предпросмотра недоступно, кнопка отключена.";
+    }
+
+    // First switch to the camera source (also at startup when the saved type is
+    // "camera"): run the CLI enumeration once; failures never crash the form.
+    private void EnsureCameraList()
+    {
+        if (_cameraListLoaded) return;
+        LoadCameraList();
+    }
+
+    // "VCamProducerCli list-devices": stdout = rows "<id>\t<name>" (UTF-8),
+    // the header goes to stderr and is ignored by the parser. Exit code is
+    // always 0 (including zero devices).
+    private void LoadCameraList()
+    {
+        _cameraListLoaded = true;
+        _cameraItems.Clear();
+        string status;
+
+        _cliExe ??= FindCliExe();
+        if (_cliExe is null)
+        {
+            status = "VCamProducerCli.exe не найден: искал рядом с VCamSettingsUi.exe и в " +
+                     "<корень репозитория>\\build\\x64\\Release — список камер недоступен, выберите «Обновить список» после установки.";
+        }
+        else
+        {
+            try
+            {
+                using var proc = Process.Start(new ProcessStartInfo(_cliExe)
+                {
+                    Arguments = "list-devices",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    StandardOutputEncoding = Encoding.UTF8,
+                    StandardErrorEncoding = Encoding.UTF8,
+                    CreateNoWindow = true,
+                    WorkingDirectory = Path.GetDirectoryName(_cliExe) ?? AppContext.BaseDirectory,
+                });
+                if (proc is null)
+                {
+                    status = "Не удалось запустить VCamProducerCli — список камер недоступен.";
+                }
+                else
+                {
+                    // Drain both pipes on background tasks so a full stderr buffer
+                    // cannot deadlock the wait below.
+                    var outTask = proc.StandardOutput.ReadToEndAsync();
+                    var errTask = proc.StandardError.ReadToEndAsync();
+                    var exited = proc.WaitForExit(8000);
+                    if (!exited)
+                    {
+                        try { proc.Kill(); } catch { /* already gone */ }
+                        status = "VCamProducerCli list-devices не завершился за 8 с — список не получен.";
+                    }
+                    else
+                    {
+                        ParseListDevices(outTask.Result);
+                        var err = errTask.Result.Trim();
+                        status = _cameraItems.Count > 0
+                            ? $"Камер найдено: {_cameraItems.Count}."
+                            : "Камеры не найдены (0)." + (err.Length > 0 ? $" {err}" : "");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                status = $"Не удалось получить список камер: {ex.Message}";
+            }
+        }
+
+        FillCameraCombo();
+        _cameraStatus.Text = status;
+        UpdateCameraPanel();
+    }
+
+    private void ParseListDevices(string stdout)
+    {
+        foreach (var raw in stdout.Split('\n'))
+        {
+            var line = raw.TrimEnd('\r');
+            if (line.Length == 0) continue;
+            var tab = line.IndexOf('\t');
+            if (tab <= 0) continue;
+            var id = line[..tab].Trim();
+            var name = line[(tab + 1)..].Trim();
+            if (id.Length == 0) continue;
+            _cameraItems.Add(new CameraItem(id, name.Length == 0 ? id : name, missing: false));
+        }
+    }
+
+    // Rebuild the ComboBox keeping the current selection: by id first, then by
+    // name; a remembered device that is missing now is appended as
+    // "<name> (недоступно)" so the saved choice is never lost.
+    private void FillCameraCombo()
+    {
+        var current = _cameraCombo.SelectedItem as CameraItem;
+        var keepId = current?.Id ?? _cameraWishId;
+        var keepName = current?.Name ?? _cameraWishName;
+
+        _cameraCombo.Items.Clear();
+        foreach (var item in _cameraItems)
+            _cameraCombo.Items.Add(item);
+
+        CameraItem? selected = null;
+        if (keepId.Length > 0)
+            selected = _cameraItems.Find(i => string.Equals(i.Id, keepId, StringComparison.OrdinalIgnoreCase));
+        if (selected is null && keepName.Length > 0)
+            selected = _cameraItems.Find(i => string.Equals(i.Name, keepName, StringComparison.OrdinalIgnoreCase));
+        if (selected is null && keepId.Length > 0)
+        {
+            selected = new CameraItem(keepId, keepName, missing: true);
+            _cameraCombo.Items.Add(selected);
+        }
+
+        _cameraCombo.SelectedItem = selected; // null = nothing chosen (NO SIGNAL)
+    }
+
+    private void UpdateCameraPanel()
+    {
+        var item = _cameraCombo.SelectedItem as CameraItem;
+        _cameraIdLabel.Text = item is null
+            ? "Камера не выбрана — хост будет показывать NO SIGNAL."
+            : item.Missing
+                ? $"ID: {item.Id}  — устройство сейчас недоступно, выбор сохранён."
+                : $"ID: {item.Id}";
+    }
+
+    private void OnCameraRefreshClicked(object? sender, EventArgs e)
+    {
+        _cameraRefresh.Enabled = false;
+        try
+        {
+            LoadCameraList();
+        }
+        finally
+        {
+            _cameraRefresh.Enabled = true;
+        }
     }
 
     private void OnOpenClicked(object? sender, EventArgs e)
@@ -581,6 +846,26 @@ public sealed class MainForm : Form
             return;
         }
 
+        if (CurrentSourceType == SourceType.Camera)
+        {
+            var cam = _cameraCombo.SelectedItem as CameraItem;
+            settings.CameraId = cam?.Id ?? "";
+            settings.CameraName = cam?.Name ?? "";
+            settings.SourceType = SourceType.Camera;
+            if (cam is null)
+            {
+                TrySave(settings,
+                    $"Сохранено: {Settings.FilePath} — камера НЕ выбрана, хост будет показывать NO SIGNAL, пока вы не выберете устройство.",
+                    warn: true);
+            }
+            else
+            {
+                TrySave(settings,
+                    $"Сохранено: {Settings.FilePath} — хост подхватит source.type/camera (~1 с): {cam.Name}.");
+            }
+            return;
+        }
+
         if (string.IsNullOrEmpty(_sourcePath))
         {
             MessageBox.Show(this, "Сначала выберите картинку.", Text,
@@ -605,12 +890,12 @@ public sealed class MainForm : Form
             $"Сохранено: {Settings.FilePath} — хост подхватит source.type/static (~1 с).");
     }
 
-    private void TrySave(Settings settings, string okText)
+    private void TrySave(Settings settings, string okText, bool warn = false)
     {
         try
         {
             settings.Save();
-            _hintLabel.ForeColor = Color.ForestGreen;
+            _hintLabel.ForeColor = warn ? Color.DarkGoldenrod : Color.ForestGreen;
             _hintLabel.Text = okText;
         }
         catch (Exception ex)

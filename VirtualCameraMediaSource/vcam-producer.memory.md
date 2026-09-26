@@ -52,6 +52,14 @@ struct IFrameSource {
 - [x] **Дефект №3 — мигание Preview после остановки хоста** (фикс в основном чате): причина — `Disconnect()` обнулял `lastSeqChange`, `Connect()` ставил его заново → старый кадр снова «свежий» → цикл статика→NO SIGNAL каждые ~3 с. Фикс: не обнулять lastSeq/lastSeqChange в Disconnect, обновлять lastSeqChange при reconnect только если seq реально изменился, реконнект по `nextReconnectAt` (rate-limit). Живая проверка: 48.7 → stop → 1.5 с (timeout) → 15.5 стабильно 11 с (реконнекты не мигают) → рестарт хоста → 48.7.
 - [x] **Дефект №4 — кракозябры кириллицы в заголовке Preview** (UTF-8 без BOM, MSVC без /utf-8 читал CP1251): добавлен Directory.Build.targets (`/utf-8` для всех vcxproj), локальные дубли из 2 vcxproj убраны; проверено: заголовок «VCam Preview — нет сигнала» читается, статика без регрессии; после рестарта хоста статика возвращается ≤~4 с (тайминг цикла реконнекта, не баг). Сборка exit 0. Коммит 2.
 - [x] Коммит — `1420d46` (4 файла, +192/−15), дерево чистое.
+- [x] **Источник «физическая камера» (`L"camera"`)** — см. `vcam-camera.memory.md` (+ её
+  субагенты `vcam-camera-{core,cli,ui}.memory.md`): `CameraSource`/`CameraDevices` в
+  ProducerCore (MF, фоновый захват, letterbox fit, Render=false до первого кадра),
+  секция settings `camera {id,name}` (пустая → NO SIGNAL до выбора), SourceConfig.camName,
+  CLI `list-devices` + `--device`, e2e фаза C (SKIP без камеры), UI: 3-й режим + панель
+  устройств (тесты 43/43), README. Сборка exit 0, e2e exit 0, живая проверка: поток в
+  Preview (mean 76.5), hot-switch static↔camera без чёрного (10/10 BMP non-black),
+  NO SIGNAL при пустой секции/битом id. Ветка `feature/vcam-camera-source`, коммитов нет.
 
 ## Итог/риски
 - Старые exe (StaticProducer/VideoProducer) не тронуты (legacy/отладочные).

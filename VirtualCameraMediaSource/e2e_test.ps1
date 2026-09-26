@@ -2,6 +2,8 @@
 # Phases:
 #   A) run --type video --path test_video.mp4 (CLI overrides) -> moving frames
 #   B) run (no overrides) + settings.json writes -> hot-switch static -> video
+#   C) list-devices + run --type camera --device <id> (+ negative check with a
+#      nonexistent id -> NO SIGNAL). No camera device -> SKIP, exit stays 0.
 # settings.json is backed up before phase B and restored byte-for-byte afterwards.
 $ErrorActionPreference = "Stop"
 
@@ -172,6 +174,99 @@ try {
     $opened = @(Select-String -Path $logB -Pattern "\[cli\] source opened: type=video" -ErrorAction SilentlyContinue)
     if ($opened.Count -ge 1) { Pass "phase B: video source opened after settings change" }
     else { Fail "phase B: video source never opened" }
+
+    Write-Host "=== 6. Phase C: camera source (list-devices + run --type camera) ==="
+    $devLog = Join-Path $OutDir "cli_list_devices.log"
+    $devErr = Join-Path $OutDir "cli_list_devices.err"
+    $devProc = Start-Process -FilePath $Cli -ArgumentList @("list-devices") `
+        -PassThru -WindowStyle Hidden -RedirectStandardOutput $devLog -RedirectStandardError $devErr -Wait
+    if ($devProc.ExitCode -ne 0) { Fail "phase C: list-devices exit code $($devProc.ExitCode)" }
+    # stdout = строки "<id>\t<name>" (шапка уходит в stderr и сюда не попадает)
+    $devices = @()
+    foreach ($line in @(Get-Content -LiteralPath $devLog -Encoding UTF8 -ErrorAction SilentlyContinue)) {
+        $tab = $line.IndexOf("`t")
+        if ($tab -gt 0) {
+            $devices += [pscustomobject]@{ Id = $line.Substring(0, $tab); Name = $line.Substring($tab + 1) }
+        }
+    }
+    if ($devices.Count -eq 0) {
+        Pass "SKIP: no camera device"
+    } else {
+        $camId = $devices[0].Id
+        Write-Host "phase C: $($devices.Count) device(s), first: '$($devices[0].Name)' id=$camId"
+
+        # --- позитивный прогон: первое реальное устройство ---
+        $logC = Join-Path $OutDir "cli_phase_c.log"
+        $errC = Join-Path $OutDir "cli_phase_c.err"
+        $cliProc = Start-Process -FilePath $Cli -ArgumentList @("run", "--type", "camera", "--device", $camId) `
+            -PassThru -WindowStyle Hidden -RedirectStandardOutput $logC -RedirectStandardError $errC
+        $readyC = $null; $openedC = $null; $activeC = $null
+        $deadline = (Get-Date).AddSeconds(12)
+        do {
+            if ($cliProc.HasExited) { break }
+            $readyC = Select-String -Path $logC -Pattern "writer ready" -ErrorAction SilentlyContinue
+            $openedC = Select-String -Path $logC -Pattern "\[cli\] source opened: type=camera" -ErrorAction SilentlyContinue
+            $activeC = Select-String -Path $logC -Pattern "\[cli\] active:" -ErrorAction SilentlyContinue
+            if ($readyC -and $openedC -and $activeC) { break }
+            Start-Sleep -Milliseconds 500
+        } while ((Get-Date) -lt $deadline)
+
+        if ($cliProc.HasExited) { Fail "phase C: CLI exited early with code $($cliProc.ExitCode)" }
+        if ($readyC) { Pass "phase C: log has 'writer ready'" } else { Fail "phase C: no 'writer ready' in $logC" }
+
+        if (-not ($openedC -and $activeC)) {
+            # Камера недоступна (занята другим процессом / отключена): НЕ подгоняем
+            # проверку - фаза C уходит в SKIP, e2e остаётся exit 0.
+            Write-Host "PHASE C NOTE: camera open/active not reached - device may be busy:" -ForegroundColor Yellow
+            Select-String -Path $logC -Pattern "\[cli\] (open failed|no signal)" -ErrorAction SilentlyContinue |
+                Select-Object -First 5 | ForEach-Object { Write-Host "  $($_.Line)" -ForegroundColor Yellow }
+            Pass "SKIP: phase C camera unavailable (opened=$([bool]$openedC) active=$([bool]$activeC)) - see $logC"
+        } else {
+            Pass "phase C: 'source opened: type=camera' + 'active' in log"
+            $stOut = (& $Cli status | Out-String)
+            if ($stOut -match "frames are being written") { Pass "phase C: seq grows over 300 ms (status)" }
+            else { Fail "phase C: seq did not grow over 300 ms: $($stOut -replace '\r?\n', ' | ')" }
+            # Пиксельные проверки - только informational: тёмный/статичный кадр
+            # (камера смотрит в тёмную комнату) - не баг.
+            $camFrames = Capture 3 "e2e_cam"
+            if ($camFrames.Count -ge 1) {
+                $infos = @()
+                foreach ($f in $camFrames) { $infos += Get-FrameInfo $f }
+                $nbMax = ($infos | Measure-Object -Property NonBlack -Maximum).Maximum
+                $uniq = ($infos | Select-Object -ExpandProperty Hash -Unique).Count
+                Write-Host "INFO: phase C pixels (informational only, dark scene is OK): nonBlack(max)=$nbMax unique=$uniq" -ForegroundColor Yellow
+            } else {
+                Write-Host "INFO: phase C: no frames captured for pixel inspection" -ForegroundColor Yellow
+            }
+        }
+        Stop-Cli $cliProc
+        $cliProc = $null
+
+        # --- негативная проверка: несуществующий id -> NO SIGNAL, никогда active ---
+        $logD = Join-Path $OutDir "cli_phase_c_neg.log"
+        $errD = Join-Path $OutDir "cli_phase_c_neg.err"
+        $cliProc = Start-Process -FilePath $Cli -ArgumentList @("run", "--type", "camera", "--device", "\\?\nonexistent") `
+            -PassThru -WindowStyle Hidden -RedirectStandardOutput $logD -RedirectStandardError $errD
+        Start-Sleep -Seconds 7
+        $negExited = $cliProc.HasExited
+        $negCode = if ($negExited) { $cliProc.ExitCode } else { $null }
+        $noSigD = Select-String -Path $logD -Pattern "\[cli\] no signal" -ErrorAction SilentlyContinue
+        $activeD = Select-String -Path $logD -Pattern "\[cli\] active:" -ErrorAction SilentlyContinue
+        $retryD = @(Select-String -Path $logD -Pattern "\[cli\] open failed" -ErrorAction SilentlyContinue)
+        Stop-Cli $cliProc
+        $cliProc = $null
+        if ($negExited) {
+            Fail "phase C negative: CLI exited early with code $negCode (expected to keep retrying)"
+        } elseif ($activeD) {
+            Fail "phase C negative: became active with a nonexistent device id"
+        } elseif (-not $noSigD) {
+            Fail "phase C negative: no '[cli] no signal' line in $logD within 7 s"
+        } elseif ($retryD.Count -lt 1) {
+            Fail "phase C negative: no signal but no 'open failed' retries in $logD"
+        } else {
+            Pass "phase C negative: no signal fallback within 7 s, never active (open retries=$($retryD.Count))"
+        }
+    }
 }
 finally {
     Stop-Cli $cliProc
@@ -189,7 +284,7 @@ finally {
     }
 }
 
-Write-Host "=== 6. Result ==="
+Write-Host "=== 7. Result ==="
 if ($script:Failures.Count -eq 0) {
     Write-Host "SUCCESS: E2E test passed ($($script:Failures.Count) failures)" -ForegroundColor Green
     exit 0

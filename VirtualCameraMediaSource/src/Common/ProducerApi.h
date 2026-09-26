@@ -6,8 +6,9 @@
 
 // Десериализованный конфиг активного источника (см. Settings — новая схема).
 struct SourceConfig {
-    std::wstring type;         // L"static" | L"video"
-    std::wstring path;
+    std::wstring type;         // L"static" | L"video" | L"camera"
+    std::wstring path;         // static/video: путь к файлу; camera: id (symlink)
+    std::wstring camName;      // camera: friendly name (если path пуст — поиск по имени)
     std::wstring scaleMode;    // L"fit" | L"cover" | L"crop" (static)
     int cropX = 0;
     int cropY = 0;
@@ -17,7 +18,8 @@ struct SourceConfig {
 
     bool operator==(const SourceConfig& o) const
     {
-        return type == o.type && path == o.path && scaleMode == o.scaleMode &&
+        return type == o.type && path == o.path && camName == o.camName &&
+               scaleMode == o.scaleMode &&
                cropX == o.cropX && cropY == o.cropY && cropW == o.cropW &&
                cropH == o.cropH && cropKeepAspect == o.cropKeepAspect;
     }
@@ -35,5 +37,6 @@ struct IFrameSource {
     virtual ~IFrameSource() = default;
 };
 
-// L"static" -> StaticImageSource, L"video" -> VideoFileSource, иное -> nullptr.
+// L"static" -> StaticImageSource, L"video" -> VideoFileSource,
+// L"camera" -> CameraSource, иное -> nullptr.
 std::unique_ptr<IFrameSource> CreateSource(const std::wstring& type);

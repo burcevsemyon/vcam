@@ -6,14 +6,17 @@ namespace VCamSettingsUi;
 
 // Settings file shared with the C++ side (src/ProducerCore/Settings.cpp).
 // Contract - NEW schema (only format that is written):
-//   { "source": { "type": "static" | "video" },
+//   { "source": { "type": "static" | "video" | "camera" },
 //     "static": { "path": "...", "scaleMode": "fit" | "cover" | "crop",
 //                 "cropX": int, "cropY": int, "cropW": int, "cropH": int,
 //                 "cropKeepAspect": bool },
 //     "video":  { "path": "..." },
+//     "camera": { "id": "<MF symbolic link>", "name": "<friendly name>" },
 //     "autostart": bool }
-// Load also accepts the legacy flat format (imagePath/mediaMode/mediaPath/
-// scaleMode/crop*) and migrates it with the same rules as the C++ loader.
+// Empty camera section (id and name both "") -> host shows NO SIGNAL until a
+// device is chosen. Load also accepts the legacy flat format
+// (imagePath/mediaMode/mediaPath/scaleMode/crop*) and migrates it with the
+// same rules as the C++ loader (the legacy format has no camera section).
 // NOTE: field names and value tokens must stay in sync with
 // src/ProducerCore/Settings.cpp (ParseNewSchema/ParseLegacySchema/Serialize).
 public enum ScaleMode
@@ -28,6 +31,7 @@ public enum SourceType
 {
     Static,
     Video,
+    Camera,
 }
 
 public sealed class Settings
@@ -44,6 +48,11 @@ public sealed class Settings
 
     // Section "video" (clip).
     public string VideoPath { get; set; } = "";
+
+    // Section "camera" (physical webcam device): id = MF symbolic link
+    // (stable per USB port), name = friendly name. Both empty = not chosen.
+    public string CameraId { get; set; } = "";
+    public string CameraName { get; set; } = "";
 
     // Section "source".
     public SourceType SourceType { get; set; } = SourceType.Static;
@@ -79,7 +88,8 @@ public sealed class Settings
 
             var isNew = root.TryGetProperty("source", out _) ||
                         root.TryGetProperty("static", out _) ||
-                        root.TryGetProperty("video", out _);
+                        root.TryGetProperty("video", out _) ||
+                        root.TryGetProperty("camera", out _);
 
             if (isNew)
             {
@@ -87,9 +97,12 @@ public sealed class Settings
                     src.TryGetProperty("type", out var type) && type.ValueKind == JsonValueKind.String)
                 {
                     // Unknown tokens map to Static for editing; the host keeps them verbatim.
-                    s.SourceType = string.Equals(type.GetString(), "video", StringComparison.OrdinalIgnoreCase)
+                    var typeToken = type.GetString();
+                    s.SourceType = string.Equals(typeToken, "video", StringComparison.OrdinalIgnoreCase)
                         ? SourceType.Video
-                        : SourceType.Static;
+                        : string.Equals(typeToken, "camera", StringComparison.OrdinalIgnoreCase)
+                            ? SourceType.Camera
+                            : SourceType.Static;
                 }
 
                 if (root.TryGetProperty("static", out var st) && st.ValueKind == JsonValueKind.Object)
@@ -105,6 +118,12 @@ public sealed class Settings
 
                 if (root.TryGetProperty("video", out var vd) && vd.ValueKind == JsonValueKind.Object)
                     s.VideoPath = GetString(vd, "path");
+
+                if (root.TryGetProperty("camera", out var cm) && cm.ValueKind == JsonValueKind.Object)
+                {
+                    s.CameraId = GetString(cm, "id");
+                    s.CameraName = GetString(cm, "name");
+                }
 
                 if (root.TryGetProperty("autostart", out var au))
                     s.Autostart = au.ValueKind != JsonValueKind.False;
@@ -146,7 +165,12 @@ public sealed class Settings
         {
             ["source"] = new Dictionary<string, object>
             {
-                ["type"] = SourceType == SourceType.Video ? "video" : "static",
+                ["type"] = SourceType switch
+                {
+                    SourceType.Video => "video",
+                    SourceType.Camera => "camera",
+                    _ => "static",
+                },
             },
             ["static"] = new Dictionary<string, object>
             {
@@ -166,6 +190,11 @@ public sealed class Settings
             ["video"] = new Dictionary<string, object>
             {
                 ["path"] = VideoPath,
+            },
+            ["camera"] = new Dictionary<string, object>
+            {
+                ["id"] = CameraId,
+                ["name"] = CameraName,
             },
             ["autostart"] = Autostart,
         };

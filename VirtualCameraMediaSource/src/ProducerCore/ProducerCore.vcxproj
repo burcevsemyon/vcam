@@ -36,6 +36,8 @@
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="CameraDevices.cpp" />
+    <ClCompile Include="CameraSource.cpp" />
     <ClCompile Include="FrameWriter.cpp" />
     <ClCompile Include="Settings.cpp" />
     <ClCompile Include="SettingsWatcher.cpp" />
@@ -44,6 +46,8 @@
     <ClCompile Include="VideoFileSource.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="CameraDevices.h" />
+    <ClInclude Include="CameraSource.h" />
     <ClInclude Include="FrameWriter.h" />
     <ClInclude Include="Settings.h" />
     <ClInclude Include="SettingsWatcher.h" />

@@ -1,0 +1,158 @@
+#include "CameraDevices.h"
+
+#include <windows.h>
+
+#include <mfapi.h>
+#include <mfidl.h>
+#include <mfobjects.h>
+#include <propidl.h>
+
+#include <cwctype>
+#include <mutex>
+#include <utility>
+
+#pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "mfplat.lib")
+#pragma comment(lib, "mf.lib")
+
+namespace {
+
+std::mutex g_enumMutex; // порядок пар MFStartup/MFShutdown внутри функций
+
+using DeviceEntry = std::pair<CameraDeviceInfo, IMFActivate*>;
+
+std::wstring PropStr(IMFActivate* dev, const GUID& key)
+{
+    std::wstring out;
+    if (!dev) return out;
+    PROPVARIANT vt;
+    PropVariantInit(&vt);
+    if (SUCCEEDED(dev->GetItem(key, &vt))) {
+        if (vt.vt == VT_LPWSTR && vt.pwszVal) out.assign(vt.pwszVal);
+        else if (vt.vt == VT_BSTR && vt.bstrVal) out.assign(vt.bstrVal);
+    }
+    PropVariantClear(&vt);
+    return out;
+}
+
+bool ContainsNoCase(const std::wstring& hay, const std::wstring& needle)
+{
+    if (needle.empty() || hay.size() < needle.size()) return false;
+    for (size_t i = 0; i + needle.size() <= hay.size(); i++) {
+        size_t j = 0;
+        for (; j < needle.size(); j++)
+            if (towlower(hay[i + j]) != towlower(needle[j])) break;
+        if (j == needle.size()) return true;
+    }
+    return false;
+}
+
+// MFEnumDeviceSources(VIDCAP) -> пары (инфо, activate). Владение activate'ами
+// переходит вызывающему. COM/MFStartup — здесь же (парно, под мьютексом).
+bool EnumerateRaw(std::vector<DeviceEntry>& out, bool& comHere)
+{
+    comHere = false;
+    HRESULT hrCo = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    comHere = (hrCo == S_OK); // RPC_E_CHANGED_MODE — COM уже инициализирован иначе: продолжаем
+
+    HRESULT hr = MFStartup(MF_VERSION, MFSTARTUP_FULL);
+    if (FAILED(hr)) return false;
+
+    IMFAttributes* attr = nullptr;
+    IMFActivate** devs = nullptr;
+    UINT32 count = 0;
+    bool ok = false;
+    if (SUCCEEDED(MFCreateAttributes(&attr, 1)) && attr) {
+        attr->SetGUID(MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
+                      MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID);
+        hr = MFEnumDeviceSources(attr, &devs, &count);
+        attr->Release();
+        if (SUCCEEDED(hr)) {
+            out.reserve(count);
+            for (UINT32 i = 0; i < count; i++) {
+                CameraDeviceInfo info;
+                info.name = PropStr(devs[i], MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME);
+                // id = symlink устройства. Ключ VIDCAP_GUID в SDK — это значение
+                // типа источника ({8AC3587A...}), а не атрибут symlink: GetItem по
+                // нему возвращает MF_E_ATTRIBUTENOTFOUND. Symlink лежит в
+                // VIDCAP_SYMBOLIC_LINK; VIDCAP_GUID оставляем fallback'ом.
+                info.id = PropStr(devs[i], MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK);
+                if (info.id.empty())
+                    info.id = PropStr(devs[i], MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID);
+                out.emplace_back(std::move(info), devs[i]); // владение activate
+            }
+            ok = true;
+        }
+    }
+    if (devs && !ok) { // не передали владение — освобождаем сами
+        for (UINT32 i = 0; i < count; i++)
+            if (devs[i]) devs[i]->Release();
+    }
+    if (devs) CoTaskMemFree(devs);
+    return ok; // MFShutdown делает вызывающая сторона (парно)
+}
+
+void ReleaseAll(std::vector<DeviceEntry>& v)
+{
+    for (auto& e : v)
+        if (e.second) e.second->Release();
+    v.clear();
+}
+
+int MatchIndex(const std::vector<DeviceEntry>& devs, const std::wstring& id,
+               const std::wstring& name)
+{
+    if (!id.empty())
+        for (size_t i = 0; i < devs.size(); i++)
+            if (_wcsicmp(devs[i].first.id.c_str(), id.c_str()) == 0) return (int)i;
+    if (!name.empty()) {
+        for (size_t i = 0; i < devs.size(); i++)
+            if (_wcsicmp(devs[i].first.name.c_str(), name.c_str()) == 0) return (int)i;
+        for (size_t i = 0; i < devs.size(); i++)
+            if (ContainsNoCase(devs[i].first.name, name)) return (int)i;
+    }
+    return -1;
+}
+
+} // namespace
+
+std::vector<CameraDeviceInfo> EnumerateCameraDevices()
+{
+    std::vector<CameraDeviceInfo> result;
+    std::lock_guard<std::mutex> lock(g_enumMutex);
+
+    std::vector<DeviceEntry> devs;
+    bool comHere = false;
+    if (EnumerateRaw(devs, comHere)) {
+        result.reserve(devs.size());
+        for (auto& e : devs) result.push_back(std::move(e.first));
+    }
+    ReleaseAll(devs);
+
+    MFShutdown(); // парный MFStartup этой функции
+    if (comHere) CoUninitialize();
+    return result;
+}
+
+IMFActivate* OpenCameraActivate(const std::wstring& id, const std::wstring& name,
+                                CameraDeviceInfo& outInfo)
+{
+    std::lock_guard<std::mutex> lock(g_enumMutex);
+
+    std::vector<DeviceEntry> devs;
+    bool comHere = false;
+    IMFActivate* result = nullptr;
+    if (EnumerateRaw(devs, comHere)) {
+        int idx = MatchIndex(devs, id, name);
+        if (idx >= 0) {
+            outInfo = std::move(devs[(size_t)idx].first);
+            result = devs[(size_t)idx].second; // владение переходит вызывающему
+            devs[(size_t)idx].second = nullptr;
+        }
+    }
+    ReleaseAll(devs);
+
+    MFShutdown(); // парный MFStartup этой функции
+    if (comHere) CoUninitialize();
+    return result;
+}
