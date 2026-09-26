@@ -12,7 +12,9 @@
 | `src/Registrar` (Registrar.exe) | Регистрация камеры: `add [name] [hold]` / `remove`. Процесс нужно держать живым (Session lifetime). |
 | `src/ProducerTest` (ProducerTest.exe) | Пишет анимированный test pattern в общую память @30 fps. |
 | `src/StaticProducer` (StaticProducer.exe) | Транслирует статическое изображение (PNG/JPG/BMP/…) в общую память @30 fps. Путь и режим масштабирования берёт из `%APPDATA%\VCam\settings.json` (hot-reload ~0.7 с), аргумент командной строки — fallback. |
-| `src/VCamSettingsUi` (VCamSettingsUi.dll) | C# WinForms UI: выбор картинки, предпросмотр fit/cover, интерактивный crop (рамка мышью), просмотр 1:1 с зумом, сохранение настроек. |
+| `src/VideoProducer` (VideoProducer.exe) | Транслирует видеоролик (MP4/MKV/…) в общую память @30 fps: декод Media Foundation (Source Reader), масштабирование letterbox в 1280×720 (чёрные полосы, без искажений), бесконечный loop. Источник — `mediaPath` из settings.json (hot-reload ~0.7 с, без перезапуска), `argv[1]` — fallback. |
+| `src/VCamSettingsUi` (VCamSettingsUi.dll) | C# WinForms UI: переключатель «Медиа» (статичная картинка / видеоролик), выбор файла, предпросмотр fit/cover, интерактивный crop (рамка мышью), просмотр 1:1 с зумом, запуск окна предпросмотра VCamPreview, сохранение настроек. |
+| `src/VCamPreview` (VCamPreview.exe) | Плавающее окно предпросмотра кадра: always-on-top, читает общую память, NO SIGNAL без провайдера, Esc/Ctrl+Q — выход. |
 | `src/CaptureTest` (CaptureTest.exe) | Диагностический захват: `inspect`, `device [strict] [name\|index] [width] [height] [prefix]`, bare `[numFrames] [prefix]`; сохраняет BMP. |
 
 ## Сборка
@@ -40,6 +42,18 @@
      build\x64\Release\StaticProducer.exe path\to\image.png
      ```
      без аргумента — путь из `%APPDATA%\VCam\settings.json` (создаёт UI).
+   - Видеоролик (настройки или файл):
+     ```bat
+     build\x64\Release\VideoProducer.exe path\to\clip.mp4
+     ```
+     без аргумента — `mediaPath` из settings.json; смена `mediaPath` подхватывается
+     на лету. Запускается тот провайдер, чей режим (`mediaMode`) выбран в UI —
+     выбор ручной, автозавершения нет.
+   - Окно предпросмотра (отдельное окно поверх всех, читает общую память):
+     ```bat
+     build\x64\Release\VCamPreview.exe
+     ```
+     Esc — выход; ту же кнопку имеет UI (режим «видеоролик»).
 4. E2E тестирование:
    ```powershell
    powershell -ExecutionPolicy Bypass -File e2e_test.ps1
@@ -60,13 +74,16 @@
   выбирать нашу камеру по **индексу** (`device 1`), а не по имени.
 - `register.bat` / `unregister.bat` — быстрые сценарии регистрации/снятия.
 
-## Настройки StaticProducer
+## Настройки (settings.json)
 
-Файл `%APPDATA%\VCam\settings.json`:
+Файл `%APPDATA%\VCam\settings.json`: пишет только UI, провайдеры только читают
+(опрос каждые 500 мс, debounce 200 мс).
 
 ```json
 {
   "imagePath": "C:\\path\\to\\image.jfif",
+  "mediaMode": "static",
+  "mediaPath": "C:\\path\\to\\image.jfif",
   "scaleMode": "fit",
   "cropX": 0,
   "cropY": 0,
@@ -78,22 +95,38 @@
 
 | Поле | Значения | Смысл |
 |---|---|---|
-| `imagePath` | путь к файлу | источник картинки (PNG/JPG/BMP/JFIF/…) |
-| `scaleMode` | `fit` \| `cover` \| `crop` | `fit` — вписать в 1280×720 с чёрными полосами; `cover` — заполнить, center-crop без искажений; `crop` — обрезать по прямоугольнику ниже |
+| `mediaMode` | `static` \| `video` | режим трансляции: `static` — статичная картинка (`StaticProducer`), `video` — видеоролик (`VideoProducer`). Файла без поля = `static` (back-compat); иной токен тоже читается как `static` |
+| `mediaPath` | путь к файлу | активный файл текущего режима: картинка при `static`, ролик при `video`. Пусто/нет поля → fallback: `imagePath` для статики, `argv[1]` для видео |
+| `imagePath` | путь к файлу | источник картинки (PNG/JPG/BMP/JFIF/…). В режиме `static` UI **дублирует сюда `mediaPath`**, чтобы старые читатели поля (только `imagePath`) брали тот же файл; в режиме `video` поле не перезаписывается |
+| `scaleMode` | `fit` \| `cover` \| `crop` | `fit` — вписать в 1280×720 с чёрными полосами; `cover` — заполнить, center-crop без искажений; `crop` — обрезать по прямоугольнику ниже. Только для картинки: у видео всегда letterbox |
 | `cropX`, `cropY`, `cropW`, `cropH` | пиксели исходника | область обрезки (только для `crop`); невалидный прямоугольник → clamp к границам, нулевой → вся картинка. По умолчанию результат **растягивается на 1280×720 без сохранения пропорций** |
 | `cropKeepAspect` | `true` \| `false` | только для `crop`: `true` — вписать область с сохранением пропорций (чёрные полосы) вместо растяжки |
 
-- Сценарий работы: UI сохраняет файл → `StaticProducer` опрашивает его каждые 500 мс
-  (debounce 200 мс) и перезагружает картинку/режим **без перезапуска** (~0.7 с).
-- Приоритет: `argv[1]` переопределяет `imagePath` при запуске, но `scaleMode`
-  всегда берётся из файла (его нет — `fit`).
-- Ошибка загрузки (удалённый файл) — лог в консоль, трансляция продолжается со старым кадром.
+- Сценарий работы: UI сохраняет файл → провайдер опрашивает его каждые 500 мс
+  (debounce 200 мс) и перезагружает картинку/ролик/режим **без перезапуска** (~0.7 с).
+- `StaticProducer`: источник = `mediaPath`, если задан и `mediaMode != "video"`,
+  иначе `imagePath` (fallback — `mediaPath`). При `mediaMode == "video"` пишет
+  warning и продолжает со статичной картинкой.
+- `VideoProducer`: источник = `mediaPath`, иначе `argv[1]`; `mediaMode`, отличный
+  от `"video"`, — warning, но продолжает. `argv[1]` переопределяет `imagePath`
+  при запуске, `scaleMode` всегда из файла (его нет — `fit`).
+- Ошибка загрузки (удалённый файл) — лог в консоль, трансляция продолжается
+  со старым кадром.
 
-UI (`src\VCamSettingsUi`): выбор файла → предпросмотр fit/cover (та же математика, что
-в C++), режим `crop` — интерактивная рамка мышью прямо на предпросмотре (перетаскивание
-центра = сдвиг, ручки по углам/краям = размер, перетаскивание вне рамки = новая область;
-поля X/Y/Ш/В синхронны в обе стороны, чекбокс «Сохранять пропорции» — letterbox вместо
-растяжки), «Просмотр полный» (оригинал, колесо — зум 25–400 %), «Сохранить настройки».
+UI (`src\VCamSettingsUi`): комбо **«Медиа»** — «статичная картинка» / «видеоролик»;
+фильтр диалога выбора файла зависит от режима (изображения / видео). Для картинки —
+предпросмотр fit/cover (та же математика, что в C++), режим `crop` — интерактивная
+рамка мышью прямо на предпросмотре (перетаскивание центра = сдвиг, ручки по
+углам/краям = размер, перетаскивание вне рамки = новая область; поля X/Y/Ш/В
+синхронны в обе стороны, чекбокс «Сохранять пропорции» — letterbox вместо
+растяжки), «Просмотр полный» (оригинал, колесо — зум 25–400 %). Для видео fit/cover/crop
+и crop-поля скрыты (масштаб не применяется — всегда letterbox 1280×720), вместо
+превью — инфо-панель: путь к ролику и кнопка **«Открыть окно предпросмотра
+(VCamPreview)»** (`VCamPreview.exe` ищется рядом с `VCamSettingsUi.exe` и в
+`build\x64\Release\`; не найден — кнопка отключена с подсказкой). Кнопка
+«Сохранить настройки» пишет `mediaMode`/`mediaPath` по текущему режиму; в видео-режиме
+`imagePath`/`scaleMode`/`crop*` остаются как были на диске. Окно предпросмотра
+запускается отдельным процессом (не дочерним).
 
 ## Контракт общей памяти
 
@@ -137,7 +170,9 @@ src/MediaSource/
 src/Registrar/main.cpp           MFCreateVirtualCamera, add/hold/remove
 src/ProducerTest/main.cpp        test pattern → общая память
 src/StaticProducer/StaticProducer.cpp статическое изображение (WIC, fit/cover/crop) → общая память, settings.json hot-reload
-src/VCamSettingsUi/               C# WinForms UI: выбор/предпросмотр/зум/crop-рамка, settings.json
+src/VideoProducer/VideoProducer.cpp видеоролик (MF Source Reader, letterbox, loop) → общая память, hot-reload mediaPath
+src/VCamPreview/VCamPreview.cpp     окно предпросмотра из общей памяти (always-on-top, NO SIGNAL, Esc)
+src/VCamSettingsUi/               C# WinForms UI: медиа static|video, выбор/предпросмотр/зум/crop-рамка, запуск VCamPreview, settings.json
 src/CaptureTest/main.cpp         inspect/capture → BMP
 register.bat, unregister.bat     регистрация (от администратора)
 e2e_test.ps1                     автоматический E2E-тест

@@ -26,6 +26,8 @@ struct Settings {
     ScaleMode mode = ScaleMode::Fit;
     CropRect crop;
     bool cropKeepAspect = false; // crop mode: letterbox instead of stretch
+    std::wstring mediaPath;      // new (written by VCamSettingsUi)
+    std::wstring mediaMode;      // "static" | "video"
 };
 
 static BYTE* g_pFrame = nullptr;
@@ -35,6 +37,7 @@ static std::wstring g_currentImagePath;
 static ScaleMode g_currentMode = ScaleMode::Fit;
 static CropRect g_currentCrop;
 static bool g_currentCropKeepAspect = false;
+static std::wstring g_currentMediaMode;
 
 static std::wstring SettingsDirPath()
 {
@@ -148,13 +151,24 @@ static bool JsonGetBool(const std::string& json, const char* key, bool defaultVa
     return defaultVal;
 }
 
+// mediaPath is preferred when present, unless mediaMode says the file is a
+// video ("video" belongs to VideoProducer - warn and fall back to imagePath).
+static std::wstring EffectiveImagePath(const Settings& s)
+{
+    if (!s.mediaPath.empty() && s.mediaMode != L"video") return s.mediaPath;
+    if (!s.imagePath.empty()) return s.imagePath;
+    return s.mediaPath;
+}
+
 static bool LoadSettings(Settings& s)
 {
     std::wstring path = SettingsFilePath();
     if (path.empty()) return false;
     std::string json;
     if (!ReadUtf8File(path, json)) return false;
-    if (!JsonGetString(json, "imagePath", s.imagePath)) return false;
+    JsonGetString(json, "imagePath", s.imagePath);
+    JsonGetString(json, "mediaPath", s.mediaPath);
+    JsonGetString(json, "mediaMode", s.mediaMode);
     std::wstring mode;
     if (JsonGetString(json, "scaleMode", mode)) {
         if (mode == L"cover") s.mode = ScaleMode::Cover;
@@ -168,7 +182,19 @@ static bool LoadSettings(Settings& s)
         s.crop.h = JsonGetInt(json, "cropH", 0);
         s.cropKeepAspect = JsonGetBool(json, "cropKeepAspect", false);
     }
-    return true;
+    // Normalize so all downstream code (startup, watcher, hot-reload) works
+    // with a single effective source path, exactly as before these fields existed.
+    s.imagePath = EffectiveImagePath(s);
+    return !s.imagePath.empty();
+}
+
+static void WarnIfVideoMode(const Settings& s)
+{
+    if (s.mediaMode == L"video") {
+        wprintf(L"[settings] WARNING: mediaMode=video but StaticProducer is running - "
+                L"continuing with the static image: %s\n", s.imagePath.c_str());
+        fflush(stdout);
+    }
 }
 
 static const wchar_t* ModeName(ScaleMode m)
@@ -345,8 +371,15 @@ static DWORD WINAPI SettingsWatcherThread(LPVOID)
 
         Settings s;
         if (!LoadSettings(s) || s.imagePath.empty()) continue;
+        bool modeChanged = (s.mediaMode != g_currentMediaMode);
         if (s.imagePath == g_currentImagePath && s.mode == g_currentMode && s.crop == g_currentCrop
-            && s.cropKeepAspect == g_currentCropKeepAspect) continue;
+            && s.cropKeepAspect == g_currentCropKeepAspect) {
+            if (modeChanged) {
+                g_currentMediaMode = s.mediaMode;
+                WarnIfVideoMode(s);
+            }
+            continue;
+        }
 
         BYTE* tmp = new (std::nothrow) BYTE[vcam::VCamFrameSize];
         if (!tmp) continue;
@@ -358,9 +391,11 @@ static DWORD WINAPI SettingsWatcherThread(LPVOID)
             g_currentMode = s.mode;
             g_currentCrop = s.crop;
             g_currentCropKeepAspect = s.cropKeepAspect;
+            g_currentMediaMode = s.mediaMode;
             LeaveCriticalSection(&g_frameCs);
             wprintf(L"[settings] reloaded: %s (mode=%s)\n", g_currentImagePath.c_str(), ModeName(g_currentMode));
             fflush(stdout);
+            if (modeChanged) WarnIfVideoMode(s);
         } else {
             delete[] tmp;
         }
@@ -379,8 +414,11 @@ int wmain(int argc, wchar_t* argv[])
         wprintf(L"Usage: StaticProducer.exe [path_to_image]\n");
         wprintf(L"  Settings file: %s\n", SettingsFilePath().c_str());
         wprintf(L"  { \"imagePath\": \"...\", \"scaleMode\": \"fit\"|\"cover\"|\"crop\", \"cropX\":0, \"cropY\":0, \"cropW\":0, \"cropH\":0, \"cropKeepAspect\":false }\n");
+        wprintf(L"  { \"mediaPath\": \"...\", \"mediaMode\": \"static\"|\"video\" }\n");
         return 1;
     }
+
+    if (haveSettings) WarnIfVideoMode(settings);
 
     wprintf(L"Loading static image: %s (mode=%s)\n", settings.imagePath.c_str(), ModeName(settings.mode));
 
@@ -397,6 +435,7 @@ int wmain(int argc, wchar_t* argv[])
     g_currentMode = settings.mode;
     g_currentCrop = settings.crop;
     g_currentCropKeepAspect = settings.cropKeepAspect;
+    g_currentMediaMode = settings.mediaMode;
     g_hStopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
 
     PSECURITY_DESCRIPTOR pSecDesc = nullptr;

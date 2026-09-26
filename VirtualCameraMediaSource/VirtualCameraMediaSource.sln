@@ -12,7 +12,11 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "CaptureTest", "src\CaptureT
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "StaticProducer", "src\StaticProducer\StaticProducer.vcxproj", "{78542C4D-E510-4893-90C5-F8FBD6DF5F99}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "VideoProducer", "src\VideoProducer\VideoProducer.vcxproj", "{A72C3583-3881-4AC4-8384-422AA42C9FFC}"
+EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "VCamSettingsUi", "src\VCamSettingsUi\VCamSettingsUi.csproj", "{A1B2C3D4-E5F6-4A7B-8C9D-0E1F2A3B4C5D}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "VCamPreview", "src\VCamPreview\VCamPreview.vcxproj", "{BD0A8099-A996-4EDF-BA33-C1130004C78A}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -29,8 +33,12 @@ Global
 		{F0B7A315-DDBB-43E9-A867-48E29ABF0D53}.Release|x64.Build.0 = Release|x64
 		{78542C4D-E510-4893-90C5-F8FBD6DF5F99}.Release|x64.ActiveCfg = Release|x64
 		{78542C4D-E510-4893-90C5-F8FBD6DF5F99}.Release|x64.Build.0 = Release|x64
+		{A72C3583-3881-4AC4-8384-422AA42C9FFC}.Release|x64.ActiveCfg = Release|x64
+		{A72C3583-3881-4AC4-8384-422AA42C9FFC}.Release|x64.Build.0 = Release|x64
 		{A1B2C3D4-E5F6-4A7B-8C9D-0E1F2A3B4C5D}.Release|x64.ActiveCfg = Release|x64
 		{A1B2C3D4-E5F6-4A7B-8C9D-0E1F2A3B4C5D}.Release|x64.Build.0 = Release|x64
+		{BD0A8099-A996-4EDF-BA33-C1130004C78A}.Release|x64.ActiveCfg = Release|x64
+		{BD0A8099-A996-4EDF-BA33-C1130004C78A}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
