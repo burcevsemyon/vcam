@@ -53,6 +53,16 @@ bool FrameWriter::Open(std::wstring& err)
     }
 
     hReady_ = CreateEventW(&sa, FALSE, FALSE, vcam::VCamReadyEventName);
+    if (hReady_ == nullptr) {
+        // Нет SeCreateGlobalPrivilege — пробуем открыть уже существующее событие
+        // (созданное держателем/читателем); без него читатель переходит в poll-режим.
+        DWORD createErr = GetLastError();
+        hReady_ = OpenEventW(EVENT_MODIFY_STATE | SYNCHRONIZE, FALSE, vcam::VCamReadyEventName);
+        if (hReady_ == nullptr) {
+            LogWriter(L"ready event unavailable: create=" + std::to_wstring(createErr) +
+                      L" open=" + std::to_wstring(GetLastError()));
+        }
+    }
     pBase_ = (uint8_t*)MapViewOfFileEx(hSection_, FILE_MAP_ALL_ACCESS, 0, 0, totalSize, nullptr);
     if (!pBase_) {
         err = L"MapViewOfFileEx failed: " + std::to_wstring(GetLastError());

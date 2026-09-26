@@ -120,6 +120,37 @@ static void SaveBMP(const wchar_t* filename, const BYTE* rgb32Data, int width, i
     LogW(L"Saved: %s", filename);
 }
 
+static int Clip255(int v) { return v < 0 ? 0 : (v > 255 ? 255 : v); }
+
+// BT.601 limited-range NV12 -> BGRX, then SaveBMP (inverse of the
+// MediaSource ConvertRgb32ToNv12; verified round-trip against an RGB32 frame).
+static void SaveNv12AsBmp(const wchar_t* filename, const BYTE* pNv12, int w, int h)
+{
+    BYTE* tmp = (BYTE*)malloc((SIZE_T)w * h * 4);
+    if (!tmp) { LogW(L"SaveNv12AsBmp: malloc failed"); return; }
+    const BYTE* pY = pNv12;
+    const BYTE* pUV = pNv12 + (SIZE_T)w * h;
+    for (int y = 0; y < h; ++y) {
+        const BYTE* yRow = pY + (SIZE_T)y * w;
+        const BYTE* uvRow = pUV + (SIZE_T)(y >> 1) * w;
+        BYTE* dst = tmp + (SIZE_T)y * w * 4;
+        for (int x = 0; x < w; ++x) {
+            const int c = yRow[x] - 16;
+            const int d = uvRow[x & ~1] - 128;
+            const int e = uvRow[(x & ~1) + 1] - 128;
+            const int r = (298 * c + 409 * e + 128) >> 8;
+            const int g = (298 * c - 100 * d - 208 * e + 128) >> 8;
+            const int b = (298 * c + 516 * d + 128) >> 8;
+            dst[x * 4] = (BYTE)Clip255(b);
+            dst[x * 4 + 1] = (BYTE)Clip255(g);
+            dst[x * 4 + 2] = (BYTE)Clip255(r);
+            dst[x * 4 + 3] = 0xFF;
+        }
+    }
+    SaveBMP(filename, tmp, w, h, w * 4);
+    free(tmp);
+}
+
 struct CToken : public IUnknown
 {
     ULONG m_ref = 1;
@@ -165,6 +196,29 @@ static int RunDirectMode(int numFrames, const wchar_t* outputPrefix)
         MFShutdown();
         CoUninitialize();
         return 1;
+    }
+
+    // Negotiate NV12 640x480 via IMFMediaSource2::SetMediaType before Start.
+    {
+        IMFMediaSource2* pSrc2 = nullptr;
+        HRESULT hrQI = pSource->QueryInterface(IID_PPV_ARGS(&pSrc2));
+        IMFMediaType* pType = nullptr;
+        HRESULT hrMt = MFCreateMediaType(&pType);
+        if (SUCCEEDED(hrQI) && pSrc2 && SUCCEEDED(hrMt) && pType) {
+            pType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
+            pType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12);
+            MFSetAttributeSize(pType, MF_MT_FRAME_SIZE, 640, 480);
+            MFSetAttributeRatio(pType, MF_MT_FRAME_RATE, 30, 1);
+            pType->SetUINT32(MF_MT_DEFAULT_STRIDE, 640);
+            pType->SetUINT32(MF_MT_SAMPLE_SIZE, 640 * 480 * 3 / 2);
+            pType->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
+            HRESULT hrSet = pSrc2->SetMediaType(0, pType);
+            LogW(L"direct Src2.SetMediaType NV12 640x480 -> 0x%08X (QI=0x%08X)", (unsigned)hrSet, (unsigned)hrQI);
+        } else {
+            LogW(L"direct SetMediaType negotiate failed QI=0x%08X MT=0x%08X", (unsigned)hrQI, (unsigned)hrMt);
+        }
+        if (pType) pType->Release();
+        if (pSrc2) pSrc2->Release();
     }
 
     // Start the source
@@ -255,10 +309,14 @@ static int RunDirectMode(int numFrames, const wchar_t* outputPrefix)
                     DWORD maxLen, curLen;
                     pBuffer->Lock(&pBits, &maxLen, &curLen);
                     if (pBits) {
-                        // Save as BMP (every frame)
                         wchar_t bmpName[MAX_PATH];
                         swprintf_s(bmpName, L"%s_%03d.bmp", outputPrefix, framesReceived);
-                        SaveBMP(bmpName, pBits, 1280, 720, 5120);
+                        LogW(L"direct frame %d: curLen=%u maxLen=%u", framesReceived, curLen, maxLen);
+                        if (curLen == 640 * 480 * 3 / 2) {
+                            SaveNv12AsBmp(bmpName, pBits, 640, 480);
+                        } else {
+                            SaveBMP(bmpName, pBits, 1280, 720, 5120);
+                        }
                     }
                     pBuffer->Unlock();
                     pBuffer->Release();
@@ -292,12 +350,12 @@ static int RunDirectMode(int numFrames, const wchar_t* outputPrefix)
 // ---------------------------------------------------------------------------
 // Device mode: MFEnumDeviceSources -> activate "the camera" AS A DEVICE ->
 // pump 10 frames, one BMP + SHA256 per frame.
-// Usage: CaptureTest.exe device [nameFilter] [outputPrefix]
+// Usage: CaptureTest.exe device [strict] [nv12] [nameFilter] [width] [height] [outputPrefix]
 // Exit: 0 = captured all frames, 1 = failure, 2 = no device matching filter.
 // ---------------------------------------------------------------------------
-static int RunDeviceMode(int numFrames, const wchar_t* nameFilter, UINT32 reqW, UINT32 reqH, const wchar_t* outputPrefix, bool strict)
+static int RunDeviceMode(int numFrames, const wchar_t* nameFilter, UINT32 reqW, UINT32 reqH, const wchar_t* outputPrefix, bool strict, bool wantNv12)
 {
-    LogW(L"--- device mode: filter='%s' strict=%d frames=%d res=%ux%u out='%s'", nameFilter, (int)strict, numFrames, reqW, reqH, outputPrefix);
+    LogW(L"--- device mode: filter='%s' strict=%d nv12=%d frames=%d res=%ux%u out='%s'", nameFilter, (int)strict, (int)wantNv12, numFrames, reqW, reqH, outputPrefix);
 
     HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     if (FAILED(hr)) { LogW(L"CoInitializeEx failed: 0x%08X", hr); return 1; }
@@ -456,9 +514,10 @@ static int RunDeviceMode(int numFrames, const wchar_t* nameFilter, UINT32 reqW, 
                             MFGetAttributeSize(pMTType, MF_MT_FRAME_SIZE, &w, &h);
                             GUID sub = {};
                             pMTType->GetGUID(MF_MT_SUBTYPE, &sub);
-                            if (w == reqW && h == reqH && sub == MFVideoFormat_RGB32) {
+                            GUID want = wantNv12 ? MFVideoFormat_NV12 : MFVideoFormat_RGB32;
+                            if (w == reqW && h == reqH && sub == want) {
                                 pMTH->SetCurrentMediaType(pMTType);
-                                LogW(L"Set requested media type: %ux%u RGB32", w, h);
+                                LogW(L"Set requested media type: %ux%u %s", w, h, wantNv12 ? L"NV12" : L"RGB32");
                                 pMTType->Release();
                                 break;
                             }
@@ -574,6 +633,38 @@ static int RunDeviceMode(int numFrames, const wchar_t* nameFilter, UINT32 reqW, 
         return 1;
     }
 
+    // 5b. Wait for MEStreamStarted before the first RequestSample: the
+    //     frameserver session proxy rejects RequestSample with
+    //     MF_E_MEDIA_SOURCE_WRONGSTATE until source+stream have started.
+    {
+        bool started = false;
+        ULONGLONG st0 = GetTickCount64();
+        while (!started && (GetTickCount64() - st0) < 5000) {
+            IMFMediaEvent* pEvent = nullptr;
+            HRESULT hrE = pStream->GetEvent(MF_EVENT_FLAG_NO_WAIT, &pEvent);
+            if (SUCCEEDED(hrE)) {
+                MediaEventType met;
+                pEvent->GetType(&met);
+                LogW(L"  stream event: type=%d (0x%08X)", (int)met, (unsigned)met);
+                if (met == MEStreamStarted) started = true;
+                pEvent->Release();
+                continue;
+            }
+            hrE = pSource->GetEvent(MF_EVENT_FLAG_NO_WAIT, &pEvent);
+            if (SUCCEEDED(hrE)) {
+                MediaEventType met;
+                pEvent->GetType(&met);
+                LogW(L"  source event(2): type=%d (0x%08X)", (int)met, (unsigned)met);
+                if (met == MEStreamStarted || met == MESourceStarted) started = true;
+                pEvent->Release();
+                continue;
+            }
+            Sleep(10);
+        }
+        LogW(started ? L"MEStreamStarted received."
+                     : L"MEStreamStarted not received within 5 s (continuing).");
+    }
+
     // 6. Pump samples: 10 frames, 2 s per frame
     // (this pruned SDK's IMFMediaStream has no GetMediaType; the sample buffer
     //  length is the evidence: 1280*720*4 = 3686400 bytes = RGB32 1280x720)
@@ -622,9 +713,17 @@ static int RunDeviceMode(int numFrames, const wchar_t* nameFilter, UINT32 reqW, 
                             && stream0Sub == MFVideoFormat_RGB32
                             && stream0W > 0 && stream0H > 0
                             && curLen >= stream0W * stream0H * 4;
+                        bool nv12 = stream0Known
+                            && stream0Major == MFMediaType_Video
+                            && stream0Sub == MFVideoFormat_NV12
+                            && stream0W > 0 && stream0H > 0
+                            && curLen >= stream0W * stream0H * 3 / 2;
                         if (rgb32) {
                             swprintf_s(fname, L"%s_%03d.bmp", outputPrefix, framesReceived);
                             SaveBMP(fname, pBits, (int)stream0W, (int)stream0H, (int)(stream0W * 4));
+                        } else if (nv12) {
+                            swprintf_s(fname, L"%s_%03d.bmp", outputPrefix, framesReceived);
+                            SaveNv12AsBmp(fname, pBits, (int)stream0W, (int)stream0H);
                         } else {
                             swprintf_s(fname, L"%s_%03d.raw", outputPrefix, framesReceived);
                             FILE* f = _wfopen(fname, L"wb");
@@ -771,7 +870,7 @@ int wmain(int argc, wchar_t* argv[])
 {
     wprintf(L"VCam Capture Test - captures frames from the virtual camera\n");
     wprintf(L"Usage: CaptureTest.exe [numFrames] [outputPrefix]\n");
-    wprintf(L"       CaptureTest.exe device [strict] [nameFilter|index] [width] [height] [outputPrefix]\n");
+    wprintf(L"       CaptureTest.exe device [strict] [nv12] [nameFilter|index] [width] [height] [outputPrefix]\n");
     wprintf(L"       CaptureTest.exe inspect\n");
     if (argc >= 2 && _wcsicmp(argv[1], L"inspect") == 0) {
         int rc = RunInspectMode();
@@ -781,14 +880,20 @@ int wmain(int argc, wchar_t* argv[])
 
     if (argc >= 2 && _wcsicmp(argv[1], L"device") == 0) {
         // 'strict' => exact case-insensitive name match, no unnamed-device fallback
+        // 'nv12'   => negotiate NV12 instead of RGB32 and save via YUV->RGB
         bool strict = false;
+        bool nv12 = false;
         int a = 2;
-        if (argc >= 3 && _wcsicmp(argv[2], L"strict") == 0) { strict = true; a = 3; }
+        while (argc > a) {
+            if (_wcsicmp(argv[a], L"strict") == 0) { strict = true; ++a; }
+            else if (_wcsicmp(argv[a], L"nv12") == 0) { nv12 = true; ++a; }
+            else break;
+        }
         const wchar_t* nameFilter = (argc > a) ? argv[a] : L"VCam";
         UINT32 reqW = (argc > a + 1) ? _wtoi(argv[a + 1]) : 0;
         UINT32 reqH = (argc > a + 2) ? _wtoi(argv[a + 2]) : 0;
         const wchar_t* outputPrefix = (argc > a + 3) ? argv[a + 3] : L"frame";
-        int rc = RunDeviceMode(10, nameFilter, reqW, reqH, outputPrefix, strict);
+        int rc = RunDeviceMode(10, nameFilter, reqW, reqH, outputPrefix, strict, nv12);
         wprintf(L"device mode exit code: %d\n", rc);
         return rc;
     }

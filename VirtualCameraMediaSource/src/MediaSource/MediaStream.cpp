@@ -26,7 +26,6 @@ CMediaStream::~CMediaStream()
     if (m_pMediaType) m_pMediaType->Release();
     if (m_pMediaTypeNv12) m_pMediaTypeNv12->Release();
     if (m_pMediaType640) m_pMediaType640->Release();
-    if (m_pMediaType640Nv12) m_pMediaType640Nv12->Release();
     if (m_pNv12Scratch) { delete[] m_pNv12Scratch; m_pNv12Scratch = nullptr; }
     if (m_pStreamAttrsProxy) m_pStreamAttrsProxy->Release();
     if (m_pStreamAttributes) m_pStreamAttributes->Release();
@@ -273,6 +272,19 @@ HRESULT CMediaStream::SetMediaType(IMFMediaType* pMediaType)
     m_selectedHeight = h;
     m_selectedNv12 = (subtype == MFVideoFormat_NV12);
     VCamDiagLog(L"Stream.SetMediaType -> %ux%u %s", w, h, m_selectedNv12 ? L"NV12" : L"RGB32");
+
+    // Keep the SD handler's current type in sync: consumers (and our own
+    // ResolveNegotiatedType) may read the type from the handler, so a type set
+    // through this path must be visible there too. Failure is non-fatal
+    // (m_selected* already carries the negotiation), but log it.
+    if (m_pStreamDescriptor != nullptr) {
+        IMFMediaTypeHandler* pHandler = nullptr;
+        if (SUCCEEDED(m_pStreamDescriptor->GetMediaTypeHandler(&pHandler)) && pHandler != nullptr) {
+            HRESULT hrSync = pHandler->SetCurrentMediaType(pMediaType);
+            VCamDiagLog(L"Stream.SetMediaType handler SetCurrentMediaType hr=0x%08X", (unsigned)hrSync);
+            pHandler->Release();
+        }
+    }
     return S_OK;
 }
 
@@ -368,35 +380,12 @@ HRESULT CMediaStream::FinalConstruct(CMediaSource* pSource)
     hr = MFSetAttributeRatio(m_pMediaType640, MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
     if (FAILED(hr)) return hr;
 
-    // Quaternary format: 640x480 NV12@30
-    const UINT32 nv12Bytes640 = (UINT32)(640 * 480 * 3 / 2);
-    hr = MFCreateMediaType(&m_pMediaType640Nv12);
-    if (FAILED(hr)) return hr;
-    hr = m_pMediaType640Nv12->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-    if (FAILED(hr)) return hr;
-    hr = m_pMediaType640Nv12->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12);
-    if (FAILED(hr)) return hr;
-    hr = MFSetAttributeSize(m_pMediaType640Nv12, MF_MT_FRAME_SIZE, 640, 480);
-    if (FAILED(hr)) return hr;
-    hr = MFSetAttributeRatio(m_pMediaType640Nv12, MF_MT_FRAME_RATE, 30, 1);
-    if (FAILED(hr)) return hr;
-    hr = m_pMediaType640Nv12->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
-    if (FAILED(hr)) return hr;
-    hr = m_pMediaType640Nv12->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
-    if (FAILED(hr)) return hr;
-    hr = m_pMediaType640Nv12->SetUINT32(MF_MT_FIXED_SIZE_SAMPLES, TRUE);
-    if (FAILED(hr)) return hr;
-    hr = m_pMediaType640Nv12->SetUINT32(MF_MT_DEFAULT_STRIDE, 640);
-    if (FAILED(hr)) return hr;
-    hr = m_pMediaType640Nv12->SetUINT32(MF_MT_SAMPLE_SIZE, nv12Bytes640);
-    if (FAILED(hr)) return hr;
-    hr = m_pMediaType640Nv12->SetUINT32(MF_MT_AVG_BITRATE, (UINT32)(nv12Bytes640 * 8 * 30));
-    if (FAILED(hr)) return hr;
-    hr = MFSetAttributeRatio(m_pMediaType640Nv12, MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
-    if (FAILED(hr)) return hr;
+    // 640x480 NV12 намеренно НЕ предлагается: системный FrameServer-прокси
+    // портит именно эту комбинацию (UV-плоскость обнуляется у клиента),
+    // тогда как RGB32 640x480 и NV12 1280x720 через прокси идут чисто.
 
-    IMFMediaType* types[4] = { m_pMediaType, m_pMediaTypeNv12, m_pMediaType640, m_pMediaType640Nv12 };
-    hr = MFCreateStreamDescriptor(0, 4, types, &m_pStreamDescriptor);
+    IMFMediaType* types[3] = { m_pMediaType, m_pMediaTypeNv12, m_pMediaType640 };
+    hr = MFCreateStreamDescriptor(0, 3, types, &m_pStreamDescriptor);
     if (FAILED(hr)) return hr;
 
     // The frameserver's Start validation calls GetCurrentMediaType on the
@@ -438,7 +427,26 @@ HRESULT CMediaStream::StartForSession()
     if (m_state == MF_STREAM_STATE_RUNNING) return S_OK;
 
     m_state = MF_STREAM_STATE_RUNNING;
-    IMFMediaType* pInitType = (m_selectedNv12 && m_pMediaTypeNv12 != nullptr) ? m_pMediaTypeNv12 : m_pMediaType;
+    UINT32 selW = 0, selH = 0;
+    bool selNv12 = false;
+    ResolveNegotiatedType(&selW, &selH, &selNv12);
+    IMFMediaType* pInitType = nullptr;
+    if (selNv12 && m_pMediaTypeNv12 != nullptr && selW == vcam::VCamWidth && selH == vcam::VCamHeight) {
+        pInitType = m_pMediaTypeNv12;
+    }
+    else if (!selNv12 && m_pMediaType640 != nullptr && selW == 640 && selH == 480) {
+        pInitType = m_pMediaType640;
+    }
+    else {
+        pInitType = m_pMediaType;
+    }
+    VCamDiagLog(L"Stream.StartForSession negotiated %ux%u %s -> allocator type %s", selW, selH,
+                selNv12 ? L"NV12" : L"RGB32",
+                pInitType == m_pMediaTypeNv12 ? L"NV12720" : (pInitType == m_pMediaType640 ? L"RGB640" : L"RGB720"));
+    // Log the delivered type once per session as well.
+    m_lastDeliverW = 0;
+    m_lastDeliverH = 0;
+    m_lastDeliverNv12 = false;
     if (m_pAllocator != nullptr && pInitType != nullptr) {
         HRESULT hrInit = m_pAllocator->InitializeSampleAllocator(10, pInitType);
         if (FAILED(hrInit)) {
@@ -530,6 +538,8 @@ void CMediaStream::ShutDownInternal()
     if (m_pEventQueue) { m_pEventQueue->Release(); m_pEventQueue = nullptr; }
     if (m_pStreamDescriptor) { m_pStreamDescriptor->Release(); m_pStreamDescriptor = nullptr; }
     if (m_pMediaType) { m_pMediaType->Release(); m_pMediaType = nullptr; }
+    if (m_pMediaTypeNv12) { m_pMediaTypeNv12->Release(); m_pMediaTypeNv12 = nullptr; }
+    if (m_pMediaType640) { m_pMediaType640->Release(); m_pMediaType640 = nullptr; }
     if (m_pStreamAttrsProxy) { m_pStreamAttrsProxy->Release(); m_pStreamAttrsProxy = nullptr; }
     if (m_pStreamAttributes) { m_pStreamAttributes->Release(); m_pStreamAttributes = nullptr; }
     if (m_csInit) { DeleteCriticalSection(&m_cs); m_csInit = false; }
@@ -555,14 +565,29 @@ void CMediaStream::WorkerMain()
     }
 }
 
+// Вписывает src в dst с сохранением пропорций (letterbox), центрирует и
+// заливает поля чёрным. Без этого 16:9 (1280x720) сжимался в 4:3 (640x480)
+// неравномерно (x*0.5, y*0.667) и картинка вытягивалась по вертикали в 1.33x.
 static void DownsampleRgb32(const BYTE* pSrc, BYTE* pDst, UINT32 srcW, UINT32 srcH, UINT32 dstW, UINT32 dstH, UINT32 srcStride)
 {
-    for (UINT32 y = 0; y < dstH; ++y) {
-        UINT32 srcY = y * srcH / dstH;
+    UINT32 outW = dstW, outH = dstH;
+    if ((UINT64)srcW * dstH > (UINT64)dstW * srcH) {
+        outH = (UINT32)((UINT64)srcH * dstW / srcW); // вписываем по ширине
+        if (outH == 0) outH = 1;
+    } else {
+        outW = (UINT32)((UINT64)srcW * dstH / srcH); // вписываем по высоте
+        if (outW == 0) outW = 1;
+    }
+    const UINT32 offX = (dstW - outW) / 2;
+    const UINT32 offY = (dstH - outH) / 2;
+
+    memset(pDst, 0, (SIZE_T)dstW * dstH * 4);
+    for (UINT32 y = 0; y < outH; ++y) {
+        UINT32 srcY = (UINT32)((UINT64)y * srcH / outH);
         const BYTE* pSrcRow = pSrc + (SIZE_T)srcY * srcStride;
-        BYTE* pDstRow = pDst + (SIZE_T)y * (dstW * 4);
-        for (UINT32 x = 0; x < dstW; ++x) {
-            UINT32 srcX = x * srcW / dstW;
+        BYTE* pDstRow = pDst + (SIZE_T)(y + offY) * (dstW * 4) + (SIZE_T)offX * 4;
+        for (UINT32 x = 0; x < outW; ++x) {
+            UINT32 srcX = (UINT32)((UINT64)x * srcW / outW);
             const BYTE* pSrcPixel = pSrcRow + (SIZE_T)srcX * 4;
             BYTE* pDstPixel = pDstRow + (SIZE_T)x * 4;
             pDstPixel[0] = pSrcPixel[0];
@@ -573,8 +598,9 @@ static void DownsampleRgb32(const BYTE* pSrc, BYTE* pDst, UINT32 srcW, UINT32 sr
     }
 }
 
-// BT.601 full-range RGB -> Y + interleaved UV (2x2 subsampled).
-// Shared-memory "RGB32" frames are stored R,G,B,A byte order (see ProducerTest).
+// BT.601 limited-range RGB -> Y + interleaved UV (2x2 subsampled).
+// Shared-memory frames are BGRX in memory (ProducerApi.h, StaticImageSource,
+// VCamPreview): byte0 = B, byte1 = G, byte2 = R (see CaptureTest "B at +0").
 static void ConvertRgb32ToNv12(const BYTE* pSrc, BYTE* pDst, UINT32 width, UINT32 height, UINT32 srcStride)
 {
     BYTE* pY = pDst;
@@ -585,30 +611,30 @@ static void ConvertRgb32ToNv12(const BYTE* pSrc, BYTE* pDst, UINT32 width, UINT3
         BYTE* pYRow = pY + (SIZE_T)y * width;
         for (UINT32 x = 0; x < width; ++x) {
             const BYTE* p = pRow + (SIZE_T)x * 4;
-            const int r = p[0], g = p[1], b = p[2];
-            pYRow[x] = (BYTE)((66 * r + 129 * g + 25 * b + 128) >> 8);
+            const int b = p[0], g = p[1], r = p[2];
+            pYRow[x] = (BYTE)(16 + ((66 * r + 129 * g + 25 * b + 128) >> 8));
             if ((x & 1u) == 0) {
                 int rSum = r, gSum = g, bSum = b;
                 int n = 1;
                 if (x + 1 < width) {
                     const BYTE* p2 = p + 4;
-                    rSum += p2[0]; gSum += p2[1]; bSum += p2[2];
+                    rSum += p2[2]; gSum += p2[1]; bSum += p2[0];
                     ++n;
                 }
                 if (y + 1 < height) {
                     const BYTE* p3 = pSrc + (SIZE_T)(y + 1) * srcStride + (SIZE_T)x * 4;
-                    rSum += p3[0]; gSum += p3[1]; bSum += p3[2];
+                    rSum += p3[2]; gSum += p3[1]; bSum += p3[0];
                     ++n;
                     if (x + 1 < width) {
                         const BYTE* p4 = p3 + 4;
-                        rSum += p4[0]; gSum += p4[1]; bSum += p4[2];
+                        rSum += p4[2]; gSum += p4[1]; bSum += p4[0];
                         ++n;
                     }
                 }
                 const int rAvg = rSum / n, gAvg = gSum / n, bAvg = bSum / n;
                 const SIZE_T uvIdx = ((SIZE_T)(y >> 1) * (width >> 1) + (x >> 1)) * 2;
-                pUV[uvIdx] = (BYTE)((-38 * rAvg - 74 * gAvg + 112 * bAvg + 128) >> 8);
-                pUV[uvIdx + 1] = (BYTE)((112 * rAvg - 94 * gAvg - 18 * bAvg + 128) >> 8);
+                pUV[uvIdx] = (BYTE)(128 + ((-38 * rAvg - 74 * gAvg + 112 * bAvg + 128) >> 8));
+                pUV[uvIdx + 1] = (BYTE)(128 + ((112 * rAvg - 94 * gAvg - 18 * bAvg + 128) >> 8));
             }
         }
     }
@@ -618,7 +644,7 @@ static void WriteFrameData(const BYTE* pSrcFrame, BYTE* pDstBits, UINT32 w, UINT
 {
     const UINT32 rgbBytes = w * h * 4;
     if (w == 640 && h == 480) {
-        BYTE rgb640[640 * 480 * 4];
+        static thread_local BYTE rgb640[640 * 480 * 4];
         DownsampleRgb32(pSrcFrame, rgb640, 1280, 720, 640, 480, vcam::VCamStride);
         if (useNv12) {
             ConvertRgb32ToNv12(rgb640, pDstBits, 640, 480, 640 * 4);
@@ -634,6 +660,46 @@ static void WriteFrameData(const BYTE* pSrcFrame, BYTE* pDstBits, UINT32 w, UINT
     }
 }
 
+void CMediaStream::ResolveNegotiatedType(UINT32* pW, UINT32* pH, bool* pNv12) const
+{
+    UINT32 w = m_selectedWidth;
+    UINT32 h = m_selectedHeight;
+    bool nv12 = m_selectedNv12;
+
+    if (m_pStreamDescriptor != nullptr) {
+        IMFMediaTypeHandler* pHandler = nullptr;
+        if (SUCCEEDED(m_pStreamDescriptor->GetMediaTypeHandler(&pHandler)) && pHandler != nullptr) {
+            IMFMediaType* pCur = nullptr;
+            if (SUCCEEDED(pHandler->GetCurrentMediaType(&pCur)) && pCur != nullptr) {
+                GUID sub = GUID_NULL;
+                UINT32 hw = 0, hh = 0;
+                if (SUCCEEDED(pCur->GetGUID(MF_MT_SUBTYPE, &sub)) &&
+                    SUCCEEDED(MFGetAttributeSize(pCur, MF_MT_FRAME_SIZE, &hw, &hh)) &&
+                    hw != 0 && hh != 0) {
+                    if (sub == MFVideoFormat_NV12 || sub == MFVideoFormat_RGB32) {
+                        w = hw;
+                        h = hh;
+                        nv12 = (sub == MFVideoFormat_NV12);
+                    }
+                }
+                pCur->Release();
+            }
+            pHandler->Release();
+        }
+    }
+
+    // Defensive: never deliver a size we cannot produce.
+    if (!((w == vcam::VCamWidth && h == vcam::VCamHeight) || (w == 640 && h == 480))) {
+        w = m_selectedWidth;
+        h = m_selectedHeight;
+        nv12 = m_selectedNv12;
+    }
+
+    if (pW != nullptr) *pW = w;
+    if (pH != nullptr) *pH = h;
+    if (pNv12 != nullptr) *pNv12 = nv12;
+}
+
 HRESULT CMediaStream::DeliverNextSample(IUnknown* pToken)
 {
     VCamDiagLog(L"Stream.DeliverNextSample");
@@ -644,25 +710,22 @@ HRESULT CMediaStream::DeliverNextSample(IUnknown* pToken)
     bool shared = false;
 
     // Format negotiation: the frameserver proxy may set the type via the
-    // stream's SetMediaType OR via the SD handler's current type; honor both.
-    bool useNv12 = m_selectedNv12;
-    if (!useNv12 && m_pStreamDescriptor != nullptr) {
-        IMFMediaTypeHandler* pHandler = nullptr;
-        if (SUCCEEDED(m_pStreamDescriptor->GetMediaTypeHandler(&pHandler)) && pHandler != nullptr) {
-            IMFMediaType* pCur = nullptr;
-            if (SUCCEEDED(pHandler->GetCurrentMediaType(&pCur)) && pCur != nullptr) {
-                GUID sub = GUID_NULL;
-                if (SUCCEEDED(pCur->GetGUID(MF_MT_SUBTYPE, &sub)) && sub == MFVideoFormat_NV12) useNv12 = true;
-                pCur->Release();
-            }
-            pHandler->Release();
-        }
-    }
-
-    const UINT32 w = m_selectedWidth;
-    const UINT32 h = m_selectedHeight;
+    // stream's SetMediaType OR via the SD handler's current type; honor both,
+    // with the handler as the authoritative source (consumers read it).
+    UINT32 w = 0, h = 0;
+    bool useNv12 = false;
+    ResolveNegotiatedType(&w, &h, &useNv12);
     const UINT32 rgbBytes = w * h * 4;
     const UINT32 nv12Bytes = w * h * 3 / 2;
+    const bool typeChanged = (w != m_lastDeliverW) || (h != m_lastDeliverH) || (useNv12 != m_lastDeliverNv12);
+    if (typeChanged) {
+        VCamDiagLog(L"Stream.DeliverNextSample deliver type %ux%u %s (selected=%ux%u %s)", w, h,
+                    useNv12 ? L"NV12" : L"RGB32", m_selectedWidth, m_selectedHeight,
+                    m_selectedNv12 ? L"NV12" : L"RGB32");
+        m_lastDeliverW = w;
+        m_lastDeliverH = h;
+        m_lastDeliverNv12 = useNv12;
+    }
 
     EnterCriticalSection(&m_cs);
     if (m_pNv12Scratch == nullptr) m_pNv12Scratch = new (std::nothrow) BYTE[vcam::VCamFrameSize];
@@ -691,6 +754,8 @@ HRESULT CMediaStream::DeliverNextSample(IUnknown* pToken)
         }
         hr = MFCreateSample(&pSample);
         if (FAILED(hr)) { pBuffer->Release(); return hr; }
+        HRESULT hrCur = pBuffer->SetCurrentLength(useNv12 ? nv12Bytes : rgbBytes);
+        if (FAILED(hrCur)) { pBuffer->Release(); return hr; }
         hr = pSample->AddBuffer(pBuffer);
         pBuffer->Release();
         if (FAILED(hr)) { pSample->Release(); return hr; }
@@ -702,20 +767,25 @@ HRESULT CMediaStream::DeliverNextSample(IUnknown* pToken)
         hr = pSample->GetBufferByIndex(0, &pBuffer);
         VCamDiagLog(L"Stream.DeliverNextSample GetBufferByIndex hr=0x%08X buf=%p", (unsigned)hr, (const void*)pBuffer);
         if (SUCCEEDED(hr)) {
-            DWORD curLen = 0, maxLen = 0;
+            // Lock signature: (buffer, pcbMaxLength, pcbCurrentLength).
+            DWORD maxLen = 0, curLen = 0;
             VCamDiagLog(L"Stream.DeliverNextSample before Lock");
-            hr = pBuffer->Lock(&pBits, &curLen, &maxLen);
+            hr = pBuffer->Lock(&pBits, &maxLen, &curLen);
             VCamDiagLog(L"Stream.DeliverNextSample Lock hr=0x%08X bits=%p maxLen=%u curLen=%u", (unsigned)hr, (const void*)pBits, maxLen, curLen);
         if (SUCCEEDED(hr)) {
+            const DWORD needed = useNv12 ? nv12Bytes : rgbBytes;
             VCamDiagLog(L"Stream.DeliverNextSample before AcquireFrame");
-            if (m_pNv12Scratch != nullptr && maxLen >= (DWORD)(useNv12 ? nv12Bytes : rgbBytes)) {
+            if (m_pNv12Scratch != nullptr && maxLen >= needed) {
                 SharedMemoryFrameSource::Instance().AcquireFrame(m_pNv12Scratch, vcam::VCamReadyTimeoutMs);
                 WriteFrameData(m_pNv12Scratch, pBits, w, h, useNv12);
-                hr = pBuffer->SetCurrentLength(useNv12 ? nv12Bytes : rgbBytes);
+                hr = pBuffer->SetCurrentLength(needed);
             }
             else {
+                // Buffer too small for the negotiated frame: deliver an empty,
+                // zeroed buffer rather than a partially valid one.
                 RtlZeroMemory(pBits, maxLen);
-                hr = pBuffer->SetCurrentLength(maxLen);
+                hr = pBuffer->SetCurrentLength(0);
+                VCamDiagLog(L"Stream.DeliverNextSample buffer too small maxLen=%u needed=%u", maxLen, needed);
             }
             VCamDiagLog(L"Stream.DeliverNextSample AcquireFrame done, before Unlock");
             pBuffer->Unlock();

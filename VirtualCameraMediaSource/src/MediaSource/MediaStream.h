@@ -83,6 +83,9 @@ private:
     ~CMediaStream();
     void WorkerMain();
     HRESULT DeliverNextSample(IUnknown* pToken);
+    // Resolves the negotiated type: SD handler current type (authoritative —
+    // the frameserver proxy may set it directly) with fallback to m_selected*.
+    void ResolveNegotiatedType(UINT32* pW, UINT32* pH, bool* pNv12) const;
 
     CMediaSource* m_pSource = nullptr;          // not owned (source owns stream)
     IMFMediaEventQueue* m_pEventQueue = nullptr; // owned
@@ -90,7 +93,6 @@ private:
     IMFMediaType* m_pMediaType = nullptr;          // owned (1280x720 RGB32)
     IMFMediaType* m_pMediaTypeNv12 = nullptr;      // owned (1280x720 NV12)
     IMFMediaType* m_pMediaType640 = nullptr;       // owned (640x480 RGB32)
-    IMFMediaType* m_pMediaType640Nv12 = nullptr;   // owned (640x480 NV12)
     IMFAttributes* m_pStreamAttributes = nullptr;  // owned
     CAttrLogProxy* m_pStreamAttrsProxy = nullptr;  // owned (TEMP DIAGNOSTIC)
     IMFVideoSampleAllocator* m_pAllocator = nullptr; // owned (shared cross-session allocator from SetDefaultAllocator)
@@ -98,6 +100,9 @@ private:
     UINT32 m_selectedWidth = vcam::VCamWidth;        // negotiated width
     UINT32 m_selectedHeight = vcam::VCamHeight;      // negotiated height
     bool m_selectedNv12 = false;                     // NV12 negotiated (SetMediaType / SD handler)
+    UINT32 m_lastDeliverW = 0;                       // last logged delivered size (diag dedupe)
+    UINT32 m_lastDeliverH = 0;
+    bool m_lastDeliverNv12 = false;
 
     MF_STREAM_STATE m_state = MF_STREAM_STATE_STOPPED;
     bool m_shutdown = false;

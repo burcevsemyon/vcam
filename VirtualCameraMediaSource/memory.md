@@ -2,6 +2,73 @@
 
 Purpose: durable record so an interrupted agent can resume. Update as work progresses.
 
+## LATEST SERIES (26.09.2026 ~22:30) — RESOLVED: ktalk «вытянута по вертикали + статична» → letterbox + рестарт хоста; пользователь подтвердил «всё в порядке»
+- Симптом после предыдущих 4 фиксов: «картинка вытянута по вертикали на весь экран и статична».
+- Диагноз по частям:
+  1. **«Статична» = встал producer (tray-хост), НЕ media source.** Доказано: seq в Global\VCam.FrameBuffer.v1
+     заморожен (мерили 12 мин), `VCamProducerCli status` → «no new frames», у потребителя каждый
+     AcquireFrame = таймаут 40 мс → FallbackFrame (кэш) → одна картинка. Причина первого падения:
+     тултип «Нет сигнала» — камера Brio перестала отдавать кадры (ReadSample failed 0x80070428 =
+     ERROR_SERVICE_DISABLED после остановки FrameServer). Лечение: рестарт хоста (`host_out2.log`
+     перехват stdout: switch→source opened→active).
+  2. **«Вытянута по вертикали» = аспект 16:9→4:3.** Размеры к теперь совпадали (deliver type 640x480 =
+     selected, Lock maxLen=1228800), но `DownsampleRgb32` жал 1280x720→640x480 неравномерно
+     (x*0.5, y*0.667) → растяжение 1.33x. Фикс: letterbox в `DownsampleRgb32` (MediaStream.cpp:568) —
+     вписывание с сохранением пропорций + чёрные поля (memset), центрирование.
+  3. **Окно превью — НЕ причина** (проверено по коду): VCamPreview читает shm через
+     FILE_MAP_READ, в MF/камеру/запись не вмешивается.
+- Ритуал деплоя в этом раунде: ktalk держал FrameServer (sc stop висел в STOP_PENDING → SCM откатил);
+  после закрытия ktalk elevated `elev_fs_stop.ps1` → стоп за ~0.8 с → COPY OK → старт. DLL 1465856 B
+  22:20:57. **Правило: перед ритуалом закрывать ktalk (иначе sc stop не пройдёт).**
+- Сборка Release|x64 exit 0 (изменён только MediaStream.cpp).
+- **ИТОГ: пользователь «отлично, сейчас всё в порядке».** Сервис Running, писатель 30 fps, ktalk работает.
+- Незакоммичено (коммит/пуш не делались, push запрещён): CaptureTest/main.cpp,
+  Common/SharedMemoryFrameSource.cpp, MediaSource/MediaStream.{h,cpp} (все 5 фиксов + letterbox),
+  ProducerCore/FrameWriter.cpp.
+- Открытые мелочи (не мешают): (a) stdout текущего хоста никуда не пишется, если запущен не через
+  redirect — причины падений камеры видны только через `host_out2.log` при рестарте с перехватом;
+  (b) 0x80070428 после стопа FrameServer — штатно лечится рестартом хоста; (c) SHARED-инстанс —
+  один m_selected* на всех клиентов (залогируется deliver type).
+
+## LATEST SERIES (26.09.2026 ~21:44) — SYMPTOM: ktalk «картинка только в верхней части, ниже чёрное» → 4 фикса в MediaStream применены, DLL перезаложена, ОЖИДАЕТСЯ проверка в ktalk
+- Симптом (пользователь): в ktalk изображение занимает только верхнюю часть экрана, ниже чёрное
+  (= клиент читает 720p-строки из буфера, в который записан кадр меньшего размера: первые ~240
+  строк валидны, остальные ноль/мусор).
+- Доказательства (msrc_diag.log, ~266 МБ, pid svchost=25000 = ОДИН SHARED-инстанс на всех клиентов):
+  - Единственный FinalConstruct 20:04:13; лента SetMediaType: 720p RGB32 → 640x480 RGB32 (20:04:43)
+    → NV12 720p (20:23:30) → 640x480 RGB32 (20:32:19) → NV12 720p (20:39:08) → 640x480 RGB32 (20:46:04).
+  - **StartForSession БЕЗ предшествующего SetMediaType: 20:32:42, 20:38:18, 20:53:29** — сессии
+    стартовали со stale m_selected* (640x480 от 20:46:04). Если прокси выставил тип через SD handler
+    напрямую, наш код это игнорировал (handler читался только для NV12-детекта) → рассогласование.
+  - Lock-пары ВСЕГДА (3686400,3686400) и (1382400,1384448); 1228800 не встречается — аллокатор
+    перетирает currentLength при каждой выдаче, поэтому по логу размер доставок НЕ определить
+    (старая гипотеза «доставки всегда 720p» по логу неподтверждаема).
+  - Сессия SetMediaType→640x480 (20:46:04) показывает Lock maxLen=3686400 — аллокатор был
+    инициализирован 720p-типом (старый pInitType брал только NV12-или-720p).
+- ФИКСЫ (26.09.2026, MediaStream.{h,cpp}, +MSBuild Release|x64 exit 0, DLL 1465856 B 21:44:27):
+  1. `SetMediaType` дополнительно синкает SD handler: `pHandler->SetCurrentMediaType(pMediaType)`.
+  2. Новый `CMediaStream::ResolveNegotiatedType(w,h,nv12)`: handler current type (subtype+frame size)
+     = первоисточник, fallback m_selected*; валидация «только 1280x720 / 640x480»; используется в
+     DeliverNextSample И StartForSession (убрана асимметрия «NV12 читаем, размер нет»).
+  3. `StartForSession`: pInitType по (w,h,subtype) — NV12 720p / **m_pMediaType640** / m_pMediaType
+     (раньше 640x480 всегда получал 720p-аллокатор).
+  4. `Lock`: порядок аргументов `(pcbMaxLength, pcbCurrentLength)` исправлен, условие `maxLen >= needed`,
+     else-ветка: zero maxLen + `SetCurrentLength(0)` + лог «buffer too small» (раньше был no-op).
+  - Диагностика: лог разовый на смену типа `Stream.DeliverNextSample deliver type %ux%u %s
+    (selected=…)` (дедуп per-session, сбрасывается в StartForSession) + `allocator type …` в Start.
+  - Попутно: dtor/ShutDownInternal теперь релизит m_pMediaTypeNv12/m_pMediaType640 (был утечек).
+- Deploy: обычный elevate-скрипт (Stop-Service без прав) не сработал; успешный ритуал =
+  `%TEMP%\opencode\elev_fs_stop.ps1` elevated (sc stop FrameServer → COPY OK → sc start),
+  log `%TEMP%\opencode\elev_fs_stop.log`. Старый svchost 25000 GONE, сервис Running, DLL 21:44:27.
+- СТАТУС: сборка+деплой DONE; **ждём: пользователь открывает ktalk, воспроизводит симптом**, затем
+  читаем новые строки `deliver type` / `allocator type` / `handler SetCurrentMediaType` в msrc_diag.log.
+- Остаточные риски: (a) SHARED-инстанс — два одновременных клиента с разными типами не лечится
+  (залогируется строкой deliver type); (b) letterbox в DownsampleRgb32 (16:9→4:3 растягивается, не
+  чёрными полосами) — НЕ делался, отдельным шагом по запросу; (c) кейс CaptureTest device-mode
+  0xC00D3E9B и «камера не подключена» — баги потребителя, без изменений.
+- Незакоммичено (5 файлов, коммит/пуш не делались): CaptureTest/main.cpp, Common/SharedMemoryFrameSource.cpp,
+  MediaSource/MediaStream.{h,cpp}, ProducerCore/FrameWriter.cpp.
+
 ## LATEST SERIES (13.09.2026 ~23:03-23:25) — FINAL: fix VERIFIED end-to-end (20/20 frames, zero FrameServer crashes); repo moved to C:\Users\Semen\source\repos\VCam (git init -b main + initial commit)
 - Subagent retest 23:03 (after SharedMemoryContract.h:12 fix; DLL 234,496 B deployed 22:59:12):
   (a) no producer: 10/10 black frames, all MD5-identical (DC33A7301ED19E0133E639A9BAAA39BF) — fallback path no longer crashes;

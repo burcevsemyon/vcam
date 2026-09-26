@@ -19,6 +19,12 @@ bool IsRetryableOpenError(DWORD win32Error)
     return win32Error == ERROR_FILE_NOT_FOUND || win32Error == ERROR_ACCESS_DENIED;
 }
 
+struct CsGuard {
+    CRITICAL_SECTION* cs;
+    explicit CsGuard(CRITICAL_SECTION* c) : cs(c) { EnterCriticalSection(c); }
+    ~CsGuard() { LeaveCriticalSection(cs); }
+};
+
 static void PaintNoSignalPattern(BYTE* pDest, UINT32 width, UINT32 height, UINT32 stride)
 {
     for (UINT32 y = 0; y < height; ++y) {
@@ -85,7 +91,12 @@ HRESULT SharedMemoryFrameSource::Init()
             (DWORD)(totalSize >> 32), (DWORD)(totalSize & 0xFFFFFFFF), sectionName);
         if (m_hSection == nullptr && GetLastError() != ERROR_ACCESS_DENIED) break;
     }
-    if (m_hSection == nullptr || m_hReadyEvent == nullptr) {
+    for (int prefix = 0; prefix < kNamePrefixCount && m_hReadyEvent == nullptr; ++prefix) {
+        wchar_t eventName[MAX_PATH] = {};
+        swprintf_s(eventName, ARRAYSIZE(eventName), L"%s%s", kNamePrefixes[prefix], ObjectBaseName(vcam::VCamReadyEventName));
+        m_hReadyEvent = OpenEventW(EVENT_MODIFY_STATE | SYNCHRONIZE, FALSE, eventName);
+    }
+    if (m_hSection == nullptr) {
         if (m_hReadyEvent) { CloseHandle(m_hReadyEvent); m_hReadyEvent = nullptr; }
         if (m_hSection) { CloseHandle(m_hSection); m_hSection = nullptr; }
         if (pSecDesc) LocalFree(pSecDesc);
@@ -101,7 +112,7 @@ HRESULT SharedMemoryFrameSource::Init()
     }
 
     m_pBase = (BYTE*)MapViewOfFileEx(m_hSection, FILE_MAP_ALL_ACCESS, 0, 0, totalSize, nullptr);
-    if (m_hSection == nullptr || m_hReadyEvent == nullptr || m_pBase == nullptr) {
+    if (m_pBase == nullptr) {
         if (m_pBase) { UnmapViewOfFile(m_pBase); m_pBase = nullptr; m_pHeader = nullptr; }
         if (m_hReadyEvent) { CloseHandle(m_hReadyEvent); m_hReadyEvent = nullptr; }
         if (m_hSection) { CloseHandle(m_hSection); m_hSection = nullptr; }
@@ -150,40 +161,53 @@ HRESULT SharedMemoryFrameSource::AcquireFrame(BYTE* pDest, DWORD timeoutMs)
 {
     if (!m_bInit || m_bShutDown) return E_UNEXPECTED;
     if (pDest == nullptr) return E_POINTER;
+    CsGuard guard(&m_cs); // сериализация параллельных клиентов (кэш + событие)
 
     if (m_bOffline) {
         Sleep(33);
         return FallbackFrame(pDest);
     }
 
-    if (WaitForSingleObject(m_hReadyEvent, timeoutMs) == WAIT_OBJECT_0) {
+    if (m_hReadyEvent != nullptr) {
+        if (WaitForSingleObject(m_hReadyEvent, timeoutMs) != WAIT_OBJECT_0) {
+            return FallbackFrame(pDest);
+        }
         ResetEvent(m_hReadyEvent);
-        for (int spin = 0; ; ++spin) {
-            LONGLONG seq = m_pHeader->seq;
-            if (seq & 1) {
-                if (spin < 1000) { YieldProcessor(); continue; }
-                return FallbackFrame(pDest);
-            }
-            UINT32 idx = m_pHeader->frameWriteIndex;
-            if (idx >= m_pHeader->slotCount) {
-                return FallbackFrame(pDest);
-            }
-            LONGLONG seq2 = m_pHeader->seq;
-            if (seq != seq2) continue;
-
-            const BYTE* pSrc = m_pBase + sizeof(vcam::VCamSectionHeader) + (SIZE_T)idx * vcam::VCamFrameSize;
-            const DWORD rowBytes = (DWORD)(vcam::VCamWidth * vcam::VCamPixelSize);
-            for (UINT32 y = 0; y < vcam::VCamHeight; ++y) {
-                memcpy(pDest + (SIZE_T)y * vcam::VCamStride, pSrc + (SIZE_T)y * vcam::VCamStride, rowBytes);
-            }
-            if (m_pCache) {
-                memcpy(m_pCache, pDest, vcam::VCamFrameSize);
-                m_bHaveCache = true;
-            }
-            return S_OK;
+    } else {
+        // Событие недоступно — ждём продвижения seq (poll) в пределах таймаута.
+        LONGLONG startSeq = m_pHeader->seq;
+        ULONGLONG deadline = GetTickCount64() + timeoutMs;
+        while (m_pHeader->seq == startSeq && GetTickCount64() < deadline) {
+            Sleep(1);
+        }
+        if (m_pHeader->seq == startSeq) {
+            return FallbackFrame(pDest);
         }
     }
-    return FallbackFrame(pDest);
+    for (int spin = 0; ; ++spin) {
+        LONGLONG seq = m_pHeader->seq;
+        if (seq & 1) {
+            if (spin < 1000) { YieldProcessor(); continue; }
+            return FallbackFrame(pDest);
+        }
+        UINT32 idx = m_pHeader->frameWriteIndex;
+        if (idx >= m_pHeader->slotCount) {
+            return FallbackFrame(pDest);
+        }
+        LONGLONG seq2 = m_pHeader->seq;
+        if (seq != seq2) continue;
+
+        const BYTE* pSrc = m_pBase + sizeof(vcam::VCamSectionHeader) + (SIZE_T)idx * vcam::VCamFrameSize;
+        const DWORD rowBytes = (DWORD)(vcam::VCamWidth * vcam::VCamPixelSize);
+        for (UINT32 y = 0; y < vcam::VCamHeight; ++y) {
+            memcpy(pDest + (SIZE_T)y * vcam::VCamStride, pSrc + (SIZE_T)y * vcam::VCamStride, rowBytes);
+        }
+        if (m_pCache) {
+            memcpy(m_pCache, pDest, vcam::VCamFrameSize);
+            m_bHaveCache = true;
+        }
+        return S_OK;
+    }
 }
 
 HRESULT SharedMemoryFrameSource::FallbackFrame(BYTE* pDest)
