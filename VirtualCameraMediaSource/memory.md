@@ -2,6 +2,17 @@
 
 Purpose: durable record so an interrupted agent can resume. Update as work progresses.
 
+## LATEST SERIES (27.09.2026) — INSTALLED: VCam Installer v0.0.1 (Inno Setup)
+- Created Inno Setup installer script (`vcam_installer.iss`) for version `0.0.1`.
+- Built all C++ components (`Release|x64`) and published `VCamSettingsUi` as self-contained x64 (`win-x64`).
+- Implemented robust per-machine setup logic:
+  - Stops `FrameServer` service during update/uninstall to prevent file locks on `MediaSource.dll`.
+  - Registers COM `MediaSource.dll` via `regsvr32.exe`.
+  - Configures current user `HKCU\Run` autostart for tray host (`VCamAutostart`) and registrar holder (`VCamRegistrar` via hidden PowerShell wrapper).
+  - Automatically launches the registrar holder and tray host post-install so the camera is immediately active (`inspect count=2`, frames active).
+  - Clean uninstallation unregisters COM, stops processes, restores FrameServer service state, and preserves user settings (`%APPDATA%\VCam\settings.json`).
+- Compiled artifact: `VCamSetup-0.0.1-x64.exe`.
+
 ## LATEST SERIES (26.09.2026 ~22:30) — RESOLVED: ktalk «вытянута по вертикали + статична» → letterbox + рестарт хоста; пользователь подтвердил «всё в порядке»
 - Симптом после предыдущих 4 фиксов: «картинка вытянута по вертикали на весь экран и статична».
 - Диагноз по частям:
