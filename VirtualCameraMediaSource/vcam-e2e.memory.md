@@ -24,12 +24,26 @@ FrameServer) + обновить skill `vcam-e2e`. Продолжение инц�
 
 ### Питфол прогона (проверено на практике)
 
-- **Перед прогоном убедиться, что `Registrar.exe` запущен** (еlevated
+- **Перед прогоном убедиться, что `Registrar.exe` запущен** (elevated
   `Registrar.exe add VCam hold`, процесс живёт). После чистки процессов/рестарта
   FrameServer Registrar может не работать → inspect `count=1` → фазы D/E:
   «VCam device not enumerated (FrameServer running? …)» → **exit 1 при 100%
-  PASS остальных фаз**. Фикс: `Start-Process Registrar -ArgumentList add,VCam,hold
-  -Verb RunAs` (без -Wait), дождаться `inspect count=2`, повторить прогон.
+  PASS остальных фаз**. Фикс: `Start-Process Registrar -ArgumentList add,VCam,hold`
+  (без -Wait), дождаться `inspect count=2`, повторить прогон.
+
+### Автозапуск Registrar после перезагрузки (27.09.2026)
+
+- Симптом: после ребута «регистратор камеры не запускается», inspect count=1.
+  Причина: автозапуска не было (в Run только `VCamAutostart` хоста), камера —
+  `MFVirtualCameraLifetime_Session` → без живого холдера регистрация не живёт.
+- **Elevation НЕ нужен** (MFVirtualCameraAccess_CurrentUser, verified: не-elevated
+  запуск → count=2). Холдер = вечный цикл `[holder alive]`/5 с; kill процесса =
+  стоп камеры (без remove).
+- Фикс: запись `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\VCamRegistrar`
+  = `powershell.exe -WindowStyle Hidden -Command "Start-Process -FilePath
+  '<repo>\build\x64\Release\Registrar.exe' -ArgumentList 'add','VCam','hold'
+  -WindowStyle Hidden"`. Протестировано: kill холдера → запуск строки из Run →
+  pid жив, MainWindowHandle=0 (скрыто), count=2, без UAC.
 
 ## Ключевая эмпирика этой сессии (для resume)
 

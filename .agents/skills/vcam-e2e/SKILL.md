@@ -32,10 +32,17 @@ description: >-
    `Stop-Process -Name VCamVideoStreamProducer,VCamProducerCli -Force`.
 2. Камера зарегистрирована: `build\x64\Release\Registrar.exe add VCam hold`
    (elevated; процесс **не закрывать**, держит держку — проверка:
-   `Get-Process Registrar` + `CaptureTest inspect` → `count=2`). **После
-   каждой остановки/рестарта FrameServer и после чистки процессов перед
-   прогоном — убедиться, что Registrar жив**, иначе фазы D/E падают с
-   «VCam device not enumerated» (inspect count=1). Скрипт дополнительно делает
+   `Get-Process Registrar` + `CaptureTest inspect` → `count=2`). **Elevation
+   на самом деле НЕ нужен** (MFVirtualCameraAccess_CurrentUser, verified);
+   hold-режим — вечный цикл с `[holder alive]` каждые 5 с, kill процесса =
+   стоп камеры («will NOT remove on exit»). После каждой остановки/рестарта
+   FrameServer и после чистки процессов перед прогоном — убедиться, что
+   Registrar жив, иначе фазы D/E падают с «VCam device not enumerated»
+   (inspect count=1). **Автозапуск после перезагрузки**: запись
+   `HKCU\...\CurrentVersion\Run\VCamRegistrar` =
+   `powershell.exe -WindowStyle Hidden -Command "Start-Process -FilePath '<build>\Registrar.exe' -ArgumentList 'add','VCam','hold' -WindowStyle Hidden"`
+   (session-lifetime камера после ребута не поднимается сама; скрытый запуск
+   проверен — MainWindowHandle=0). Скрипт дополнительно делает
    `regsvr32 /s MediaSource.dll` — **из НЕ-elevated шелла это no-op**
   (exit 5, E_ACCESSDENIED, HKLM не пишется); поэтому скрипт регистрирует
    build-путь ещё и в **HKCU** (`HKCU\Software\Classes\CLSID\{B2B674D4-…}\InprocServer32`
