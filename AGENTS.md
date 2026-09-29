@@ -52,8 +52,9 @@
 
 ## Git и память
 
-- Ветка `main`; memory-файлы `*.memory.md` (в `VirtualCameraMediaSource/`)
-  коммитятся вместе с кодом — это память задач.
+- Ветка `main`; memory-файлы `*.memory.md` и `memory.md` (в `VirtualCameraMediaSource/`) —
+  **локальные, в git НЕ идут** (в `.gitignore`: `memory.md`, `*.memory.md`); в репо — только
+  код и артефакты.
 - Перед доработкой читать память релевантной задачи
   (`vcam-producer*.memory.md`, `vcam-video*.memory.md`) — там факты, фиксы и
   питфолы; свой статус писать в `<task>.memory.md`.
