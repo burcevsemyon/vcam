@@ -1,0 +1,130 @@
+---
+name: vcam-installer-e2e
+description: >-
+  E2E-проверка инсталлятора VCam в Hyper-V VM (Win11 «Среда разработки»): установка /VERYSILENT через
+  PowerShell Direct, пост-инсталл-чеки (файлы+SHA256, ярлыки 3/3, HKCU Run, процессы, host.log,
+  list-devices rows=0, inspect count=1), ребут-тест с автологоном и верификацией авторанта из HKCU Run
+  (фикс «после ребута нет сигнала» → writer ready (Local\...)), cleanup автологона. Use when: проверить
+  установщик, установка в VM, reboot-тест VCam, post-reboot «нет сигнала», VCamSetup e2e, проверка ярлыков
+  и автозапуска после установки.
+---
+
+# VCam Installer E2E (проектный skill)
+
+Ритуал проверки инсталлятора **по следам** реального прогона 29.09.2026 (симптом «после ребута нет
+сигнала» воспроизведён и закрыт фиксом). Сборка/упаковка — skill `vcam-installer-build`; фазы
+камеры/hot-switch — skill `vcam-e2e`.
+
+## Среда и доступ
+
+- **VM**: «Среда разработки под Windows 11» — имя кириллическое, в скриптах выбирать паттерном
+  `*Windows 11*`. Гость: юзер `User` (WINDEV2407EVAL, админ), пароль `123` (пустой пароль отвергается —
+  «Недопустимые учетные данные»).
+- **PowerShell Direct**: `New-PSSession -VMName $vm -Credential $cred` — работает из обычного шелла
+  хоста; host-UAC нужен только для операций с `C:\Program Files\` **хоста** (не гостя).
+- **Скрипты ASCII-only**: PS5.1 ломает `.ps1` UTF-8 без BOM с кириллицей; вывод гостя с кириллицей
+  escape'ить в `\uXXXX` перед печатью в консоль.
+- **Инсталлятор** копировать в гость `Copy-Item -ToSession` (например, в `C:\Users\User\`) и запускать
+  оттуда: `Start-Process '...\VCamSetup-<ver>-x64.exe' '/VERYSILENT /SUPPRESSMSGBOXES' -Wait`.
+  Версии линейки «по порядку релизов»: `0.0.1`, `0.0.2` (инкремент — в `vcam_installer.iss`).
+
+## КРИТИЧЕСКИЙ питфол: сеансы 0 vs 2
+
+- `Invoke-Command -VMName` исполняется в **сеансе 0 гостя**; юзер/хост/превью — в **сеансе 2**
+  (interactive). Local-namespace сеансов не пересекается.
+- Поэтому `VCamProducerCli status` из PS Direct **врёт**: «host not running» при живом хосте и/или
+  видит постороннюю `Global\... seq 0`. Это артефакт диагностики, **не баг продукта**.
+- **Честный status — только из сеанса юзера** (юзер руками в PowerShell):
+  `& "$env:ProgramFiles\VCam\VCamProducerCli.exe" status | Out-File "$env:TEMP\vcam_status.txt"`
+  → файл прочитать через PS Direct (на диске он общедоступен). Не путать шеллы: `%TEMP%` в PowerShell
+  не подставится, `&` в cmd — тоже.
+- `host.log`, файлы, HKCU/процесс-список — из PS Direct читать можно (файл/реестр на диске не «сессионные»).
+- Сверка сеансов при расхождении: `(Get-Process -Id $PID).SessionId` (диагностика = 0) vs
+  `Get-Process VCamVideoStreamProducer` (хост = 2).
+
+## Автологон (one-shot)
+
+- Перед ребутом в Winlogon (`HKLM\...\Winlogon`, запись из сеанса юзера-админа работает):
+  `AutoAdminLogon=1`, `DefaultUserName=User`, `DefaultPassword=123`.
+- **Windows гасит автологон после первого автологон-входа** (`AutoAdminLogon=0`, `DefaultPassword`
+  стирается) — переставлять **перед каждым** ребутом.
+- Если юзер уже на экране логина — автологон не сработает: попросить войти руками (`User`/`123`).
+- После теста — **cleanup**: удалить `AutoAdminLogon`, `DefaultUserName` (`DefaultPassword`,
+  `AutoLogonCount`, `Alt*` обычно уже отсутствуют).
+
+## Ритуал по фазам
+
+### F0 — Prep
+- VM Running; посторонние писатели/читатели в госте остановить (два писателя интерливят кадры —
+  правило из `vcam-e2e`), хэш инсталлятора зафиксировать.
+- **Предупредить юзера заранее**: в VM будут UAC/ребут/паузы — не нажимать ничего лишнего.
+
+### F1 — Установка
+- `/VERYSILENT /SUPPRESSMSGBOXES`, `-Wait`; инсталлятор сам: стоп FrameServer → копирование →
+  regsvr32 → старт FrameServer → Run-ключи → **пост-инсталл-запуск Registrar + хоста**
+  (их токен Full → `writer ready (Global\...)` допустим; важно `active` без `(write failed)`).
+
+### F2 — Post-install чеки (из PS Direct)
+- **Файлы** в `C:\Program Files\VCam\`: `MediaSource.dll`, `VCamVideoStreamProducer.exe`,
+  `VCamSettingsUi.exe`, `VCamPreview.exe`, `Registrar.exe`, `VCamProducerCli.exe`, `CaptureTest.exe`,
+  `vcam_restart_host.ps1`; SHA256 vs `build\x64\Release` (и vs publish UI).
+- **Ярлыки 3/3** в `%APPDATA%\Microsoft\Windows\Start Menu\Programs\VCam\`: Настройки / Предпросмотр /
+  Перезапуск камеры.
+- **HKCU\Run**: `VCamAutostart`, `VCamRegistrar`.
+- **Процессы**: `Registrar`, `VCamVideoStreamProducer`.
+- **host.log** (`%LOCALAPPDATA%\VCam\host.log`): `starting → autostart → tray → watching → writer ready
+  (...) → switch → source opened → active`. Читается живьём (`Get-Content -Encoding UTF8`).
+- **`CaptureTest inspect` → `count=1`** в VM (физ. камер нет; `count=2` — для рабочей машины).
+- **`VCamProducerCli list-devices` → `rows=0`** — фильтр `IsVirtualCamera` скрывает нашу камеру
+  (в VM больше камер и нет — rows=0 = SUCCESS, не провал).
+
+### F3 — Ребут
+1. Переставить автологон (см. выше) → `Restart-Computer -Force`.
+2. Ждать: сессия недоступна → probe каждые ~10 с (`Get-Process VCamVideoStreamProducer` +
+   `explorer`); автологон+старт ≈ 30–60 с.
+3. Сразу после входа зафиксировать состояние Winlogon (one-shot сброшен — норма).
+
+### F4 — Верификация post-reboot (главная фаза)
+- **host.log НЕ должен содержать** `writer open failed: CreateFileMappingW failed: 5` (это и был
+  исходный баг: автозапуск из Run идёт с UAC-filtered токеном **без SeCreateGlobalPrivilege**).
+- Ожидается: `shared memory writer ready (Local\VCam.FrameBuffer.v1)` (фолбэк-цепочка
+  `Create(Global) → Open(Global) → Create(Local\<base>)`, фикс релиза 0.0.2) и `active` без
+  `(write failed)`.
+- **status из сеанса юзера** (юзером, см. «сеансы»): `host VCamVideoStreamProducer: running`,
+  `Local\VCam.FrameBuffer.v1: open, frames are being written (seq N -> M)` — seq должен **расти**
+  (два замера с паузой).
+- **Превью**: юзер открывает из Пуска → картинка (settings.json — static green BMP). «Нет сигнала»
+  первые 1–3 с допустимо: self-heal в коде (retry 1 с, reconnect 3 с) — переждать/переоткрыть.
+
+### F5 — Cleanup
+- Удалить остатки автологона (Winlogon: `AutoAdminLogon`, `DefaultUserName`, и `DefaultPassword`/
+  `AutoLogonCount`/`Alt*` — если есть).
+- Опционально: остановить хост/удалить тестовые файлы, вернуть settings.json из бэкапа (если
+  сохранялся — см. `vcam-e2e`).
+
+## Сигнатуры SUCCESS / ПРОВАЛ
+
+| Проверка | SUCCESS | ПРОВАЛ |
+|---|---|---|
+| установка | `/VERYSILENT` exit ok, файлы+hash | UAC-таймаут, locked exe (закрыть приложения) |
+| post-install host.log | `writer ready`, `active` | `CreateFileMappingW failed: 5` (в сборке нет фикса) |
+| list-devices (VM) | `rows=0` | видит `VCam (` — фильтр не работает |
+| inspect (VM) | `count=1` | 0 — Registrar не поднял камеру |
+| post-reboot host.log | `writer ready (Local\...)` | `writer open failed: ... 5` |
+| status (сеанс юзера) | `frames are being written`, seq растёт | `no new frames (seq 0)`, `not running` |
+| превью | картинка | NO SIGNAL дольше ~5 с после reconnect |
+
+## Диагностика отклонений
+
+1. `host.log` (tail, UTF-8, живьём) — первоисточник; stdout при старте из Run теряется.
+2. Session-id сверка (0 vs 2) — объясняет «ложный» status.
+3. Посторонняя `Global\... seq 0`: её создаёт процесс с привилегией (обычно наша же диагностика из
+   сеанса 0: `inspect`/probe). Читатели перебирают Global→Local и встают на мусорную → убить источник,
+   переоткрыть status/превью. Если «пустышку» держит живой потребитель — секция не умрёт сама.
+4. Application/System-лог гостя, WER (падений VCam быть не должно).
+5. `msrc_diag.log` в госте по умолчанию отсутствует — не искать, если не включался.
+
+## Память задач
+
+`vcam-installer.memory.md`, `memory.md` (в `VirtualCameraMediaSource/`) — **локальные, в git не идут**
+(`.gitignore`: `memory.md`, `*.memory.md`); хранят факты прогона, фиксы и питфолы.
