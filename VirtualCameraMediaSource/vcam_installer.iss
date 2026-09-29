@@ -1,4 +1,4 @@
-; VCam Installer Script (Inno Setup)
+﻿; VCam Installer Script (Inno Setup)
 ; Version: 0.0.2
 
 [Setup]
@@ -58,6 +58,12 @@ var
 begin
   if CurStep = ssPostInstall then
   begin
+    // Upgrade cleanup: shortcuts from the old 3-shortcut scheme (<=0.0.2 layouts)
+    // survive an upgrade otherwise (Inno only keeps what the current [Icons] lists).
+    DeleteFile(ExpandConstant('{userprograms}\VCam\Настройки VCam.lnk'));
+    DeleteFile(ExpandConstant('{userprograms}\VCam\Предпросмотр VCam.lnk'));
+    DeleteFile(ExpandConstant('{userprograms}\VCam\Перезапуск камеры VCam.lnk'));
+
     // Register COM MediaSource.dll
     Exec('regsvr32.exe', '/s "' + ExpandConstant('{app}\MediaSource.dll') + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
     
