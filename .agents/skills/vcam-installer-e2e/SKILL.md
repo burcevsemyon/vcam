@@ -2,11 +2,11 @@
 name: vcam-installer-e2e
 description: >-
   E2E-проверка инсталлятора VCam в Hyper-V VM (Win11 «Среда разработки»): установка /VERYSILENT через
-  PowerShell Direct, пост-инсталл-чеки (файлы+SHA256, ярлыки 3/3, HKCU Run, процессы, host.log,
+  PowerShell Direct, пост-инсталл-чеки (файлы+SHA256, ярлык 1/1 «Запуск камеры VCam», HKCU Run, процессы, host.log,
   list-devices rows=0, inspect count=1), ребут-тест с автологоном и верификацией авторанта из HKCU Run
   (фикс «после ребута нет сигнала» → writer ready (Local\...)), cleanup автологона. Use when: проверить
-  установщик, установка в VM, reboot-тест VCam, post-reboot «нет сигнала», VCamSetup e2e, проверка ярлыков
-  и автозапуска после установки.
+  установщик, установка в VM, reboot-тест VCam, VCamSetup e2e, проверка ярлыков
+  и автозапуска после установки, пункт «О программе» в tray.
 ---
 
 # VCam Installer E2E (проектный skill)
@@ -68,8 +68,9 @@ description: >-
 - **Файлы** в `C:\Program Files\VCam\`: `MediaSource.dll`, `VCamVideoStreamProducer.exe`,
   `VCamSettingsUi.exe`, `VCamPreview.exe`, `Registrar.exe`, `VCamProducerCli.exe`, `CaptureTest.exe`,
   `vcam_restart_host.ps1`; SHA256 vs `build\x64\Release` (и vs publish UI).
-- **Ярлыки 3/3** в `%APPDATA%\Microsoft\Windows\Start Menu\Programs\VCam\`: Настройки / Предпросмотр /
-  Перезапуск камеры.
+- **Ярлык 1/1** в `%APPDATA%\Microsoft\Windows\Start Menu\Programs\VCam\`: «Запуск камеры VCam» →
+  хост (единственный; Настройки/Предпросмотр — в tray-меню хоста, перезапуск — кнопка в UI;
+  старых ярлыков «Настройки/Предпросмотр/Перезапуск» в свежей сборке быть не должно).
 - **HKCU\Run**: `VCamAutostart`, `VCamRegistrar`.
 - **Процессы**: `Registrar`, `VCamVideoStreamProducer`.
 - **host.log** (`%LOCALAPPDATA%\VCam\host.log`): `starting → autostart → tray → watching → writer ready
@@ -107,6 +108,7 @@ description: >-
 | Проверка | SUCCESS | ПРОВАЛ |
 |---|---|---|
 | установка | `/VERYSILENT` exit ok, файлы+hash | UAC-таймаут, locked exe (закрыть приложения) |
+| ярлыки (VM) | ровно 1: «Запуск камеры VCam» | старые ярлыки/3 шт. — старый пакет |
 | post-install host.log | `writer ready`, `active` | `CreateFileMappingW failed: 5` (в сборке нет фикса) |
 | list-devices (VM) | `rows=0` | видит `VCam (` — фильтр не работает |
 | inspect (VM) | `count=1` | 0 — Registrar не поднял камеру |

@@ -383,7 +383,7 @@ public sealed class MainForm : Form
         var running = IsHostRunning();
         _hostStatusLabel.Text = running ? "Хост: запущен" : "Хост: не запущен";
         _hostStatusLabel.ForeColor = running ? Color.ForestGreen : Color.DimGray;
-        _hostButton.Text = running ? "Остановить хост" : "Запустить хост";
+        _hostButton.Text = running ? "Перезапустить хост" : "Запустить хост";
     }
 
     private void OnHostButtonClicked(object? sender, EventArgs e)
@@ -394,20 +394,34 @@ public sealed class MainForm : Form
             {
                 using var stop = EventWaitHandle.OpenExisting(HostStopEventName);
                 stop.Set(); // SetEvent, не Kill: хост закрывает writer сам
-                _hostStatusLabel.Text = "Хост: останавливается…";
             }
             catch (WaitHandleCannotBeOpenedException)
             {
                 MessageBox.Show(this, "Событие остановки хоста не найдено — хост уже завершён.", Text,
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
                 UpdateHostStatus();
+                return;
             }
             catch (Exception ex)
             {
                 MessageBox.Show(this, $"Не удалось остановить хост:\n{ex.Message}", Text,
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
             }
-            return;
+
+            // Перезапуск: дождаться graceful-выхода (обычно ~0.2 с), иначе новый
+            // экземпляр упрётся в single-instance мьютекс и покажет «уже запущен».
+            _hostStatusLabel.Text = "Хост: перезапускается…";
+            var deadline = Environment.TickCount64 + 5000;
+            while (IsHostRunning() && Environment.TickCount64 < deadline)
+                Thread.Sleep(100);
+            if (IsHostRunning())
+            {
+                MessageBox.Show(this, "Хост не завершился за 5 с — перезапуск отменён.", Text,
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                UpdateHostStatus();
+                return;
+            }
         }
 
         if (_hostExe is null || !File.Exists(_hostExe))

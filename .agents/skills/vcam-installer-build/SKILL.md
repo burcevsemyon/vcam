@@ -42,18 +42,24 @@ description: >-
    ```
    Результат: `VirtualCameraMediaSource/VCamSetup-<ver>-x64.exe` → перенести в `releases/`.
 
-## Меню «Пуск» и перезапуск хоста (`[Icons]`)
+## Меню «Пуск» (`[Icons]`) — ОДИН ярлык
 
-Ярлыки создаются в `{userprograms}\VCam\` (текущий пользователь — как и HKCU-автозапуск):
-- «Настройки VCam» → `VCamSettingsUi.exe`
-- «Предпросмотр VCam» → `VCamPreview.exe`
-- **«Перезапуск камеры VCam»** → `powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{app}\vcam_restart_host.ps1"`
+Решение пользователя: много ярлыков отталкивает, всё нужное уже в tray-меню хоста и в UI.
 
-`vcam_restart_host.ps1` (рядом с `.iss`, пакуется в `{app}`): Stop-event
-`VCamVideoStreamProducer.Stop` → ждать исчезновения процесса ≤20 с → `Stop-Process -Force` как
-fallback → `Start-Process` хоста из `$PSScriptRoot`. Graceful-стоп обязателен: хост сам закрывает
-shm-writer. Проверено локально: цикл в `host.log` `shutting down→exit` + `starting→active` ≈ 150 мс.
-Файл лога при этом — главный свидетель: `%LOCALAPPDATA%\VCam\host.log`.
+- **«Запуск камеры VCam»** → `{app}\VCamVideoStreamProducer.exe` — единственный ярлык; нужен только
+  для запуска после явного выхода (tray → «Выход») или при выключенном автозапуске.
+
+Остальное (было 3 ярлыка, удалены):
+- Настройки / Предпросмотр → **tray-меню хоста** («Настройки VCam…», «Окно предпросмотра…»;
+  двойной клик по иконке = Настройки).
+- Перезапуск → **кнопка «Перезапустить хост» в VCamSettingsUi** (стоп через Stop-event → ожидание
+  graceful-выхода ≤5 с → старт; чистого «Остановить» больше нет — после закрытия UI хост не остаётся
+  мёртвым). Явный выход — только tray → «Выход».
+- `vcam_restart_host.ps1` остаётся в `{app}` (диагностика/ручной запуск), но ярлыка на него нет.
+
+В tray-меню хоста также есть **«О программе…»** — версия из VERSIONINFO
+(`src/VCamVideoStreamProducer/version.rc`, `ProductVersionString()`); при смене версии править
+`version.rc` **и** `AppVersion` в `.iss` (оба = 0.0.2).
 
 ## Ключевые механизмы инсталлятора (`vcam_installer.iss`)
 

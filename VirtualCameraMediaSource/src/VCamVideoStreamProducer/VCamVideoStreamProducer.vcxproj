@@ -43,6 +43,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="VCamVideoStreamProducer.cpp" />
+    <ResourceCompile Include="version.rc" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\ProducerCore\ProducerCore.vcxproj">

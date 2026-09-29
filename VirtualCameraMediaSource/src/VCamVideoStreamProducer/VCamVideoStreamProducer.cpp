@@ -15,6 +15,7 @@
 #include "SharedMemoryContract.h"
 
 #pragma comment(lib, "shell32.lib")
+#pragma comment(lib, "version.lib")
 
 namespace {
 
@@ -31,6 +32,7 @@ constexpr UINT ID_SETTINGS = 102;
 constexpr UINT ID_PREVIEW = 103;
 constexpr UINT ID_AUTOSTART = 104;
 constexpr UINT ID_EXIT = 105;
+constexpr UINT ID_ABOUT = 106;
 
 constexpr DWORD kFrameMs = 33;
 constexpr DWORD kSwitchWindowMs = 5000;  // окно hot-switch: FlushLast, пока новый источник не готов
@@ -213,6 +215,41 @@ void OpenPreview()
         return;
     }
     LaunchHelper(p);
+}
+
+// Версия из VERSIONINFO (version.rc) — единый источник с AppVersion инсталлятора.
+std::wstring ProductVersionString()
+{
+    wchar_t mod[MAX_PATH] = {};
+    if (GetModuleFileNameW(nullptr, mod, MAX_PATH)) {
+        DWORD dummy = 0;
+        DWORD sz = GetFileVersionInfoSizeW(mod, &dummy);
+        if (sz) {
+            std::vector<BYTE> buf(sz);
+            if (GetFileVersionInfoW(mod, 0, sz, buf.data())) {
+                VS_FIXEDFILEINFO* ffi = nullptr;
+                UINT len = 0;
+                if (VerQueryValueW(buf.data(), L"\\", reinterpret_cast<void**>(&ffi), &len) && ffi) {
+                    wchar_t out[64];
+                    swprintf_s(out, L"%u.%u.%u", HIWORD(ffi->dwProductVersionMS),
+                               LOWORD(ffi->dwProductVersionMS), HIWORD(ffi->dwProductVersionLS));
+                    return out;
+                }
+            }
+        }
+    }
+    return L"0.0.0";
+}
+
+void ShowAbout()
+{
+    std::wstring msg =
+        L"VCam Virtual Camera — виртуальная камера Windows.\n"
+        L"Версия " + ProductVersionString() + L"\n\n"
+        L"Хост пишет кадры источника в общую память, MediaSource.dll\n"
+        L"отдаёт их потребителям (Zoom, ktalk, Windows Камеры…).\n\n"
+        L"Настройки и предпросмотр — двойной клик / ПКМ по иконке в трее.";
+    MessageBoxW(g_hwnd, msg.c_str(), L"О программе — VCam", MB_OK | MB_ICONINFORMATION);
 }
 
 bool ApplyAutostart(bool enabled)
@@ -510,9 +547,11 @@ void ShowTrayMenu(HWND hwnd)
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, ID_SETTINGS, L"Настройки VCam…");
     AppendMenuW(menu, MF_STRING, ID_PREVIEW, L"Окно предпросмотра…");
-    AppendMenuW(menu, MF_STRING | (s.autostart ? MF_CHECKED : 0), ID_AUTOSTART, L"Автозагрузка");
-    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, ID_EXIT, L"Выход");
+        AppendMenuW(menu, MF_STRING | (s.autostart ? MF_CHECKED : 0), ID_AUTOSTART, L"Автозагрузка");
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(menu, MF_STRING, ID_ABOUT, L"О программе…");
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(menu, MF_STRING, ID_EXIT, L"Выход");
 
     SetForegroundWindow(hwnd);
     UINT cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, nullptr);
@@ -533,6 +572,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         case ID_SETTINGS: OpenSettingsUi(); break;
         case ID_PREVIEW: OpenPreview(); break;
         case ID_AUTOSTART: ToggleAutostart(); break;
+        case ID_ABOUT: ShowAbout(); break;
         case ID_EXIT:
             Log(L"[host] exit requested (tray menu)");
             SetEvent(g_stop);

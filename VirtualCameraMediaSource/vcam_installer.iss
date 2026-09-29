@@ -30,9 +30,9 @@ Source: "vcam_restart_host.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 ; Start menu (current user, mirrors HKCU autostart semantics)
-Name: "{userprograms}\VCam\Настройки VCam"; Filename: "{app}\VCamSettingsUi.exe"; WorkingDir: "{app}"
-Name: "{userprograms}\VCam\Предпросмотр VCam"; Filename: "{app}\VCamPreview.exe"; WorkingDir: "{app}"
-Name: "{userprograms}\VCam\Перезапуск камеры VCam"; Filename: "{sys}\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\vcam_restart_host.ps1"""; WorkingDir: "{app}"; IconFilename: "{sys}\shell32.dll"; IconIndex: 23
+; Один ярлык — только основной процесс (хост). Настройки/Предпросмотр живут в tray-меню хоста,
+; перезапуск — кнопка в VCamSettingsUi; дубли в меню Пуск отталкивают (решение пользователя).
+Name: "{userprograms}\VCam\Запуск камеры VCam"; Filename: "{app}\VCamVideoStreamProducer.exe"; WorkingDir: "{app}"
 
 [Registry]
 ; Autostart Tray Host for current user
