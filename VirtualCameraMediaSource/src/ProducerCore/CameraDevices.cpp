@@ -7,6 +7,7 @@
 #include <mfobjects.h>
 #include <propidl.h>
 
+#include <cwchar>
 #include <cwctype>
 #include <mutex>
 #include <utility>
@@ -45,6 +46,28 @@ bool ContainsNoCase(const std::wstring& hay, const std::wstring& needle)
         if (j == needle.size()) return true;
     }
     return false;
+}
+
+bool StartsWithNoCase(const std::wstring& s, const wchar_t* prefix)
+{
+    size_t n = wcslen(prefix);
+    if (s.size() < n) return false;
+    for (size_t i = 0; i < n; i++)
+        if (towlower(s[i]) != towlower(prefix[i])) return false;
+    return true;
+}
+
+// Виртуальная камера (MFCreateVirtualCamera, наш Registrar) НЕ должна быть
+// источником для самой себя — это петля (камера читает то, что сама пишет).
+// Определение: (1) symlink, который создаёт MF-подсистема виртуальных камер,
+// всегда \\?\swd#vcamdevapi#…; (2) страховка по имени — friendly name
+// «VCam (…)» (cameraName из Registrar, если формат symlink изменится между
+// версиями Windows). list-devices по контракту отдаёт физические камеры.
+bool IsVirtualCamera(const CameraDeviceInfo& d)
+{
+    static const wchar_t kSymlinkPrefix[] = L"\\\\?\\swd#vcamdevapi#";
+    static const wchar_t kNamePrefix[] = L"VCam (";
+    return StartsWithNoCase(d.id, kSymlinkPrefix) || StartsWithNoCase(d.name, kNamePrefix);
 }
 
 // MFEnumDeviceSources(VIDCAP) -> пары (инфо, activate). Владение activate'ами
@@ -125,7 +148,10 @@ std::vector<CameraDeviceInfo> EnumerateCameraDevices()
     bool comHere = false;
     if (EnumerateRaw(devs, comHere)) {
         result.reserve(devs.size());
-        for (auto& e : devs) result.push_back(std::move(e.first));
+        for (auto& e : devs) {
+            if (IsVirtualCamera(e.first)) continue; // наша виртуальная — не источник
+            result.push_back(std::move(e.first));
+        }
     }
     ReleaseAll(devs);
 

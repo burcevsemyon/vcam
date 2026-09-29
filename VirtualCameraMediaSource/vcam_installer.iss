@@ -1,14 +1,14 @@
 ; VCam Installer Script (Inno Setup)
-; Version: 0.0.1
+; Version: 0.0.3
 
 [Setup]
 AppName=VCam Virtual Camera
-AppVersion=0.0.1
+AppVersion=0.0.3
 AppPublisher=VCam Project
 DefaultDirName={autopf}\VCam
 DefaultGroupName=VCam
 OutputDir=.
-OutputBaseFilename=VCamSetup-0.0.1-x64
+OutputBaseFilename=VCamSetup-0.0.3-x64
 Compression=lzma2
 SolidCompression=yes
 PrivilegesRequired=admin
@@ -26,6 +26,13 @@ Source: "build\x64\Release\VCamPreview.exe"; DestDir: "{app}"; Flags: ignorevers
 Source: "build\x64\Release\Registrar.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "build\x64\Release\VCamProducerCli.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "build\x64\Release\CaptureTest.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "vcam_restart_host.ps1"; DestDir: "{app}"; Flags: ignoreversion
+
+[Icons]
+; Start menu (current user, mirrors HKCU autostart semantics)
+Name: "{userprograms}\VCam\Настройки VCam"; Filename: "{app}\VCamSettingsUi.exe"; WorkingDir: "{app}"
+Name: "{userprograms}\VCam\Предпросмотр VCam"; Filename: "{app}\VCamPreview.exe"; WorkingDir: "{app}"
+Name: "{userprograms}\VCam\Перезапуск камеры VCam"; Filename: "{sys}\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\vcam_restart_host.ps1"""; WorkingDir: "{app}"; IconFilename: "{sys}\shell32.dll"; IconIndex: 23
 
 [Registry]
 ; Autostart Tray Host for current user

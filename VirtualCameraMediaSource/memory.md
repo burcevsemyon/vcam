@@ -2,6 +2,60 @@
 
 Purpose: durable record so an interrupted agent can resume. Update as work progresses.
 
+## LATEST SERIES (29.09.2026) — СИМПТОМ: после ребута превью «нет сигнала», UI пишет «хост запущен» → файловый лог хоста (п.1); п.2 (тест с ребутом) ОЖИДАЕТСЯ
+- Симптом (пользователь): после перезагрузки окно превью «Нет сигнала», окно настроек «Хост: запущен».
+- Факты диагностики:
+  - На момент проверки хоста **не было вообще** (процессов нет, мьютекс `VCamVideoStreamProducer.Instance`
+    отсутствует) — жив только `Registrar` (автозапуск 05:52). UI (`MainForm.cs:359 IsHostRunning`) честный:
+    `Mutex.OpenExisting` + `WaitOne(0)`; «запущен» = хост реально владел мьютексом. Значит на момент взгляда
+    хост был жив, но **не писал кадры**; потом умер (когда/почему — без логов неизвестно).
+  - WER-отчётов падений нет, в Application/System логах VCam-событий нет.
+  - Причина слепоты: `Log()` писал только в stdout → при старте из `HKCU\Run` всё терялось
+    (это была открытая мелочь (a) ниже — **теперь закрыта**).
+- ФИКС (п.1, разрешён пользователем): файловый лог хоста в `VCamVideoStreamProducer.cpp`:
+  - `%LOCALAPPDATA%\VCam\host.log`, каждая строка с таймстампом `[HH:MM:SS.mmm]`;
+  - Win32 `CreateFileW(FILE_APPEND_DATA, FILE_SHARE_READ|FILE_SHARE_WRITE)` — **читается живьём**, пока
+    хост пишет (первая версия через `_wfopen_s` заблокировала файл для чтения — Get-Content падал
+    IOException; FILE*-подход не использовать);
+  - ротация на старте: >1 МБ → `host.log.old` (если залочено читателем — молча пропускается);
+  - писать в файл перенесено в `Log()` через `WideCharToMultiByte(CP_UTF8)`;
+  - stdout-логика сохранена (AttachConsole только если stdout изначально невалиден).
+- Деплой: DLL не менялась → **FrameServer НЕ останавливался** (ktalk открыт!), прямая замена exe в
+  `C:\Program Files\VCam\` через elevated PowerShell (`vcam_copy_host.ps1` в %TEMP%\opencode, результат
+  в `%TEMP%\vcam_copy_result.txt`; не-elevated копия = AccessDenied). Hash сверён.
+- Проверено: хост запущен, `host.log` пишет (starting→autostart→tray→watching→writer ready→switch→
+  source opened→active), `status` → frames are being written, live-tail Get-Content работает.
+- e2e-матчи не сломаны: ассерты подстрочные (`writer ready`, `[cli] switch:`), таймстамп-префикс безопасен.
+- **П.2 ОЖИДАЕТСЯ**: тест с ребутом делаем в **Hyper-V VM «Среда разработки под Windows 11»** (Gen 2,
+  на хосте; пользователь: «пока не начинай»). План: пересобрать `vcam_installer.iss` (в `releases/`
+  лежит инсталлятор со старым хостом, без лога) → деплой в VM (PowerShell Direct, creds уточнить) →
+  `/VERYSILENT` → проверки (процессы, inspect, status, host.log) → `Restart-Computer` → чтение
+  `%LOCALAPPDATA%\VCam\host.log` (стартовал ли хост на логине/на каком шаге встал) → при необходимости
+  апдейт-ритуал и деинсталляция. В чистой VM нет settings.json — положить тестовый (статик-картинка).
+  Сборка Release|x64 exit 0, изменения НЕ закоммичены.
+- **ЯРЛЫКИ + ПЕРЕЗАПУСК (29.09, п.3)**: пользователь — «ярлыков нет в меню пуск» (в скрипте `[Icons]`
+  не было вообще). Добавлено в `vcam_installer.iss`: `{userprograms}\VCam\` → «Настройки VCam»,
+  «Предпросмотр VCam», **«Перезапуск камеры VCam»** (powershell `-WindowStyle Hidden -File
+  {app}\vcam_restart_host.ps1`). Скрипт `vcam_restart_host.ps1` (лежит рядом с .iss, пакуется в {app}):
+  Stop-event → ждать выхода ≤20 с → force-fallback → старт хоста; `$PSScriptRoot` → exe рядом со
+  скриптом. **Проверено локально**: вызов тем же способом, что и ярлык → в логе
+  `shutting down→worker stopped→exit` (16:08:46.247→.278) и сразу `starting→…→active` (.347),
+  новый pid 22108, кадры пишутся. Версия поднята до **0.0.2**, `releases/VCamSetup-0.0.2-x64.exe`
+  (0.0.1 оставлен). Локально installer 0.0.2 НЕ запускался (стоп FrameServer оборвёт ktalk) —
+  ярлыки проверим в VM.
+- **ФИЛЬТР ВИРТУАЛЬНОЙ КАМЕРЫ (29.09, п.4)**: «нашу виртуальную не показывать в UI как источник
+  "камера"». Эмпирика: в `list-devices` VCam = id `\\?\swd#vcamdevapi#…#{e5323777-…}\{fcebba03-…}`,
+  name `VCam (Виртуальная камера Windows)`; friendly name формирует MF к `cameraName=VCam` из
+  Registrar (`MFCreateVirtualCamera`, Registrar/main.cpp:104), symlink — из MF-подсистемы
+  виртуальных камер. Фикс — `ProducerCore/CameraDevices.cpp`: новый `IsVirtualCamera()` (prefix
+  `\\?\swd#vcamdevapi#` по id ИЛИ `VCam (` по имени — страховка на случай смены формата symlink между
+  версиями Windows), применяется **только в `EnumerateCameraDevices()`** → и CLI `list-devices`, и UI
+  combo получают список без VCam; `OpenCameraActivate` не тронут (сохранённый id продолжает работать),
+  `CaptureTest inspect/device` не тронут (e2e фазы D/E ищут VCam по mediaTypes=3). Проверено: после
+  сборки `list-devices` → только `Brio 90` (было 2), установленный CLI в Program Files тоже
+  обновлён (e2e фаза C берёт devices[0]=Brio — не затронута). UI список кэшируется на сессию —
+  «Обновить список»/рестарт UI. Инсталлятор → **0.0.3** (`releases/VCamSetup-0.0.3-x64.exe`).
+
 ## LATEST SERIES (27.09.2026) — INSTALLED: VCam Installer v0.0.1 (Inno Setup)
 - Created Inno Setup installer script (`vcam_installer.iss`) for version `0.0.1`.
 - Built all C++ components (`Release|x64`) and published `VCamSettingsUi` as self-contained x64 (`win-x64`).
@@ -37,7 +91,8 @@ Purpose: durable record so an interrupted agent can resume. Update as work progr
   Common/SharedMemoryFrameSource.cpp, MediaSource/MediaStream.{h,cpp} (все 5 фиксов + letterbox),
   ProducerCore/FrameWriter.cpp.
 - Открытые мелочи (не мешают): (a) stdout текущего хоста никуда не пишется, если запущен не через
-  redirect — причины падений камеры видны только через `host_out2.log` при рестарте с перехватом;
+  redirect — причины падений камеры видны только через `host_out2.log` при рестарте с перехватом
+  **(РЕШЕНО 29.09.2026: файловый лог `%LOCALAPPDATA%\VCam\host.log`, см. LATEST SERIES)**;
   (b) 0x80070428 после стопа FrameServer — штатно лечится рестартом хоста; (c) SHARED-инстанс —
   один m_selected* на всех клиентов (залогируется deliver type).
 

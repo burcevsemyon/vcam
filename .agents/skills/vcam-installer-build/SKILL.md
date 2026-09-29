@@ -15,7 +15,8 @@ description: >-
 
 ## Структура дистрибутива и версии
 
-- **Текущая версия**: `0.0.1` (инкрементируется при каждом релизе в `vcam_installer.iss` и `vcam-installer.memory.md`).
+- **Текущая версия**: `0.0.2` (инкрементируется при каждом релизе в `vcam_installer.iss` и
+  `vcam-installer.memory.md`); артефакты в `releases/VCamSetup-<ver>-x64.exe`.
 - **Состав продукта (`Release|x64`)**:
   - `MediaSource.dll` → `C:\Program Files\VCam\MediaSource.dll` (фиксированный путь, критично для hash-guard E2E).
   - `VCamVideoStreamProducer.exe` (tray-хост, единственный писатель кадров).
@@ -39,7 +40,20 @@ description: >-
    ```bat
    "C:\Program Files\Inno Setup 7\ISCC.exe" VirtualCameraMediaSource/vcam_installer.iss
    ```
-   Результат: `releases/VCamSetup-0.0.1-x64.exe`.
+   Результат: `VirtualCameraMediaSource/VCamSetup-<ver>-x64.exe` → перенести в `releases/`.
+
+## Меню «Пуск» и перезапуск хоста (`[Icons]`)
+
+Ярлыки создаются в `{userprograms}\VCam\` (текущий пользователь — как и HKCU-автозапуск):
+- «Настройки VCam» → `VCamSettingsUi.exe`
+- «Предпросмотр VCam» → `VCamPreview.exe`
+- **«Перезапуск камеры VCam»** → `powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{app}\vcam_restart_host.ps1"`
+
+`vcam_restart_host.ps1` (рядом с `.iss`, пакуется в `{app}`): Stop-event
+`VCamVideoStreamProducer.Stop` → ждать исчезновения процесса ≤20 с → `Stop-Process -Force` как
+fallback → `Start-Process` хоста из `$PSScriptRoot`. Graceful-стоп обязателен: хост сам закрывает
+shm-writer. Проверено локально: цикл в `host.log` `shutting down→exit` + `starting→active` ≈ 150 мс.
+Файл лога при этом — главный свидетель: `%LOCALAPPDATA%\VCam\host.log`.
 
 ## Ключевые механизмы инсталлятора (`vcam_installer.iss`)
 
@@ -66,3 +80,17 @@ description: >-
 1. `CaptureTest inspect` → `count=2` (VCam присутствует с 3 медиатипами: NV12 + RGB32 720p/480p).
 2. `VCamProducerCli status` → `host: running`, `writer section: frames are being written`.
 3. Камера видна в приложениях (ktalk, Windows Settings «Камеры»).
+4. **Лог хоста**: `%LOCALAPPDATA%\VCam\host.log` — строки с таймстампом `[HH:MM:SS.mmm]`,
+   ротация >1 МБ → `host.log.old`. Читается живьём (`Get-Content -Encoding UTF8`), пока хост пишет
+   (открыт с `FILE_SHARE_READ`; не открывать через `fopen` — блокирует чтение). Единственный источник
+   правды при старте из `HKCU\Run` (stdout теряется).
+
+## Частичный деплой (только хост)
+
+Если изменился только `VCamVideoStreamProducer.exe` (не `MediaSource.dll`) — **FrameServer НЕ трогать**
+(остановка рвёт активную сессию потребителя, ktalk). Ритуал:
+`Stop-Process -Name VCamVideoStreamProducer -Force` → elevated-копия exe в `{app}` (к `C:\Program Files\VCam`
+не-elevated запись запрещена: UAC → `Start-Process -Verb RunAs`) → сверить SHA256 build vs installed →
+запустить хост → проверить `host.log` и `status`.
+Полный ритуал с `sc stop FrameServer` нужен **только** при замене `MediaSource.dll` (перед ним закрывать
+ktalk, иначе `sc stop` висит в STOP_PENDING).

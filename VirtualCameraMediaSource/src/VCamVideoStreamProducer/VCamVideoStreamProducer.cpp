@@ -3,6 +3,7 @@
 
 #include <cstdarg>
 #include <cstdio>
+#include <cwchar>
 #include <memory>
 #include <string>
 #include <vector>
@@ -44,27 +45,81 @@ HANDLE g_dirty = nullptr;
 HANDLE g_worker = nullptr;
 SettingsWatcher g_watcher;
 NOTIFYICONDATAW g_nid = {};
+HANDLE g_logFile = INVALID_HANDLE_VALUE;
 
 CRITICAL_SECTION g_statusCs;
 std::wstring g_statusText = L"Нет сигнала (старт)";
 
+// %LOCALAPPDATA%\VCam\host.log — правда для пост-мортема после автозапуска
+// из HKCU\Run (stdout туда не идёт). Ротация: >1 МБ → host.log.old.
+// FILE_SHARE_READ|WRITE — лог читается живьём, пока хост его пишет.
+std::wstring LogFilePath()
+{
+    wchar_t base[MAX_PATH] = {};
+    DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return {};
+    std::wstring dir = std::wstring(base) + L"\\VCam";
+    CreateDirectoryW(dir.c_str(), nullptr);
+    return dir + L"\\host.log";
+}
+
+void RotateLog(const std::wstring& path)
+{
+    WIN32_FILE_ATTRIBUTE_DATA a = {};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &a)) return;
+    ULARGE_INTEGER sz = {};
+    sz.LowPart = a.nFileSizeLow;
+    sz.HighPart = a.nFileSizeHigh;
+    if (sz.QuadPart <= 1024ull * 1024ull) return;
+    std::wstring old = path + L".old";
+    DeleteFileW(old.c_str());
+    MoveFileW(path.c_str(), old.c_str()); // залочено читателем → просто не ротируем
+}
+
 void Log(const wchar_t* fmt, ...)
 {
+    wchar_t msg[768];
     va_list ap;
     va_start(ap, fmt);
-    vfwprintf(stdout, fmt, ap);
+    _vsnwprintf_s(msg, _countof(msg), _TRUNCATE, fmt, ap);
     va_end(ap);
-    fputwc(L'\n', stdout);
+
+    SYSTEMTIME st = {};
+    GetLocalTime(&st);
+    wchar_t line[860];
+    swprintf_s(line, L"[%02u:%02u:%02u.%03u] %s\r\n", st.wHour, st.wMinute, st.wSecond,
+               st.wMilliseconds, msg);
+
+    fputws(line, stdout);
     fflush(stdout);
+    if (g_logFile != INVALID_HANDLE_VALUE) {
+        char utf8[2200];
+        int n = WideCharToMultiByte(CP_UTF8, 0, line, -1, utf8, sizeof(utf8), nullptr, nullptr);
+        if (n > 2) {
+            DWORD written = 0;
+            WriteFile(g_logFile, utf8, (DWORD)(n - 1), &written, nullptr); // без '\0'
+        }
+    }
 }
 
 void InitLogging()
 {
     HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
-    if (h && h != INVALID_HANDLE_VALUE) return;
-    if (AttachConsole(ATTACH_PARENT_PROCESS)) {
-        FILE* f = nullptr;
-        freopen_s(&f, "CONOUT$", "w", stdout);
+    if (!h || h == INVALID_HANDLE_VALUE) {
+        if (AttachConsole(ATTACH_PARENT_PROCESS)) {
+            FILE* f = nullptr;
+            freopen_s(&f, "CONOUT$", "w", stdout);
+        }
+    }
+    std::wstring path = LogFilePath();
+    if (!path.empty()) {
+        RotateLog(path);
+        g_logFile = CreateFileW(path.c_str(), FILE_APPEND_DATA,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
+                                FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (g_logFile == INVALID_HANDLE_VALUE) {
+            // каталог мог не создаться/нет прав — печать в файл просто выключена
+        }
     }
 }
 
@@ -607,5 +662,9 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     CloseHandle(g_mutex);
     g_mutex = nullptr;
     Log(L"[host] exit");
+    if (g_logFile != INVALID_HANDLE_VALUE) {
+        CloseHandle(g_logFile);
+        g_logFile = INVALID_HANDLE_VALUE;
+    }
     return 0;
 }
