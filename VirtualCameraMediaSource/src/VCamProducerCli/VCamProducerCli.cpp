@@ -136,7 +136,17 @@ bool LooksNewSchema(const std::string& raw)
 
 void PrintSectionState()
 {
-    HANDLE h = OpenFileMappingW(FILE_MAP_READ, FALSE, vcam::VCamSectionName);
+    // Писатель может работать в Local\ (fallback без SeCreateGlobalPrivilege) —
+    // перебираем префиксы так же, как это делает SharedMemoryFrameSource.
+    const wchar_t* pSep = wcschr(vcam::VCamSectionName, L'\\');
+    const wchar_t* baseName = (pSep != nullptr) ? pSep + 1 : vcam::VCamSectionName;
+    const wchar_t* prefixes[2] = { L"Global\\", L"Local\\" };
+    wchar_t sectionName[128] = {};
+    HANDLE h = nullptr;
+    for (int i = 0; i < 2 && h == nullptr; i++) {
+        swprintf_s(sectionName, L"%s%s", prefixes[i], baseName);
+        h = OpenFileMappingW(FILE_MAP_READ, FALSE, sectionName);
+    }
     if (!h) {
         Log(L"writer section %s: not open (no producer holds it)", vcam::VCamSectionName);
         return;
@@ -153,10 +163,10 @@ void PrintSectionState()
     LONGLONG seq2 = reinterpret_cast<vcam::VCamSectionHeader*>(p)->seq;
     if (seq2 != seq1) {
         Log(L"writer section %s: open, frames are being written (seq %lld -> %lld)",
-            vcam::VCamSectionName, seq1, seq2);
+            sectionName, seq1, seq2);
     } else {
         Log(L"writer section %s: open, no new frames in the last 300 ms (seq %lld)",
-            vcam::VCamSectionName, seq1);
+            sectionName, seq1);
     }
     UnmapViewOfFile(p);
     CloseHandle(h);

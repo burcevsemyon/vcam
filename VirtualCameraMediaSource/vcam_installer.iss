@@ -1,14 +1,14 @@
 ; VCam Installer Script (Inno Setup)
-; Version: 0.0.3
+; Version: 0.0.2
 
 [Setup]
 AppName=VCam Virtual Camera
-AppVersion=0.0.3
+AppVersion=0.0.2
 AppPublisher=VCam Project
 DefaultDirName={autopf}\VCam
 DefaultGroupName=VCam
 OutputDir=.
-OutputBaseFilename=VCamSetup-0.0.3-x64
+OutputBaseFilename=VCamSetup-0.0.2-x64
 Compression=lzma2
 SolidCompression=yes
 PrivilegesRequired=admin

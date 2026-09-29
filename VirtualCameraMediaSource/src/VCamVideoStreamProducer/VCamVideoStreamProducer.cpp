@@ -465,7 +465,7 @@ DWORD WINAPI WorkerProc(LPVOID)
     std::wstring err;
     m.writerOpen = m.writer.Open(err);
     if (m.writerOpen) {
-        Log(L"[host] shared memory writer ready (Global\\VCam.FrameBuffer.v1)");
+        Log(L"[host] shared memory writer ready (%s)", m.writer.SectionOpenedAs().c_str());
     } else {
         m.writerErr = err.empty() ? L"writer open failed" : err;
         Log(L"[host] writer open failed: %s", err.c_str());

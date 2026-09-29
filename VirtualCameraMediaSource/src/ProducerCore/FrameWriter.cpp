@@ -41,10 +41,38 @@ bool FrameWriter::Open(std::wstring& err)
     }
     SECURITY_ATTRIBUTES sa = { sizeof(sa), pSecDesc_, FALSE };
 
+    const wchar_t* pSep = wcschr(vcam::VCamSectionName, L'\\');
+    const std::wstring baseName = (pSep != nullptr) ? pSep + 1 : vcam::VCamSectionName;
+    openedSection_.clear();
+
     SIZE_T totalSize = sizeof(vcam::VCamSectionHeader) +
                        (SIZE_T)vcam::VCamSlotCount * vcam::VCamFrameSize;
     hSection_ = CreateFileMappingW(INVALID_HANDLE_VALUE, &sa, PAGE_READWRITE,
         (DWORD)(totalSize >> 32), (DWORD)(totalSize & 0xFFFFFFFF), vcam::VCamSectionName);
+    if (hSection_) {
+        openedSection_ = vcam::VCamSectionName;
+    } else {
+        DWORD createErr = GetLastError();
+        // Limited-токен (автозапуск из HKCU Run) без SeCreateGlobalPrivilege не может
+        // СОЗДАВАТЬ Global\-объекты (ERROR_ACCESS_DENIED). Открыть уже существующую
+        // секцию и создать сеансовую Local\-копию при этом можно — читатели
+        // (SharedMemoryFrameSource) перебирают Global\ -> Local\ сами.
+        hSection_ = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, vcam::VCamSectionName);
+        if (hSection_) {
+            openedSection_ = vcam::VCamSectionName;
+            LogWriter(L"section: opened existing Global after create failed: " +
+                      std::to_wstring(createErr));
+        } else {
+            const std::wstring localName = L"Local\\" + baseName;
+            hSection_ = CreateFileMappingW(INVALID_HANDLE_VALUE, &sa, PAGE_READWRITE,
+                (DWORD)(totalSize >> 32), (DWORD)(totalSize & 0xFFFFFFFF), localName.c_str());
+            if (hSection_) {
+                openedSection_ = localName;
+                LogWriter(L"section: created Local fallback (Global create failed: " +
+                          std::to_wstring(createErr) + L")");
+            }
+        }
+    }
     if (!hSection_) {
         err = L"CreateFileMappingW failed: " + std::to_wstring(GetLastError());
         LocalFree(pSecDesc_);
@@ -58,6 +86,13 @@ bool FrameWriter::Open(std::wstring& err)
         // (созданное держателем/читателем); без него читатель переходит в poll-режим.
         DWORD createErr = GetLastError();
         hReady_ = OpenEventW(EVENT_MODIFY_STATE | SYNCHRONIZE, FALSE, vcam::VCamReadyEventName);
+        if (hReady_ == nullptr && openedSection_ != vcam::VCamSectionName) {
+            // Секция в Local\ — событие тоже создаём в Local\ (читатели перебирают префиксы).
+            const wchar_t* pSepE = wcschr(vcam::VCamReadyEventName, L'\\');
+            const std::wstring baseEvent = (pSepE != nullptr) ? pSepE + 1 : vcam::VCamReadyEventName;
+            const std::wstring localEvent = L"Local\\" + baseEvent;
+            hReady_ = CreateEventW(&sa, FALSE, FALSE, localEvent.c_str());
+        }
         if (hReady_ == nullptr) {
             LogWriter(L"ready event unavailable: create=" + std::to_wstring(createErr) +
                       L" open=" + std::to_wstring(GetLastError()));

@@ -26,13 +26,63 @@ Purpose: durable record so an interrupted agent can resume. Update as work progr
 - Проверено: хост запущен, `host.log` пишет (starting→autostart→tray→watching→writer ready→switch→
   source opened→active), `status` → frames are being written, live-tail Get-Content работает.
 - e2e-матчи не сломаны: ассерты подстрочные (`writer ready`, `[cli] switch:`), таймстамп-префикс безопасен.
-- **П.2 ОЖИДАЕТСЯ**: тест с ребутом делаем в **Hyper-V VM «Среда разработки под Windows 11»** (Gen 2,
-  на хосте; пользователь: «пока не начинай»). План: пересобрать `vcam_installer.iss` (в `releases/`
-  лежит инсталлятор со старым хостом, без лога) → деплой в VM (PowerShell Direct, creds уточнить) →
-  `/VERYSILENT` → проверки (процессы, inspect, status, host.log) → `Restart-Computer` → чтение
-  `%LOCALAPPDATA%\VCam\host.log` (стартовал ли хост на логине/на каком шаге встал) → при необходимости
-  апдейт-ритуал и деинсталляция. В чистой VM нет settings.json — положить тестовый (статик-картинка).
-  Сборка Release|x64 exit 0, изменения НЕ закоммичены.
+- **П.2 ВЫПОЛНЕН (29.09, VM Win11 «Среда разработки», установка промежуточной сборки с фильтром)**: доступ — PowerShell Direct
+  (elevated на хосте ОБЯЗАТЕЛЕН; пустой пароль гость отвергает — «Недопустимые учетные данные», поставлен
+  пароль `123`, юзер `User`/WINDEV2407EVAL, админ; автологон в Winlogon: AutoAdminLogon=1, DefaultPassword=123
+  — **ОСТАЛСЯ в VM, спросить про удаление**). Оркестраторы в `%TEMP%\opencode\vcam_vm_*.ps1` (ASCII-only!
+  кириллица в .ps1 без BOM ломает парсер PS5.1; имя VM брать паттерном `*Windows 11*`; вывод кириллицы
+   в наш консоль — escape в \uXXXX). Что подтверждено: файлы сборки все, **ярлыки 3/3** в меню Пуск
+  (Настройки/Перезапуск/Предпросмотр), Run-ключи host+registrar, инсталлятор сам поднимает Registrar+хост,
+  `list-devices rows=0` (**фильтр работает**: VCam зарегистрирована, но в список не попадает; inspect count=1
+  = только наша VCam, физ. камер в VM нет — expect 2 неверен для VM), settings.json (static green BMP)
+  подхвачен, **рабочий** старт из инсталлятора: `writer ready → active`, status «frames are being written».
+- **П.2: СИМПТОМ ВОСПРОИЗВЁДЁН И ЕГО КОРЕНЬ В ЛОГЕ** — после ребута (boot 09:52:59, автологон ок, хост стартует
+  из HKCU Run): `[09:53:19] writer open failed: CreateFileMappingW failed: 5` → `active (write failed)` →
+  seq 0, «no new frames» → превью «нет сигнала» при живом процессе хоста. Это и есть исходный баг юзера.
+  Гипотеза причины: **первый после логина запуск хоста из Run идёт с UAC-filtered токеном БЕЗ
+  SeCreateGlobalPrivilege**, а `CreateFileMapping("Global\…")` без неё = ACCESS_DENIED(5); тогда как старт из
+  elevated-инсталлятора — writer ready. Косвенно: мой probe CreateFileMapping из PS Direct сеанса (юзер-админ,
+  привилегия Enabled в сеансе) → OK; локальный не-elevated `whoami /priv` на хосте — привилегии НЕТ вообще.
+  Перезапуск хоста через 2 мин (09:54:13, после запущенного юзером предпросмотра) → `writer ready` —
+  секция к тому моменту уже существовала (держал читатель, напр. превью — «recreate» патч e2e) → открытие
+  существующей без привилегии проходит. Нужно подтвердить: probe CreateFileMapping из non-elevated
+  (`runas /trustlevel:0x20000`) в госте → ждём err 5. Фикс-направления (обсудить): writer сначала
+  OpenFileMapping → CreateFileMapping; согласие читателей/писателя на Local\+Global или первый создатель —
+  процесс с привилегией; НЕ ломать контракт Global\VCam.FrameBuffer.v1 без согласования.
+     Хост в VM юзер остановил сам (09:54:10/09:55:25 — graceful, exit), Application log гостя чист (WER нет).
+- **КОРЕНЬ ПОДТВЕРЖДЁН ТОКЕН-ДИАГНОСТИКОЙ**: в госте `explorer` pid 6624 `elev=Limited NO
+  SeCreateGlobalPrivilege` (сам автозапуск от Limited-токена), а сеанс PS Direct `elev=Full HAS
+  SeCreateGlobalPrivilege` — поэтому запуск из инсталлятора писал в Global, а хост из HKCU\Run — падал
+  err 5. Привилегии в Limited-токене НЕТ вообще → EnablePrivilege невозможен.
+- **ФИКС «РЕБУТА» (реализован, собран; входит в релиз 0.0.2)**:
+  - `FrameWriter::Open`: цепочка `Create(Global\)` → при неудаче `Open(Global\)` (секция уже создана
+    кем-то с привилегией) → при неудаче `Create(Local\<base>)`; ready-event — та же логика на свой
+    базовый префикс; новый `FrameWriter::SectionOpenedAs()`; трассировка в LogWriter.
+  - `VCamVideoStreamProducer.cpp` логает `shared memory writer ready (%s)` с фактическим именем
+    (е2e-матч `writer ready` сохранён); CLI `PrintSectionState` перебирает префиксы
+    `Global\`/`Local\` (иначе статус враньёт в фолбэке); удачные сообщения печатают фактическое имя.
+  - Читатели (`SharedMemoryFrameSource`, превью) уже перебирают Global→Local — контракт не менялся.
+- **П.2: ВЕРИФИКАЦИЯ ФИКСА В VM ПРОЙДЕНА (29.09, сборка фикса)**: установлено, host.log очищен,
+  ребут → автологон **погашен Windows** (one-shot: AutoAdminLogon=0, DefaultPassword стёрт; юзер вошёл
+  руками `User`/`123`). Сразу после входа: хост из Run жив, host.log
+  `writer open` НЕ падает → `shared memory writer ready (Local\VCam.FrameBuffer.v1)` → `active`
+  без `write failed`. Статус **из интерактивного сеанса юзера** (команда юзером в PowerShell:
+  `VCamProducerCli status > $env:TEMP\vcam_status.txt`): `host running`,
+  `Local\VCam.FrameBuffer.v1: open, frames are being written (seq 33686 -> 33704)`. Превью показывает
+  картинку (первоначальное «нет сигнала» = превью было подключено к stale-состоянию до переподключения
+  — self-heal 1-3 с по коду `Tick/Disconnect`).
+- **ПИТФОЛ ДИАГНОСТИКИ (не баг продукта)**: PowerShell Direct `Invoke-Command` исполняется **в сеансе 0
+  гостя**, хост/превью/юзер — **в сеансе 2**: Local-namespace сеансов не пересекается → статус из PS Direct
+  не видит мьютекс/секцию хоста (`not running` ложь) и мог видеть постороннюю `Global\` seq 0 (пустышку,
+  созданную с привилегией моим же elevated-`inspect`/probe из сеанса 0; к 11:04 она мертва — статус сеанса 2
+  открыл только Local). Честный status/превью брать ТОЛЬКО из сеанса 2 (юзером).
+- Незакоммичено (коммит только по явному запросу юзера): фикс FrameWriter/CLI/host-log-name + vcam_installer.iss.
+- **НУМЕРАЦИЯ ВЕРСИЙ (решение юзера, 29.09)**: линейка «по порядку релизов» — только `0.0.1` и `0.0.2`;
+  промежуточные сборки 0.0.3 (фильтр камеры, коммит a74781d) и 0.0.4 (фикс ребута) из линейки
+  исключены, `releases/` = 0.0.1 + новый 0.0.2 (пересобран 21:13, содержит ВСЁ: лог, ярлыки, фильтр,
+  фикс ребута), артефакты 0.0.3/0.0.4 удалены; `.iss` AppVersion=0.0.2. Исторические упоминания
+  0.0.3/0.0.4 в старых записях читать как промежуточные сборки дня.
+- Открытые вопросы юзеру: (а) убрать ли остатки автологона из Winlogon VM; (б) коммит/пуш.
 - **ЯРЛЫКИ + ПЕРЕЗАПУСК (29.09, п.3)**: пользователь — «ярлыков нет в меню пуск» (в скрипте `[Icons]`
   не было вообще). Добавлено в `vcam_installer.iss`: `{userprograms}\VCam\` → «Настройки VCam»,
   «Предпросмотр VCam», **«Перезапуск камеры VCam»** (powershell `-WindowStyle Hidden -File
@@ -54,7 +104,7 @@ Purpose: durable record so an interrupted agent can resume. Update as work progr
   `CaptureTest inspect/device` не тронут (e2e фазы D/E ищут VCam по mediaTypes=3). Проверено: после
   сборки `list-devices` → только `Brio 90` (было 2), установленный CLI в Program Files тоже
   обновлён (e2e фаза C берёт devices[0]=Brio — не затронута). UI список кэшируется на сессию —
-  «Обновить список»/рестарт UI. Инсталлятор → **0.0.3** (`releases/VCamSetup-0.0.3-x64.exe`).
+  «Обновить список»/рестарт UI. Инсталлятор (промежуточная сборка дня, позже вошла в релиз 0.0.2).
 
 ## LATEST SERIES (27.09.2026) — INSTALLED: VCam Installer v0.0.1 (Inno Setup)
 - Created Inno Setup installer script (`vcam_installer.iss`) for version `0.0.1`.
