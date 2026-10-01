@@ -47,6 +47,8 @@
     <ClInclude Include="MediaSource.h" />
     <ClInclude Include="Activator.h" />
     <ClInclude Include="MediaStream.h" />
+    <ClInclude Include="ModuleLifetime.h" />
+    <ClInclude Include="AttrLogProxy.h" />
     <ClInclude Include="..\Common\GUIDs.h" />
     <ClInclude Include="..\Common\SharedMemoryContract.h" />
     <ClInclude Include="..\Common\SharedMemoryFrameSource.h" />

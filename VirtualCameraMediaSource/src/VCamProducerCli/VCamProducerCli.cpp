@@ -582,7 +582,11 @@ int CmdRun(const std::wstring& settingsPath)
 
     Log(L"[cli] shutting down");
     g_watcher.Stop();
-    WaitForSingleObject(g_worker, 8000);
+    // g_dirty/g_stop are shared with the worker: join it before CloseHandle.
+    if (WaitForSingleObject(g_worker, 8000) != WAIT_OBJECT_0) {
+        LogErr(L"[cli] worker did not stop in 8000 ms; waiting indefinitely");
+        WaitForSingleObject(g_worker, INFINITE);
+    }
     CloseHandle(g_worker);
     g_worker = nullptr;
     CloseHandle(g_dirty);

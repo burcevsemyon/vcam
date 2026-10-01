@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <mfidl.h>
 #include <mfobjects.h>
+#include "ModuleLifetime.h"
 
 // TEMP DIAGNOSTIC - declarations live in dllmain.cpp. Remove before shipping.
 void VCamDiagLog(const wchar_t* fmt, ...);
@@ -17,6 +18,7 @@ public:
         : m_pInner(pInner), m_tag(tag), m_ref(1)
     {
         if (m_pInner) m_pInner->AddRef();
+        VCamObjectInc();
     }
 
     // IUnknown
@@ -40,6 +42,7 @@ public:
         LONG r = InterlockedDecrement(&m_ref);
         if (r == 0) {
             if (m_pInner) m_pInner->Release();
+            VCamObjectDec();
             delete this;
         }
         return static_cast<ULONG>(r);

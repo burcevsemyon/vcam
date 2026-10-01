@@ -5,20 +5,24 @@
 #include <cstdio>
 #include <cstdarg>
 #include "MediaSource.h"
+#include "ModuleLifetime.h"
 #include "Activator.h"
 #include "GUIDs.h"
 
 static volatile LONG g_moduleLockCount = 0;
+static volatile LONG g_objectCount = 0;
 static HMODULE s_hModule = nullptr;
 
-// TEMP DIAGNOSTIC - remove before shipping
-void VCamDiagLog(const wchar_t* fmt, ...)
+void VCamObjectInc() { InterlockedIncrement(&g_objectCount); }
+void VCamObjectDec() { InterlockedDecrement(&g_objectCount); }
+
+// Debug-only verbose diagnostics (TEMP DIAGNOSTIC): every COM call is logged
+// to msrc_diag.log. Release builds compile VCamDiagLog as a no-op; the three
+// e2e-critical events go through VCamDiagEvent (always logged).
+static void DiagEmit(const wchar_t* fmt, va_list args)
 {
     wchar_t line[512];
-    va_list args;
-    va_start(args, fmt);
     int len = _vsnwprintf(line, 511, fmt, args);
-    va_end(args);
     if (len < 0) len = 511;
     line[len] = L'\0';
     SYSTEMTIME st;
@@ -39,6 +43,26 @@ void VCamDiagLog(const wchar_t* fmt, ...)
     }
 }
 
+void VCamDiagLog(const wchar_t* fmt, ...)
+{
+#ifndef NDEBUG
+    va_list args;
+    va_start(args, fmt);
+    DiagEmit(fmt, args);
+    va_end(args);
+#else
+    (void)fmt;
+#endif
+}
+
+void VCamDiagEvent(const wchar_t* fmt, ...)
+{
+    va_list args;
+    va_start(args, fmt);
+    DiagEmit(fmt, args);
+    va_end(args);
+}
+
 void VCamDiagGuid(const GUID* g, wchar_t* out, size_t cch)
 {
     swprintf_s(out, cch, L"{%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}",
@@ -50,6 +74,11 @@ void VCamDiagGuid(const GUID* g, wchar_t* out, size_t cch)
 class CVCamClassFactory : public IClassFactory
 {
     LONG m_ref = 1;
+
+public:
+    CVCamClassFactory() { VCamObjectInc(); }
+
+private:
 
     STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override
     {
@@ -66,7 +95,10 @@ class CVCamClassFactory : public IClassFactory
     STDMETHODIMP_(ULONG) Release() override
     {
         LONG r = InterlockedDecrement(&m_ref);
-        if (r == 0) delete this;
+        if (r == 0) {
+            VCamObjectDec();
+            delete this;
+        }
         return r;
     }
     STDMETHODIMP CreateInstance(IUnknown* pUnkOuter, REFIID riid, void** ppv) override
@@ -135,7 +167,9 @@ STDAPI DllGetClassObject(REFCLSID rclsid, REFIID riid, void** ppv)
 
 STDAPI DllCanUnloadNow()
 {
-    return (g_moduleLockCount > 0) ? S_FALSE : S_OK;
+    // Unload is only safe when no COM objects (source/stream/activator/proxy/
+    // class factory) are alive — not just when LockServer was balanced.
+    return (g_moduleLockCount > 0 || g_objectCount > 0) ? S_FALSE : S_OK;
 }
 
 STDAPI DllRegisterServer()

@@ -8,10 +8,10 @@
 
 | Проект | Назначение |
 |---|---|
-| `src/MediaSource` (MediaSource.dll) | COM media source: видео-потоки 1280×720@30 и 640×480@30 (RGB32 + NV12), автоматический даунскейлинг и конверсия в потоке. `IMFMediaSourceEx`, `IKsControl`, `IMFGetService`, async worker + token queue. |
+| `src/MediaSource` (MediaSource.dll) | COM media source: видео-потоки 1280×720@30 и 640×480@30 (RGB32 + NV12), автоматический даунскейлинг и конверсия в потоке. `IMFMediaSourceEx`, `IKsControl`, `IMFGetService`, синхронный pull-путь `RequestSample` (AllocateSample на COM-потоке клиента). |
 | `src/Registrar` (Registrar.exe) | Регистрация камеры: `add [name] [hold]` / `remove`. Процесс нужно держать живым (Session lifetime). |
 | `src/ProducerCore` (ProducerCore.lib) | Общее ядро продюсеров: `Settings` (чтение/миграция/запись settings.json), `SettingsWatcher` (опрос 500 мс + debounce 200 мс), `FrameWriter` (запись в общую память, seqlock, FlushLast), источники `StaticImageSource` / `VideoFileSource` / `CameraSource` (захват физической камеры, MF Source Reader, letterbox), `CameraDevices` (перечисление камер), `SourceFactory`, `ToSourceConfig`. Используется хостом и CLI. |
-| `src/VCamVideoStreamProducer` (VCamVideoStreamProducer.exe) | Основной продюсер-хост: tray-иконка с меню (статус, «Настройки VCam…», «Окно предпросмотра…», «Автозагрузка», «Выход»), ядро state machine (hot-switch без перезапуска, fallback NO SIGNAL при ошибках источника), мьютекс `VCamVideoStreamProducer.Instance`, автозагрузка в `HKCU\Run` по `settings.autostart`. |
+| `src/VCamVideoStreamProducer` (VCamVideoStreamProducer.exe) | Основной продюсер-хост: tray-иконка с меню (статус, «Настройки VCam…», «Окно предпросмотра…», «Автозагрузка», «Выход»), ядро state machine (hot-switch без перезапуска, fallback NO SIGNAL при ошибках источника), мьютекс `VCamVideoStreamProducer.Instance`, автозапуск через задачу Task Scheduler `VCamHost` по `settings.autostart`. |
 | `src/VCamProducerCli` (VCamProducerCli.exe) | Консольный хост для отладки и E2E: `run [--type static\|video\|camera] [--path <file>] [--device <id>] [--settings <path>]` — то же ядро без tray (логи в stdout @30 FPS, остановка по Ctrl+C/Ctrl+Break/Esc); `list-devices` — перечисление физических камер (`id\tname` в stdout); `status` — путь/схема settings, `source.type`, секции, автозапуск, состояние хоста и writer-секции. |
 | `src/ProducerTest` (ProducerTest.exe) | Пишет анимированный test pattern в общую память @30 fps. |
 | `src/StaticProducer` (StaticProducer.exe) | Отдельная утилита: статическое изображение в общую память @30 fps. Понимает **legacy-поля** settings.json (`imagePath`/`mediaMode`/`mediaPath`, hot-reload ~0.7 с), аргумент командной строки — fallback. Для обычной работы используйте хост или CLI. |
@@ -126,12 +126,13 @@
 | `video.path` | путь к файлу | источник ролика (MP4/MKV/…), letterbox 1280×720, бесконечный loop |
 | `camera.id` | MF symbolic link | физическая камера (USB-устройство); пусто **и** пустое `camera.name` → источник не открывается, NO SIGNAL до выбора в UI |
 | `camera.name` | friendly name | запасной ключ поиска (точное имя → подстрока), если `id` не совпал (камера переставлена в другой порт); обычно заполняет UI |
-| `autostart` | `true` \| `false` | автозагрузка tray-хоста: при старте хост применяет флаг к `HKCU\Run\VCamAutostart`; пункт меню «Автозагрузка» переключает и сохраняет. CLI `autостart` только показывает в `status` |
+| `autostart` | `true` \| `false` | автозагрузка tray-хоста: при старте хост применяет флаг к задаче Task Scheduler `VCamHost` (ONLOGON, Highest); пункт меню «Автозагрузка» переключает и сохраняет. CLI `autостart` только показывает в `status` |
 
 - Сценарий работы: UI сохраняет файл → хост/CLI опрашивает его каждые 500 мс
   (debounce 200 мс) и переключает тип/путь **без перезапуска** (hot-switch: пока
   новый источник не открыт, пишется последний кадр старого — `FlushLast`; если
-  открыть не удалось за 5 с — fallback, камера держит последний кадр/чёрный).
+  открыть не удалось за 5 с — fallback (последний кадр старого источника,
+  без кэша — NO SIGNAL).
 - Ошибка загрузки (удалённый файл) — лог в консоль, трансляция продолжается
   со старым кадром; источник перепроверяется каждую секунду.
 - Отдельные утилиты `StaticProducer`/`VideoProducer` читают **только legacy-поля**
@@ -232,7 +233,7 @@ src/ProducerCore/
   SourceFactory.h/.cpp           тип -> источник
 src/MediaSource/
   MediaSource.h/.cpp             IMFMediaSource(+Ex) + IKsControl + IMFGetService
-  MediaStream.h/.cpp             IMFMediaStream2: async worker, token queue, RGB32→NV12
+  MediaStream.h/.cpp             IMFMediaStream2: sync RequestSample, RGB32→NV12
   Activator.h/.cpp               активация (classless object)
   dllmain.cpp                    ATL COM factory, DllRegisterServer
   MediaSource.def                экспорты

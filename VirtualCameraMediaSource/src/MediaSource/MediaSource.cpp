@@ -22,6 +22,11 @@ static const GUID kVcamProvideAssociatedCameraSources =
 // Canonical IMFMediaEventGenerator IID (local SDK value differs)
 static const IID kIID_IMFMediaEventGenerator_Canonical = { 0x1868091e, 0xab5a, 0x415f, { 0xa0, 0x2f, 0x5c, 0x4d, 0xd0, 0xcf, 0x90, 0x1d } };
 
+CMediaSource::CMediaSource()
+{
+    VCamObjectInc();
+}
+
 CMediaSource::~CMediaSource()
 {
     VCamDiagLog(L"Src.~dtor");
@@ -29,6 +34,7 @@ CMediaSource::~CMediaSource()
     if (m_pEventQueue) m_pEventQueue->Release();
     if (m_pSourceAttrsProxy) m_pSourceAttrsProxy->Release();
     if (m_pSourceAttrs) m_pSourceAttrs->Release();
+    VCamObjectDec();
 }
 
 HRESULT CMediaSource::QueryInterface(REFIID riid, void** ppvObject)
@@ -91,8 +97,11 @@ HRESULT CMediaSource::QueryInterface(REFIID riid, void** ppvObject)
     }
     else if (riid == IID_IMFAttributes ||
         riid == kIID_IMFAttributes_Canonical) {
-        if (m_pSourceAttrsProxy != nullptr) {
-            hr = m_pSourceAttrsProxy->QueryInterface(riid, ppvObject);
+        // Debug proxy when present, the real store otherwise (release builds).
+        IMFAttributes* pAttrs = (m_pSourceAttrsProxy != nullptr)
+            ? static_cast<IMFAttributes*>(m_pSourceAttrsProxy) : m_pSourceAttrs;
+        if (pAttrs != nullptr) {
+            hr = pAttrs->QueryInterface(riid, ppvObject);
         }
         else {
             *ppvObject = nullptr;
@@ -501,8 +510,10 @@ HRESULT CMediaSource::FinalConstruct()
     hr = MFCreateAttributes(&m_pSourceAttrs, 8);
     if (FAILED(hr)) return hr;
 
+#ifndef NDEBUG // TEMP DIAGNOSTIC: attribute-access proxy is debug-only
     m_pSourceAttrsProxy = new (std::nothrow) CAttrLogProxy(m_pSourceAttrs, L"Src");
     if (m_pSourceAttrsProxy == nullptr) return E_OUTOFMEMORY;
+#endif
 
     CMediaStream* pStream = new (std::nothrow) CMediaStream();
     if (pStream == nullptr) return E_OUTOFMEMORY;

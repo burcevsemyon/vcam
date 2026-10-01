@@ -34,6 +34,9 @@ private:
     static DWORD WINAPI ThreadProc(LPVOID self);
     void CaptureLoop();
     void SetFailed(const std::wstring& reason);
+    // Остановка capture-потока с таймаутом: false = поток не успел выйти,
+    // reader/MF/состояние не тронуты (иначе — UAF под живым CaptureLoop).
+    bool Shutdown(DWORD timeoutMs);
 
     std::mutex mutex_;           // кэш + флаги: поток захвата <-> Render
     SourceConfig cfg_;

@@ -17,11 +17,17 @@ extern "C" HRESULT WINAPI WindowsCreateString(PCWSTR sourceString, UINT32 length
 static const GUID kVcamProvideAssociatedCameraSources =
     { 0xf0273718, 0x4a4d, 0x4ac5, { 0xa1, 0x5d, 0x30, 0x5e, 0xb5, 0xe9, 0x06, 0x67 } };
 
+CVCamActivator::CVCamActivator()
+{
+    VCamObjectInc();
+}
+
 CVCamActivator::~CVCamActivator()
 {
     VCamDiagLog(L"Act.~dtor");
     if (m_source) m_source->Release();
     if (m_attrs) m_attrs->Release();
+    VCamObjectDec();
 }
 
 HRESULT CVCamActivator::QueryInterface(REFIID riid, void** ppvObject)

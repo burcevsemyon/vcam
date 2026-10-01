@@ -330,7 +330,10 @@ VideoFileSource::VideoFileSource()
 
 VideoFileSource::~VideoFileSource()
 {
-    Close();
+    // Декод завис намертво: дожидаемся бесконечно — удаление cs_ под живым
+    // DecodeLoop это UB, хуже ожидания.
+    if (!Shutdown(3000) && thread_)
+        Shutdown(INFINITE);
     DeleteCriticalSection(&cs_);
 }
 
@@ -352,7 +355,12 @@ bool VideoFileSource::Open(const SourceConfig& cfg, std::wstring& err)
     LeaveCriticalSection(&cs_);
     if (reuse) return true;
 
-    Close();
+    // Текущий decode-поток обязан остановиться, иначе Open перезаписал бы
+    // stopEvent_/frame_ под живым DecodeLoop.
+    if (!Shutdown(3000)) {
+        err = L"previous decode thread is still running";
+        return false;
+    }
 
     if (cfg.path.empty()) { err = L"empty media path"; return false; }
 
@@ -416,9 +424,15 @@ bool VideoFileSource::Render(uint8_t* bgrx, int stride, std::wstring& err)
 
 void VideoFileSource::Close()
 {
+    Shutdown(3000);
+}
+
+bool VideoFileSource::Shutdown(DWORD timeoutMs)
+{
     if (stopEvent_) SetEvent(stopEvent_);
     if (thread_) {
-        WaitForSingleObject(thread_, 3000);
+        if (WaitForSingleObject(thread_, timeoutMs) != WAIT_OBJECT_0)
+            return false;   // поток жив: ресурсы/состояние не трогаем
         CloseHandle(thread_);
         thread_ = nullptr;
     }
@@ -434,6 +448,7 @@ void VideoFileSource::Close()
     frame_.clear();
     frame_.shrink_to_fit();
     cfg_ = SourceConfig();
+    return true;
 }
 
 DWORD WINAPI VideoFileSource::ThreadProc(LPVOID self)

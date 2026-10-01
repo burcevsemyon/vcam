@@ -344,7 +344,10 @@ CameraSource::CameraSource() = default;
 
 CameraSource::~CameraSource()
 {
-    Close();
+    // Поток завис намертво: дожидаемся бесконечно, иначе члены (mutex_, reader_)
+    // будут удалены под живым CaptureLoop — UB.
+    if (!Shutdown(kThreadJoinMs))
+        Shutdown(INFINITE);
 }
 
 void CameraSource::SetFailed(const std::wstring& reason)
@@ -364,7 +367,12 @@ bool CameraSource::Open(const SourceConfig& cfg, std::wstring& err)
         std::lock_guard<std::mutex> lock(mutex_);
         if (open_ && !failed_ && cfg == cfg_) return true; // reuse
     }
-    Close();
+    // Поток обязан остановиться: иначе Open перезаписал бы reader_/stopEvent_
+    // под живым CaptureLoop, а cache_.resize — под писателем в cache_.
+    if (!Shutdown(kThreadJoinMs)) {
+        err = L"previous capture thread is still running";
+        return false;
+    }
 
     if (cfg.path.empty() && cfg.camName.empty()) {
         err = L"камера не выбрана"; // пустая секция camera -> NO SIGNAL до выбора
@@ -416,6 +424,8 @@ bool CameraSource::Open(const SourceConfig& cfg, std::wstring& err)
     capStride_ = stride;
 
     try {
+        // под mutex_: CaptureLoop пишет cache_ под этим же локом
+        std::lock_guard<std::mutex> lock(mutex_);
         cache_.resize((size_t)w * h * 4);
     } catch (...) {
         err = L"out of memory";
@@ -492,19 +502,22 @@ bool CameraSource::Render(uint8_t* bgrx, int stride, std::wstring& err)
 
 void CameraSource::Close()
 {
+    Shutdown(kThreadJoinMs);
+}
+
+bool CameraSource::Shutdown(DWORD timeoutMs)
+{
     if (stopEvent_) SetEvent(stopEvent_);
     if (thread_) {
-        DWORD r = WaitForSingleObject(thread_, kThreadJoinMs);
-        if (r == WAIT_OBJECT_0) {
-            CloseHandle(thread_);
-            thread_ = nullptr;
-        } else {
+        if (WaitForSingleObject(thread_, timeoutMs) != WAIT_OBJECT_0) {
             // Поток завис в ReadSample: не освобождаем reader/MF (иначе UAF в
-            // потоке), повторный Close/деструктор попробуют ещё раз.
-            LogCamera(L"capture thread did not stop in " + std::to_wstring(kThreadJoinMs) +
+            // потоке); деструктор повторит с INFINITE.
+            LogCamera(L"capture thread did not stop in " + std::to_wstring(timeoutMs) +
                       L" ms (reader отложен)");
-            return;
+            return false;
         }
+        CloseHandle(thread_);
+        thread_ = nullptr;
     }
 
     if (stopEvent_) { CloseHandle(stopEvent_); stopEvent_ = nullptr; }
@@ -531,6 +544,7 @@ void CameraSource::Close()
 
     if (mfUp_) { MFShutdown(); mfUp_ = false; } // парный MFStartup в Open
     if (comUp_) { CoUninitialize(); comUp_ = false; }
+    return true;
 }
 
 DWORD WINAPI CameraSource::ThreadProc(LPVOID self)

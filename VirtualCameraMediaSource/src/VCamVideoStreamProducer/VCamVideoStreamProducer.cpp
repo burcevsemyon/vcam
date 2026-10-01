@@ -791,7 +791,12 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     SetEvent(g_stop);
     g_watcher.Stop();
     if (g_worker) {
-        WaitForSingleObject(g_worker, 8000);
+        // Handles/critical sections below are shared with the worker: it must
+        // be joined before they are destroyed (checked wait, not best-effort).
+        if (WaitForSingleObject(g_worker, 8000) != WAIT_OBJECT_0) {
+            Log(L"[host] worker did not stop in 8000 ms; waiting indefinitely");
+            WaitForSingleObject(g_worker, INFINITE);
+        }
         CloseHandle(g_worker);
         g_worker = nullptr;
     }

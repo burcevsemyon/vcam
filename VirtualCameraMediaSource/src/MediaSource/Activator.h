@@ -70,6 +70,8 @@ public:
     STDMETHODIMP GetItemByIndex(UINT32 unIndex, GUID* pguidKey, PROPVARIANT* pValue) override;
     STDMETHODIMP CopyAllItems(IMFAttributes* pDest) override;
 
+    CVCamActivator();
+
     HRESULT FinalConstruct();
 
 private:

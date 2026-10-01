@@ -29,6 +29,9 @@ private:
     static DWORD WINAPI ThreadProc(LPVOID self);
     void DecodeLoop();
     void SetFailed(const std::wstring& reason);
+    // Остановка decode-потока с таймаутом: false = поток не успел выйти,
+    // никакие ресурсы/состояние не тронуты (иначе — UAF под живым DecodeLoop).
+    bool Shutdown(DWORD timeoutMs);
 
     CRITICAL_SECTION cs_ = {};
     SourceConfig cfg_;

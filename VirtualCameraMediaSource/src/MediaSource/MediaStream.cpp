@@ -11,12 +11,19 @@
 // TEMP DIAGNOSTIC - defined in dllmain.cpp, remove before shipping
 void VCamDiagLog(const wchar_t* fmt, ...);
 void VCamDiagGuid(const GUID* g, wchar_t* out, size_t cch);
+// Always-on (release too): e2e_test.ps1 phases D/E assert these exact lines.
+void VCamDiagEvent(const wchar_t* fmt, ...);
 
 // The local SDK's hstring.h (winrt\) declares the HSTRING type but not the factory.
 extern "C" HRESULT WINAPI WindowsCreateString(PCWSTR sourceString, UINT32 length, HSTRING* resultString);
 
 // Canonical IMFMediaEventGenerator IID (local SDK value differs)
 static const IID kIID_IMFMediaEventGenerator_Canonical = { 0x1868091e, 0xab5a, 0x415f, { 0xa0, 0x2f, 0x5c, 0x4d, 0xd0, 0xcf, 0x90, 0x1d } };
+
+CMediaStream::CMediaStream()
+{
+    VCamObjectInc();
+}
 
 CMediaStream::~CMediaStream()
 {
@@ -31,6 +38,7 @@ CMediaStream::~CMediaStream()
     if (m_pStreamAttributes) m_pStreamAttributes->Release();
     if (m_pAllocator) m_pAllocator->Release();
     if (m_csInit) DeleteCriticalSection(&m_cs);
+    VCamObjectDec();
 }
 
 HRESULT CMediaStream::QueryInterface(REFIID riid, void** ppvObject)
@@ -67,8 +75,11 @@ HRESULT CMediaStream::QueryInterface(REFIID riid, void** ppvObject)
     }
     else if (riid == IID_IMFAttributes ||
         riid == kIID_IMFAttributes_Canonical) {
-        if (m_pStreamAttrsProxy != nullptr) {
-            hr = m_pStreamAttrsProxy->QueryInterface(riid, ppvObject);
+        // Debug proxy when present, the real store otherwise (release builds).
+        IMFAttributes* pAttrs = (m_pStreamAttrsProxy != nullptr)
+            ? static_cast<IMFAttributes*>(m_pStreamAttrsProxy) : m_pStreamAttributes;
+        if (pAttrs != nullptr) {
+            hr = pAttrs->QueryInterface(riid, ppvObject);
         }
         else {
             *ppvObject = nullptr;
@@ -409,8 +420,10 @@ HRESULT CMediaStream::FinalConstruct(CMediaSource* pSource)
     hr = m_pStreamAttributes->SetUINT32(MF_DEVICESTREAM_FRAMESERVER_SHARED, TRUE);
     if (FAILED(hr)) return hr;
 
+#ifndef NDEBUG // TEMP DIAGNOSTIC: attribute-access proxy is debug-only
     m_pStreamAttrsProxy = new (std::nothrow) CAttrLogProxy(m_pStreamAttributes, L"Stream");
     if (m_pStreamAttrsProxy == nullptr) return E_OUTOFMEMORY;
+#endif
 
     // Initialize the shared memory frame source (process-wide singleton)
     hr = SharedMemoryFrameSource::Instance().Init();
@@ -440,7 +453,7 @@ HRESULT CMediaStream::StartForSession()
     else {
         pInitType = m_pMediaType;
     }
-    VCamDiagLog(L"Stream.StartForSession negotiated %ux%u %s -> allocator type %s", selW, selH,
+    VCamDiagEvent(L"Stream.StartForSession negotiated %ux%u %s -> allocator type %s", selW, selH,
                 selNv12 ? L"NV12" : L"RGB32",
                 pInitType == m_pMediaTypeNv12 ? L"NV12720" : (pInitType == m_pMediaType640 ? L"RGB640" : L"RGB720"));
     // Log the delivered type once per session as well.
@@ -535,14 +548,12 @@ void CMediaStream::ShutDownInternal()
 
     QueueEvent(MEError, GUID_NULL, MF_E_SHUTDOWN, nullptr);
 
-    if (m_pEventQueue) { m_pEventQueue->Release(); m_pEventQueue = nullptr; }
-    if (m_pStreamDescriptor) { m_pStreamDescriptor->Release(); m_pStreamDescriptor = nullptr; }
-    if (m_pMediaType) { m_pMediaType->Release(); m_pMediaType = nullptr; }
-    if (m_pMediaTypeNv12) { m_pMediaTypeNv12->Release(); m_pMediaTypeNv12 = nullptr; }
-    if (m_pMediaType640) { m_pMediaType640->Release(); m_pMediaType640 = nullptr; }
-    if (m_pStreamAttrsProxy) { m_pStreamAttrsProxy->Release(); m_pStreamAttrsProxy = nullptr; }
-    if (m_pStreamAttributes) { m_pStreamAttributes->Release(); m_pStreamAttributes = nullptr; }
-    if (m_csInit) { DeleteCriticalSection(&m_cs); m_csInit = false; }
+    // Resource cleanup (event queue, descriptor, types, attributes, m_cs) is
+    // deliberately deferred to ~CMediaStream: a client thread may already have
+    // passed the m_shutdown check (RequestSample/GetEvent TOCTOU) and be inside
+    // DeliverNextSample on m_cs — releasing here would be a UAF. The object
+    // lives until the last COM reference is dropped, which orders cleanup
+    // after every in-flight call.
 }
 
 void CMediaStream::WorkerMain()
@@ -771,7 +782,7 @@ HRESULT CMediaStream::DeliverNextSample(IUnknown* pToken)
             DWORD maxLen = 0, curLen = 0;
             VCamDiagLog(L"Stream.DeliverNextSample before Lock");
             hr = pBuffer->Lock(&pBits, &maxLen, &curLen);
-            VCamDiagLog(L"Stream.DeliverNextSample Lock hr=0x%08X bits=%p maxLen=%u curLen=%u", (unsigned)hr, (const void*)pBits, maxLen, curLen);
+            VCamDiagEvent(L"Stream.DeliverNextSample Lock hr=0x%08X bits=%p maxLen=%u curLen=%u", (unsigned)hr, (const void*)pBits, maxLen, curLen);
         if (SUCCEEDED(hr)) {
             const DWORD needed = useNv12 ? nv12Bytes : rgbBytes;
             VCamDiagLog(L"Stream.DeliverNextSample before AcquireFrame");
@@ -785,7 +796,7 @@ HRESULT CMediaStream::DeliverNextSample(IUnknown* pToken)
                 // zeroed buffer rather than a partially valid one.
                 RtlZeroMemory(pBits, maxLen);
                 hr = pBuffer->SetCurrentLength(0);
-                VCamDiagLog(L"Stream.DeliverNextSample buffer too small maxLen=%u needed=%u", maxLen, needed);
+                VCamDiagEvent(L"Stream.DeliverNextSample buffer too small maxLen=%u needed=%u", maxLen, needed);
             }
             VCamDiagLog(L"Stream.DeliverNextSample AcquireFrame done, before Unlock");
             pBuffer->Unlock();

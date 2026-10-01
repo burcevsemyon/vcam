@@ -28,7 +28,9 @@ if errorlevel 1 (
 echo DLL registered.
 
 echo Starting virtual camera...
-"%REGISTRAR%" add VCam
+rem "hold" keeps Registrar.exe alive so the camera stays registered/alive
+rem (see README: do not close the process).
+"%REGISTRAR%" add VCam hold
 if errorlevel 1 (
     echo Failed to start virtual camera.
     exit /b 1

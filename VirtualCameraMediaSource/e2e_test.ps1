@@ -263,13 +263,16 @@ if ($regCode -eq 0) {
 Write-Host "=== 3. Preparing Test Image ==="
 $TestImageLocal = $TestImage
 if (-not (Test-Path $TestImageLocal)) {
-    $sampleBmp = Get-ChildItem "C:\Users\Semen\source\repos\10_000.bmp" -ErrorAction SilentlyContinue
-    if ($sampleBmp) {
-        Copy-Item $sampleBmp.FullName $TestImageLocal
-    } else {
-        Write-Error "Test image not found!"
-        exit 1
-    }
+    # Deterministic fallback: generate the static test image instead of a
+    # hardcoded machine path (1280x720 flat non-black color; static-source
+    # asserts only need identical, non-black, letterboxed frames).
+    $gen = New-Object System.Drawing.Bitmap 1280, 720
+    $gfx = [System.Drawing.Graphics]::FromImage($gen)
+    $gfx.Clear([System.Drawing.Color]::FromArgb(30, 90, 160))
+    $gfx.Dispose()
+    $gen.Save($TestImageLocal, [System.Drawing.Imaging.ImageFormat]::Bmp)
+    $gen.Dispose()
+    Pass "test image generated: $TestImageLocal"
 }
 if (-not (Test-Path $TestVideo)) {
     Write-Error "Test video not found: $TestVideo"

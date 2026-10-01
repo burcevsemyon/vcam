@@ -11,7 +11,7 @@
 | `MediaSource/` | Камера (in-proc COM DLL). Регистрация: `build\x64\Release\Registrar.exe add VCam hold` (elevated, процесс не закрывать); страницу «Камеры» Windows Settings перезапускать. |
 | `Common/` | Контракты: `SharedMemoryContract.h` (секция `Global\VCam.FrameBuffer.v1`, 1280×720 BGRX, stride 5120, 8 слотов seqlock — **не менять без согласования**), `ProducerApi.h` (`IFrameSource`/`SourceConfig`/`CreateSource`), `SharedMemoryFrameSource` (чтение камеры). |
 | `ProducerCore/` | Библиотека источников: `StaticImageSource`, `VideoFileSource`, `FrameWriter` (единственный писатель, 30 FPS pacing, `FlushLast` для hot-switch), `Settings` (новая схема + миграция legacy), `SettingsWatcher` (hot-reload), `SourceFactory`. |
-| `VCamVideoStreamProducer/` | Основной tray-хост: single-instance (`VCamVideoStreamProducer.Instance`), Stop-event, автозапуск `HKCU\Run` по `settings.autostart`, hot-switch static↔video, fallback NO SIGNAL. |
+| `VCamVideoStreamProducer/` | Основной tray-хост: single-instance (`VCamVideoStreamProducer.Instance`), Stop-event, автозапуск через задачу Task Scheduler `VCamHost` по `settings.autostart`, hot-switch static↔video, fallback NO SIGNAL. |
 | `VCamProducerCli/` | Консольный хост отладки/e2e: `run [--type --path --settings]`, `status`. |
 | `VCamPreview/` | Плавающее окно предпросмотра (GDI+ HighQualityBicubic, single-instance `VCamPreview.Instance`). |
 | `VCamSettingsUi/` | C# WinForms настройки (выбор источника, crop, превью, кнопки запуска хоста; single-instance `VCamSettingsUi.Instance`). |

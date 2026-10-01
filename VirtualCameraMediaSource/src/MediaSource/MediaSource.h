@@ -75,6 +75,8 @@ public:
     STDMETHODIMP SetDefaultAllocator(DWORD dwOutputStreamID, IUnknown* pAllocator) override;
     STDMETHODIMP GetAllocatorUsage(DWORD dwOutputStreamID, DWORD* pdwInputStreamID, MFSampleAllocatorUsage* peUsage) override;
 
+    CMediaSource();
+
     HRESULT FinalConstruct();
 
     // Copy the activator's attributes into the source store (parity with smourier/VCamSample).

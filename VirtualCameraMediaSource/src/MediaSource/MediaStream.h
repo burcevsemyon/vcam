@@ -9,6 +9,7 @@
 #include <winrt/inspectable.h>
 #include <thread>
 #include <mutex>
+#include <atomic>
 #include <condition_variable>
 #include <deque>
 #include "SharedMemoryFrameSource.h"
@@ -62,6 +63,8 @@ public:
     STDMETHODIMP GetRuntimeClassName(HSTRING* className) override;
     STDMETHODIMP GetTrustLevel(TrustLevel* trustLevel) override;
 
+    CMediaStream();
+
     HRESULT FinalConstruct(CMediaSource* pSource);
     HRESULT StartForSession();
     HRESULT StopForSession();
@@ -69,14 +72,13 @@ public:
     HRESULT SetMediaType(IMFMediaType* pMediaType);
     HRESULT SetAllocator(IUnknown* pAllocator);
 
-    // Returns the (logging) attributes proxy with an added reference; caller must Release.
+    // Returns the (logging) attributes store with an added reference; caller must Release.
     IMFAttributes* GetStreamAttributes()
     {
-        if (m_pStreamAttrsProxy != nullptr) {
-            m_pStreamAttrsProxy->AddRef();
-            return m_pStreamAttrsProxy;
-        }
-        return m_pStreamAttributes;
+        IMFAttributes* pAttrs = (m_pStreamAttrsProxy != nullptr)
+            ? static_cast<IMFAttributes*>(m_pStreamAttrsProxy) : m_pStreamAttributes;
+        if (pAttrs) pAttrs->AddRef(); // COM contract: caller releases
+        return pAttrs;
     }
 
 private:
@@ -105,7 +107,7 @@ private:
     bool m_lastDeliverNv12 = false;
 
     MF_STREAM_STATE m_state = MF_STREAM_STATE_STOPPED;
-    bool m_shutdown = false;
+    std::atomic<bool> m_shutdown{false}; // read from client threads, set by shutdown
 
     std::mutex m_tokenMutex;
     std::condition_variable m_tokenCv;
