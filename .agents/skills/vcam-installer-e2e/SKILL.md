@@ -2,9 +2,11 @@
 name: vcam-installer-e2e
 description: >-
   E2E-проверка инсталлятора VCam в Hyper-V VM (Win11 «Среда разработки»): установка /VERYSILENT через
-  PowerShell Direct, пост-инсталл-чеки (файлы+SHA256, ярлык 1/1 «Запуск камеры VCam», HKCU Run, процессы, host.log,
-  list-devices rows=0, inspect count=1), ребут-тест с автологоном и верификацией авторанта из HKCU Run
-  (фикс «после ребута нет сигнала» → writer ready (Local\...)), cleanup автологона. Use when: проверить
+  PowerShell Direct, пост-инсталл-чеки (файлы+SHA256, ярлык 1/1 «Запуск камеры VCam», задача
+  Task Scheduler\VCamHost + setup_task.log, HKCU Run только VCamRegistrar, процессы, host.log,
+  list-devices rows=0, inspect count=1), ребут-тест с автологоном и верификацией авторанта из задачи
+  VCamHost (фикс «после ребута нет сигнала» → token: elevated=1 SeCreateGlobalPrivilege=2 +
+  writer ready (Global\...)), cleanup автологона. Use when: проверить
   установщик, установка в VM, reboot-тест VCam, VCamSetup e2e, проверка ярлыков
   и автозапуска после установки, пункт «О программе» в tray.
 ---
@@ -61,17 +63,21 @@ description: >-
 
 ### F1 — Установка
 - `/VERYSILENT /SUPPRESSMSGBOXES`, `-Wait`; инсталлятор сам: стоп FrameServer → копирование →
-  regsvr32 → старт FrameServer → Run-ключи → **пост-инсталл-запуск Registrar + хоста**
+  regsvr32 → старт FrameServer → задача `VCamHost` (через `vcam_install_task.ps1`, log —
+  `setup_task.log`) + legacy-чистка `HKCU\Run\VCamAutostart` → **пост-инсталл-запуск Registrar + хоста**
   (их токен Full → `writer ready (Global\...)` допустим; важно `active` без `(write failed)`).
 
 ### F2 — Post-install чеки (из PS Direct)
 - **Файлы** в `C:\Program Files\VCam\`: `MediaSource.dll`, `VCamVideoStreamProducer.exe`,
   `VCamSettingsUi.exe`, `VCamPreview.exe`, `Registrar.exe`, `VCamProducerCli.exe`, `CaptureTest.exe`,
-  `vcam_restart_host.ps1`; SHA256 vs `build\x64\Release` (и vs publish UI).
+  `vcam_restart_host.ps1`, `vcam_install_task.ps1`; SHA256 vs `build\x64\Release` (и vs publish UI).
 - **Ярлык 1/1** в `%APPDATA%\Microsoft\Windows\Start Menu\Programs\VCam\`: «Запуск камеры VCam» →
   хост (единственный; Настройки/Предпросмотр — в tray-меню хоста, перезапуск — кнопка в UI;
   старых ярлыков «Настройки/Предпросмотр/Перезапуск» в свежей сборке быть не должно).
-- **HKCU\Run**: `VCamAutostart`, `VCamRegistrar`.
+- **Задача автозапуска**: `schtasks /Query /TN VCamHost` — есть; `/XML`: `<Command>` ЦЕЛИКОМ
+  `C:\Program Files\VCam\VCamVideoStreamProducer.exe` (без разрыва на `C:\Program`+`Files\...`),
+  `RunLevel HighestAvailable`, `<LogonTrigger>`; `%LOCALAPPDATA%\VCam\setup_task.log` = «created: \VCamHost».
+  **`HKCU\Run`**: только `VCamRegistrar` (`VCamAutostart` быть не должно — устарел и удаляется).
 - **Процессы**: `Registrar`, `VCamVideoStreamProducer`.
 - **host.log** (`%LOCALAPPDATA%\VCam\host.log`): `starting → autostart → tray → watching → writer ready
   (...) → switch → source opened → active`. Читается живьём (`Get-Content -Encoding UTF8`).
@@ -86,11 +92,13 @@ description: >-
 3. Сразу после входа зафиксировать состояние Winlogon (one-shot сброшен — норма).
 
 ### F4 — Верификация post-reboot (главная фаза)
-- **host.log НЕ должен содержать** `writer open failed: CreateFileMappingW failed: 5` (это и был
-  исходный баг: автозапуск из Run идёт с UAC-filtered токеном **без SeCreateGlobalPrivilege**).
-- Ожидается: `shared memory writer ready (Local\VCam.FrameBuffer.v1)` (фолбэк-цепочка
-  `Create(Global) → Open(Global) → Create(Local\<base>)`, фикс релиза 0.0.2) и `active` без
-  `(write failed)`.
+- **host.log НЕ должен содержать** `writer open failed: CreateFileMappingW failed: 5` (исходный
+  баг: автозапуск из HKCU\Run давал UAC-filtered токен **без SeCreateGlobalPrivilege**).
+- Ожидается: первая же строка токена — `token: elevated=1 SeCreateGlobalPrivilege=2` (хост от
+  задачи VCamHost, Highest) и `shared memory writer ready (Global\VCam.FrameBuffer.v1)`
+  (фолбэк `Create(Global) → Open(Global) → Create(Local)` остаётся, но при Elevated создастся Global)
+  и `active` без `(write failed)`. **`writer ready (Local\...)` после ребута = провал** (задача
+  упала на Non-Highest/токен остался Limited).
 - **status из сеанса юзера** (юзером, см. «сеансы»): `host VCamVideoStreamProducer: running`,
   `Local\VCam.FrameBuffer.v1: open, frames are being written (seq N -> M)` — seq должен **расти**
   (два замера с паузой).
@@ -112,13 +120,15 @@ description: >-
 | post-install host.log | `writer ready`, `active` | `CreateFileMappingW failed: 5` (в сборке нет фикса) |
 | list-devices (VM) | `rows=0` | видит `VCam (` — фильтр не работает |
 | inspect (VM) | `count=1` | 0 — Registrar не поднял камеру |
-| post-reboot host.log | `writer ready (Local\...)` | `writer open failed: ... 5` |
+| post-reboot host.log | `token: elevated=1 ...=2`, `writer ready (Global\...)` | `writer open failed: ... 5`, `writer ready (Local\...)`, `token: elevated=0` |
 | status (сеанс юзера) | `frames are being written`, seq растёт | `no new frames (seq 0)`, `not running` |
 | превью | картинка | NO SIGNAL дольше ~5 с после reconnect |
 
 ## Диагностика отклонений
 
-1. `host.log` (tail, UTF-8, живьём) — первоисточник; stdout при старте из Run теряется.
+1. `host.log` (tail, UTF-8, живьём) — первоисточник; stdout при тихом старте (задача/UI) теряется.
+   Ключевые строки: `token: elevated=N SeCreateGlobalPrivilege=N` (0 = Limited-токен, баг Run;
+   1/2 = задача Highest — норма), `autostart enabled (Task Scheduler\VCamHost)`, `writer ready (Global\...)`.
 2. Session-id сверка (0 vs 2) — объясняет «ложный» status.
 3. Посторонняя `Global\... seq 0`: её создаёт процесс с привилегией (обычно наша же диагностика из
    сеанса 0: `inspect`/probe). Читатели перебирают Global→Local и встают на мусорную → убить источник,

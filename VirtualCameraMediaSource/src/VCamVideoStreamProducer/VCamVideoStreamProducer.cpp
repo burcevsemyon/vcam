@@ -21,8 +21,6 @@ namespace {
 
 constexpr wchar_t kMutexName[] = L"VCamVideoStreamProducer.Instance";
 constexpr wchar_t kStopEventName[] = L"VCamVideoStreamProducer.Stop";
-constexpr wchar_t kRunValueName[] = L"VCamAutostart";
-constexpr wchar_t kRunKeyPath[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 constexpr wchar_t kTrayClass[] = L"VCamVideoStreamProducerWnd";
 constexpr wchar_t kTrayTip[] = L"VCam Video Stream Producer";
 
@@ -252,35 +250,90 @@ void ShowAbout()
     MessageBoxW(g_hwnd, msg.c_str(), L"О программе — VCam", MB_OK | MB_ICONINFORMATION);
 }
 
-bool ApplyAutostart(bool enabled)
+// --- Автозапуск: задача Планировщика Task Scheduler\VCamHost вместо HKCU\Run.
+// Run-ключ стартовал хост с Limited-токеном (UAC) → Create(Global) не проходил,
+// писатель уходил в Local-секцию, а сервис MF видит только Global → раскол
+// «после ребута нет сигнала». Задача /RL HIGHEST даёт полный токен при входе
+// → хост сразу в Global, один мир. ONLOGON-задачу создать/удалить можно только
+// с правами (из Limited — через runas-посредник с UAC); /Query доступен всем.
+
+constexpr wchar_t kAutostartTask[] = L"VCamHost";
+
+// Прогон schtasks, скрыто; elevate=true — через runas (UAC). Возврат: exit code
+// schtasks, 1223 = пользователь отказался от UAC, -1 = не запустилось.
+int RunSchtasks(const std::wstring& args, bool elevate)
 {
-    HKEY key = nullptr;
-    LONG rc = RegCreateKeyExW(HKEY_CURRENT_USER, kRunKeyPath, 0, nullptr, 0, KEY_SET_VALUE,
-                              nullptr, &key, nullptr);
-    if (rc != ERROR_SUCCESS) {
-        Log(L"[host] autostart registry open failed: %ld", rc);
-        return false;
+    wchar_t sys[MAX_PATH] = {};
+    if (GetSystemDirectoryW(sys, MAX_PATH) == 0) return -1;
+    std::wstring exe = std::wstring(sys) + L"\\schtasks.exe";
+    if (!elevate) {
+        std::wstring cmd = L"\"" + exe + L"\" " + args;
+        std::vector<wchar_t> buf(cmd.begin(), cmd.end()); buf.push_back(0);
+        STARTUPINFOW si = {}; si.cb = sizeof(si);
+        si.dwFlags = STARTF_USESHOWWINDOW; si.wShowWindow = SW_HIDE;
+        PROCESS_INFORMATION pi = {};
+        if (!CreateProcessW(nullptr, buf.data(), nullptr, nullptr, FALSE,
+                            CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
+            return -1;
+        CloseHandle(pi.hThread);
+        WaitForSingleObject(pi.hProcess, 15000);
+        DWORD code = (DWORD)-1;
+        GetExitCodeProcess(pi.hProcess, &code);
+        CloseHandle(pi.hProcess);
+        return (int)code;
     }
-    bool ok = true;
-    if (enabled) {
-        wchar_t exe[MAX_PATH] = {};
-        GetModuleFileNameW(nullptr, exe, MAX_PATH);
-        std::wstring cmd = L"\"" + std::wstring(exe) + L"\"";
-        rc = RegSetValueExW(key, kRunValueName, 0, REG_SZ, (const BYTE*)cmd.c_str(),
-                            (DWORD)((cmd.size() + 1) * sizeof(wchar_t)));
-        if (rc != ERROR_SUCCESS) { Log(L"[host] autostart set failed: %ld", rc); ok = false; }
-    } else {
-        rc = RegDeleteValueW(key, kRunValueName);
-        if (rc != ERROR_SUCCESS && rc != ERROR_FILE_NOT_FOUND) {
-            Log(L"[host] autostart delete failed: %ld", rc);
-            ok = false;
-        }
+    SHELLEXECUTEINFOW sei = {};
+    sei.cbSize = sizeof(sei);
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+    sei.lpVerb = L"runas";
+    sei.lpFile = exe.c_str();
+    sei.lpParameters = args.c_str();
+    sei.nShow = SW_HIDE;
+    if (!ShellExecuteExW(&sei))
+        return GetLastError() == ERROR_CANCELLED ? 1223 : -1;
+    if (sei.hProcess) {
+        WaitForSingleObject(sei.hProcess, 30000);
+        DWORD code = (DWORD)-1;
+        GetExitCodeProcess(sei.hProcess, &code);
+        CloseHandle(sei.hProcess);
+        return (int)code;
     }
-    RegCloseKey(key);
-    return ok;
+    return 0;
 }
 
-// Единый источник правды — settings.autostart: при старте применяем к HKCU Run.
+std::wstring AutostartTaskArgs(bool enabled)
+{
+    if (!enabled)
+        return std::wstring(L"/Delete /TN ") + kAutostartTask + L" /F";
+    wchar_t exe[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    // /TR с экранированными кавычками — путь Program Files содержит пробелы
+    return std::wstring(L"/Create /TN ") + kAutostartTask + L" /TR \"\\\"" +
+           exe + L"\\\"\" /SC ONLOGON /RL HIGHEST /F";
+}
+
+bool IsAutostartTaskPresent()
+{
+    return RunSchtasks(std::wstring(L"/Query /TN ") + kAutostartTask, false) == 0;
+}
+
+// Применение желаемого состояния: сверка бесплатна, изменение — только через
+// подходящий токен (elevated-хост) либо runas с UAC из Limited.
+bool ApplyAutostart(bool enabled)
+{
+    if (IsAutostartTaskPresent() == enabled) return true;
+    int rc = RunSchtasks(AutostartTaskArgs(enabled), false);
+    if (rc != 0) rc = RunSchtasks(AutostartTaskArgs(enabled), true);
+    if (rc != 0) {
+        Log(L"[host] autostart task apply failed (enabled=%d, rc=%d)", (int)enabled, rc);
+        return false;
+    }
+    return true;
+}
+
+// Стартовый ход: только сверка и лог — UAC-диалог при входе недопустим.
+// Задачу при установке создаёт инсталлятор (admin); этот ход лишь фиксирует
+// расхождение, чтобы не молчать.
 void ApplyAutostartFromSettings()
 {
     std::wstring path = DefaultSettingsPath();
@@ -291,8 +344,14 @@ void ApplyAutostartFromSettings()
         Log(L"[host] settings unreadable - autostart left untouched");
         return;
     }
-    ApplyAutostart(s.autostart);
-    Log(L"[host] autostart %s (HKCU Run\\%s)", s.autostart ? L"enabled" : L"disabled", kRunValueName);
+    bool present = IsAutostartTaskPresent();
+    if (present == s.autostart) {
+        Log(L"[host] autostart %s (Task Scheduler\\%s)",
+            s.autostart ? L"enabled" : L"disabled", kAutostartTask);
+    } else {
+        Log(L"[host] autostart mismatch (settings=%d, task=%s) - fix via tray menu",
+            (int)s.autostart, present ? L"present" : L"absent");
+    }
 }
 
 void ToggleAutostart()
@@ -311,13 +370,24 @@ void ToggleAutostart()
                     MB_OK | MB_ICONWARNING);
         return;
     }
-    s.autostart = !s.autostart;
-    if (!s.Save(path)) {
-        Log(L"[host] toggle autostart: save failed");
+    bool want = !s.autostart;
+    int rc = RunSchtasks(AutostartTaskArgs(want), false);
+    if (rc != 0) {
+        rc = RunSchtasks(AutostartTaskArgs(want), true);
+        if (rc == 1223) { Log(L"[host] autostart toggle: UAC declined"); return; }
+    }
+    if (rc != 0) {
+        Log(L"[host] toggle autostart failed (rc=%d)", rc);
+        MessageBoxW(g_hwnd, L"Не удалось изменить задачу автозапуска (Task Scheduler).", L"VCam",
+                    MB_OK | MB_ICONWARNING);
         return;
     }
-    ApplyAutostart(s.autostart);
-    Log(L"[host] autostart -> %s", s.autostart ? L"on" : L"off");
+    s.autostart = want;
+    if (!s.Save(path)) {
+        Log(L"[host] toggle autostart: settings save failed (task already changed)");
+        return;
+    }
+    Log(L"[host] autostart -> %s", want ? L"on" : L"off");
 }
 
 enum class Phase { Switch, Active, Fallback };
@@ -588,11 +658,48 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
 } // namespace
 
+// Диагностика автозапуска: из HKCU\Run хост стартовал Limited (elevated=0,
+// без SeCreateGlobalPrivilege) и уходил в Local-секцию; от задачи с /RL HIGHEST
+// ожидается elevated=1 + включённая привилегия.
+void LogTokenState()
+{
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+        Log(L"[host] token: OpenProcessToken failed: %lu", GetLastError());
+        return;
+    }
+    int elevated = 0;
+    TOKEN_ELEVATION elev = {};
+    DWORD sz = 0;
+    if (GetTokenInformation(token, TokenElevation, &elev, sizeof(elev), &sz))
+        elevated = elev.TokenIsElevated ? 1 : 0;
+
+    int priv = 0; // 0 = отсутствует, 1 = есть, 2 = включена
+    LUID luid = {};
+    if (LookupPrivilegeValueW(nullptr, SE_CREATE_GLOBAL_NAME, &luid)) {
+        sz = 0;
+        GetTokenInformation(token, TokenPrivileges, nullptr, 0, &sz);
+        std::vector<BYTE> buf(sz);
+        if (sz && GetTokenInformation(token, TokenPrivileges, buf.data(), sz, &sz)) {
+            auto* tp = reinterpret_cast<TOKEN_PRIVILEGES*>(buf.data());
+            for (DWORD i = 0; i < tp->PrivilegeCount; ++i) {
+                if (memcmp(&tp->Privileges[i].Luid, &luid, sizeof(LUID)) == 0) {
+                    priv = (tp->Privileges[i].Attributes & SE_PRIVILEGE_ENABLED) ? 2 : 1;
+                    break;
+                }
+            }
+        }
+    }
+    CloseHandle(token);
+    Log(L"[host] token: elevated=%d SeCreateGlobalPrivilege=%d", elevated, priv);
+}
+
 int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
 {
     g_inst = hInstance;
     InitLogging();
     Log(L"[host] VCamVideoStreamProducer starting");
+    LogTokenState();
 
     SetLastError(ERROR_SUCCESS);
     g_mutex = CreateMutexW(nullptr, FALSE, kMutexName);

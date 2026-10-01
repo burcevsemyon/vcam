@@ -3,8 +3,9 @@ name: vcam-installer-build
 description: >-
   Установка и обновление VCam (Inno Setup): сборка Release|x64, self-contained VCamSettingsUi,
   инсталлятор vcam_installer.iss (версия 0.0.1+), ритуал FrameServer (sc stop/start) для обновления DLL
-  без блокировок, COM-регистрация (regsvr32), автозапуск через HKCU\Run (VCamAutostart + VCamRegistrar
-  скриптдержатель Registrar.exe add VCam hold), сохранение пользовательских settings.json в %APPDATA%\VCam,
+  без блокировок, COM-регистрация (regsvr32), автозапуск через задачу Task Scheduler\VCamHost
+  (ONLOGON + Highest, создаёт vcam_install_task.ps1 через COM Schedule.Service; HKCU\Run — только
+  legacy VCamRegistrar), сохранение пользовательских settings.json в %APPDATA%\VCam,
   тихая установка (/VERYSILENT). Use when: сборка установщика, Inno Setup, VCamSetup, обновление DLL в C:\Program Files\VCam,
   автозапуск камеры при старте, FrameServer занят, деинсталляция VCam.
 ---
@@ -69,17 +70,30 @@ description: >-
    - Замена файлов в `C:\Program Files\VCam\`.
    - Компонентная регистрация `regsvr32`.
    - `sc.exe start FrameServer` (перезапуск службы; создаётся новый экземпляр svchost).
-2. **Автозапуск (Session-lifetime / Рестарт)**:
-   Виртуальная камера имеет сессионное время жизни (исчезает при завершении регистратора). Для автоподнятия после перезагрузки и логина используются ключи `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`:
-   - `VCamAutostart`: запускает tray-хост `VCamVideoStreamProducer.exe`.
+2. **Автозапуск (Task Scheduler вместо HKCU\Run)**:
+   Хост из `HKCU\Run` стартует с UAC-Limited токеном (без `SeCreateGlobalPrivilege`) и пишет в
+   `Local\VCam.FrameBuffer.v1`, а сервис MF видит только `Global\` — после ребута раскол секций и
+   «нет сигнала». Единственный механизм автозапуска хоста — задача `Task Scheduler\VCamHost`:
+   триггер Logon, `RunLevel HighestAvailable` (полный токен при входе) → сразу `Global\`.
+   Создаётся в `ssPostInstall` вызовом `powershell -File "{app}\vcam_install_task.ps1"` (скрипт — в
+   `[Files]`, рядом с exe): **COM `Schedule.Service`** (`NewTask` → Trigger 9/Logon → Action Path=exe →
+   Principal LogonType=3/RunLevel=1 → `RegisterTask(name, $def.XmlText, 6, ...)` — только `XmlText`,
+   объект PowerShell ломает overload), Settings — `DisallowStartIfOnBatteries=false` и
+   `StopIfGoingOnBatteries=false` (иначе ноут на батарее не поднимет камеру; свойства
+   `AllowStartOnBatteries` в ITaskSettings нет). Результат (успех/текст ошибки) —
+   `%LOCALAPPDATA%\VCam\setup_task.log`. **Прямой `Exec('schtasks.exe', ...)` из инсталлятора не
+   использовать** — стабильно отдаёт 0x80004005, хотя та же команда elevated вручную работает.
+   В `ssPostInstall` также чистится legacy `HKCU\Run\VCamAutostart` (апгрейд ≤0.0.2, иначе двойной
+   старт), в `usUninstall` — `Unregister-ScheduledTask`. В `[Registry]`/`HKCU\Run` остаётся только
+   `VCamRegistrar`:
    - `VCamRegistrar`: запускает холдер скрыто через PowerShell:
      `powershell.exe -WindowStyle Hidden -Command "Start-Process -FilePath '{app}\Registrar.exe' -ArgumentList 'add','VCam','hold' -WindowStyle Hidden"`.
    После установки скрипт немедленно стартует холдер и хост, чтобы камера была доступна сразу.
 3. **Деинсталляция**:
    - Завершение процессов (`VCamVideoStreamProducer`, `Preview`, `SettingsUi`, `Registrar`).
+   - Удаление задачи `VCamHost` (`Unregister-ScheduledTask` из powershell) и legacy-ключа Run.
    - Временная остановка FrameServer, отмена регистрации (`regsvr32 /u /s`), запуск FrameServer.
-   - Удаление бинарников и ключей автозапуска в `HKCU\Run`.
-   - **Сохранение** `%APPDATA%\VCam\settings.json` (пользовательские данные).
+   - Удаление бинарников; `%APPDATA%\VCam\settings.json` сохраняется.
 
 ## Проверка после установки
 
@@ -89,7 +103,11 @@ description: >-
 4. **Лог хоста**: `%LOCALAPPDATA%\VCam\host.log` — строки с таймстампом `[HH:MM:SS.mmm]`,
    ротация >1 МБ → `host.log.old`. Читается живьём (`Get-Content -Encoding UTF8`), пока хост пишет
    (открыт с `FILE_SHARE_READ`; не открывать через `fopen` — блокирует чтение). Единственный источник
-   правды при старте из `HKCU\Run` (stdout теряется).
+   правды при старте задачи/из UI (stdout теряется). Строки: `token: elevated=N SeCreateGlobalPrivilege=N`
+   (1/2 = полный токен — ожидается от задачи VCamHost), `autostart enabled (Task Scheduler\VCamHost)`,
+   `writer ready (Global\...)`.
+5. **Задача автозапуска**: `schtasks /Query /TN VCamHost` (+ `/XML` для `<Command>` целиком и
+   `RunLevel`), лог создания — `%LOCALAPPDATA%\VCam\setup_task.log`.
 
 ## Частичный деплой (только хост)
 

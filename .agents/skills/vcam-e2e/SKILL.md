@@ -222,7 +222,10 @@ powershell -ExecutionPolicy Bypass -File e2e_test.ps1   # exit 0 = SUCCESS
   Render-ошибки там НЕ логируются — молчание лога ≠ зависание).
 - Остановка хоста: named event `VCamVideoStreamProducer.Stop` → `Set()`
   (кнопка UI); kill `Stop-Process -Name VCamVideoStreamProducer` — приемлемо
-  для тестов; autostart: `HKCU\Run\VCamAutostart`.
+  для тестов; autostart: задача `Task Scheduler\VCamHost` (`schtasks /Query /TN VCamHost`;
+  создание/удаление требует прав; `HKCU\Run\VCamAutostart` — legacy, больше нет;
+  hост-лог-маркер: `autostart enabled (Task Scheduler\VCamHost)`, токен —
+  `token: elevated=1 SeCreateGlobalPrivilege=2`).
 
 ## Деплой MediaSource.dll (ритуал)
 
