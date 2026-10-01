@@ -173,11 +173,10 @@ bool ConfigureCameraReader(IMFSourceReader* rdr, DWORD& outStream, UINT32& outW,
 {
     DWORD vid = MAXDWORD;
     for (DWORD i = 0; i < 128; i++) {
-        IMFMediaType* mt = nullptr;
+        ATL::CComPtr<IMFMediaType> mt;
         if (FAILED(rdr->GetNativeMediaType(i, 0, &mt)) || !mt) break;
         GUID maj = GUID_NULL;
         mt->GetMajorType(&maj);
-        mt->Release();
         if (maj == MFMediaType_Video) { vid = i; break; }
     }
     if (vid == MAXDWORD) { err = L"нет видеопотока"; return false; }
@@ -187,19 +186,18 @@ bool ConfigureCameraReader(IMFSourceReader* rdr, DWORD& outStream, UINT32& outW,
 
     std::vector<CamNativeType> natives;
     for (DWORD i = 0;; i++) {
-        IMFMediaType* mt = nullptr;
+        ATL::CComPtr<IMFMediaType> mt;
         if (FAILED(rdr->GetNativeMediaType(vid, i, &mt)) || !mt) break;
         CamNativeType n;
         GUID maj = GUID_NULL;
         mt->GetGUID(MF_MT_MAJOR_TYPE, &maj);
         mt->GetGUID(MF_MT_SUBTYPE, &n.sub);
         MFGetAttributeSize(mt, MF_MT_FRAME_SIZE, &n.w, &n.h);
-        mt->Release();
         if (maj == MFMediaType_Video && n.w && n.h) natives.push_back(n);
     }
 
     auto trySet = [&](const GUID& sub, UINT32 w, UINT32 h, bool fps) -> HRESULT {
-        IMFMediaType* p = nullptr;
+        ATL::CComPtr<IMFMediaType> p;
         if (FAILED(MFCreateMediaType(&p)) || !p) return E_OUTOFMEMORY;
         p->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
         p->SetGUID(MF_MT_SUBTYPE, sub);
@@ -207,9 +205,7 @@ bool ConfigureCameraReader(IMFSourceReader* rdr, DWORD& outStream, UINT32& outW,
         if (fps)
             p->SetUINT64(MF_MT_FRAME_RATE, ((UINT64)kFps << 32) | 1ULL);
         p->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
-        HRESULT hr = rdr->SetCurrentMediaType(vid, nullptr, p);
-        p->Release();
-        return hr;
+        return rdr->SetCurrentMediaType(vid, nullptr, p);
     };
 
     HRESULT hr = trySet(MFVideoFormat_RGB32, vcam::VCamWidth, vcam::VCamHeight, true);
@@ -238,7 +234,7 @@ bool ConfigureCameraReader(IMFSourceReader* rdr, DWORD& outStream, UINT32& outW,
     }
     if (FAILED(hr)) { err = L"камера не даёт RGB32: " + HrHex(hr); return false; }
 
-    IMFMediaType* cur = nullptr;
+    ATL::CComPtr<IMFMediaType> cur;
     HRESULT hc = rdr->GetCurrentMediaType(vid, &cur);
     if (FAILED(hc) || !cur) { err = L"GetCurrentMediaType failed: " + HrHex(hc); return false; }
     GUID sub = GUID_NULL;
@@ -247,7 +243,7 @@ bool ConfigureCameraReader(IMFSourceReader* rdr, DWORD& outStream, UINT32& outW,
     if (FAILED(cur->GetUINT64(MF_MT_FRAME_SIZE, &fs))) fs = 0;
     LONG stride = 0;
     if (FAILED(cur->GetUINT32(MF_MT_DEFAULT_STRIDE, (UINT32*)&stride))) stride = 0;
-    cur->Release();
+    cur = nullptr;
 
     UINT32 w = (UINT32)(fs >> 32);
     UINT32 h = (UINT32)(fs & 0xFFFFFFFFu);
@@ -271,7 +267,8 @@ bool ConfigureCameraReader(IMFSourceReader* rdr, DWORD& outStream, UINT32& outW,
 // Путь открытия: IMFActivate::ActivateObject -> MFCreateSourceReaderFromMediaSource.
 // MFCreateSourceReaderFromURL(symlink) на этом стенде даёт 0x80070002
 // (ERROR_FILE_NOT_FOUND) — диагностика, спека неточна.
-bool OpenCameraReader(IMFActivate* act, IMFSourceReader*& out, IMFMediaSource*& outSrc,
+bool OpenCameraReader(IMFActivate* act, ATL::CComPtr<IMFSourceReader>& out,
+                      ATL::CComPtr<IMFMediaSource>& outSrc,
                       DWORD& outStream, UINT32& outW, UINT32& outH, LONG& outStride,
                       std::wstring& err)
 {
@@ -285,7 +282,7 @@ bool OpenCameraReader(IMFActivate* act, IMFSourceReader*& out, IMFMediaSource*& 
     HRESULT lastHr = E_FAIL;
     std::wstring lastErr;
     for (const Pass& p : passes) {
-        IMFMediaSource* msrc = nullptr;
+        ATL::CComPtr<IMFMediaSource> msrc;
         HRESULT hr = act->ActivateObject(IID_IMFMediaSource, (void**)&msrc);
         if (FAILED(hr) || !msrc) {
             lastHr = hr;
@@ -293,7 +290,7 @@ bool OpenCameraReader(IMFActivate* act, IMFSourceReader*& out, IMFMediaSource*& 
             continue;
         }
 
-        IMFAttributes* attr = nullptr;
+        ATL::CComPtr<IMFAttributes> attr;
         if (p.vp || p.adv) {
             if (SUCCEEDED(MFCreateAttributes(&attr, 2)) && attr) {
                 if (p.vp) attr->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE);
@@ -303,14 +300,14 @@ bool OpenCameraReader(IMFActivate* act, IMFSourceReader*& out, IMFMediaSource*& 
 #endif
             }
         }
-        IMFSourceReader* rdr = nullptr;
+        ATL::CComPtr<IMFSourceReader> rdr;
         hr = MFCreateSourceReaderFromMediaSource(msrc, attr, &rdr);
-        if (attr) attr->Release();
+        attr = nullptr;
         if (FAILED(hr) || !rdr) {
             lastHr = hr;
             lastErr = L"MFCreateSourceReaderFromMediaSource failed: " + HrHex(hr);
             msrc->Shutdown();
-            msrc->Release();
+            msrc = nullptr;
             continue;
         }
 
@@ -319,8 +316,8 @@ bool OpenCameraReader(IMFActivate* act, IMFSourceReader*& out, IMFMediaSource*& 
         LONG stride = 0;
         std::wstring cerr;
         if (ConfigureCameraReader(rdr, st, w, h, stride, cerr)) {
-            out = rdr;
-            outSrc = msrc;
+            out = std::move(rdr);
+            outSrc = std::move(msrc);
             outStream = st;
             outW = w;
             outH = h;
@@ -329,9 +326,9 @@ bool OpenCameraReader(IMFActivate* act, IMFSourceReader*& out, IMFMediaSource*& 
             return true;
         }
         lastErr = cerr;
-        rdr->Release();
+        rdr = nullptr;
         msrc->Shutdown();
-        msrc->Release();
+        msrc = nullptr;
         LogCamera(std::wstring(L"reader mode ") + p.name + L" failed: " + cerr);
     }
     err = lastErr.empty() ? (L"cannot open camera: " + HrHex(lastHr)) : lastErr;
@@ -392,32 +389,33 @@ bool CameraSource::Open(const SourceConfig& cfg, std::wstring& err)
 
     // Матчинг id -> точное имя -> подстрока имени (внутри enumerate).
     CameraDeviceInfo devInfo;
-    IMFActivate* act = OpenCameraActivate(cfg.path, cfg.camName, devInfo);
+    ATL::CComPtr<IMFActivate> act;
+    act.Attach(OpenCameraActivate(cfg.path, cfg.camName, devInfo));
     if (!act) {
         err = L"камера не найдена: " + DescribeTarget(cfg);
         Close(); // парный MFShutdown/CoUninitialize
         return false;
     }
     if (devInfo.id.empty()) {
-        act->Release();
+        act = nullptr;
         err = L"камера без symlink: " + DescribeTarget(cfg);
         Close();
         return false;
     }
 
-    IMFSourceReader* rdr = nullptr;
-    IMFMediaSource* msrc = nullptr;
+    ATL::CComPtr<IMFSourceReader> rdr;
+    ATL::CComPtr<IMFMediaSource> msrc;
     DWORD stream = 0;
     UINT32 w = 0, h = 0;
     LONG stride = 0;
     bool readerOk = OpenCameraReader(act, rdr, msrc, stream, w, h, stride, err);
-    act->Release();
+    act = nullptr;
     if (!readerOk) {
         Close(); // парный MFShutdown/CoUninitialize
         return false;
     }
-    mediaSrc_ = msrc;
-    reader_ = rdr;
+    mediaSrc_ = std::move(msrc);
+    reader_ = std::move(rdr);
     streamIndex_ = stream;
     capW_ = w;
     capH_ = h;
@@ -521,12 +519,9 @@ bool CameraSource::Shutdown(DWORD timeoutMs)
     }
 
     if (stopEvent_) { CloseHandle(stopEvent_); stopEvent_ = nullptr; }
-    if (reader_) { reader_->Release(); reader_ = nullptr; }
-    if (mediaSrc_) {
-        mediaSrc_->Shutdown();
-        mediaSrc_->Release();
-        mediaSrc_ = nullptr;
-    }
+    reader_ = nullptr; // release before mediaSrc_/MFShutdown (order from 884a785)
+    if (mediaSrc_) mediaSrc_->Shutdown();
+    mediaSrc_ = nullptr;
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -575,11 +570,11 @@ void CameraSource::CaptureLoop()
         DWORD actual = 0;
         DWORD flags = 0;
         LONGLONG ts = 0;
-        IMFSample* sample = nullptr;
+        ATL::CComPtr<IMFSample> sample;
         HRESULT hr = rdr->ReadSample(streamIndex_, 0, &actual, &flags, &ts, &sample);
 
         if (FAILED(hr)) {
-            if (sample) { sample->Release(); sample = nullptr; }
+            sample = nullptr;
             if (hr == MF_E_SHUTDOWN) {
                 SetFailed(L"устройство закрыто: " + HrHex(hr));
                 break;
@@ -604,7 +599,7 @@ void CameraSource::CaptureLoop()
         }
         silent = 0;
 
-        IMFMediaBuffer* buf = nullptr;
+        ATL::CComPtr<IMFMediaBuffer> buf;
         if (SUCCEEDED(sample->ConvertToContiguousBuffer(&buf)) && buf) {
             BYTE* data = nullptr;
             DWORD maxLen = 0;
@@ -622,9 +617,7 @@ void CameraSource::CaptureLoop()
                 }
                 buf->Unlock();
             }
-            buf->Release();
         }
-        sample->Release();
     }
 
     if (coHere) CoUninitialize();

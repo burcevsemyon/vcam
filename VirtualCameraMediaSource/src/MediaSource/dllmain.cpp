@@ -115,26 +115,28 @@ private:
 
         if (wantActivator)
         {
-            CVCamActivator* pAct = new (std::nothrow) CVCamActivator();
+            ATL::CComPtr<CVCamActivator> pAct;
+            pAct.Attach(new (std::nothrow) CVCamActivator());
             if (pAct == nullptr) return E_OUTOFMEMORY;
-            pAct->AddRef();
+            pAct.p->AddRef(); // one local ref; CComPtr releases it below (was pAct->Release())
             HRESULT hr = pAct->FinalConstruct();
             if (SUCCEEDED(hr)) {
                 hr = pAct->QueryInterface(riid, ppv);
             }
-            pAct->Release();
+            pAct = nullptr;
             VCamDiagLog(L"CreateInstance(activator) riid=%s -> 0x%08X", riidStr, hr);
             return hr;
         }
 
-        CMediaSource* pSource = new (std::nothrow) CMediaSource();
+        ATL::CComPtr<CMediaSource> pSource;
+        pSource.Attach(new (std::nothrow) CMediaSource());
         if (pSource == nullptr) return E_OUTOFMEMORY;
-        pSource->AddRef();
+        pSource.p->AddRef(); // one local ref; CComPtr releases it below (was pSource->Release())
         HRESULT hr = pSource->FinalConstruct();
         if (SUCCEEDED(hr)) {
             hr = pSource->QueryInterface(riid, ppv);
         }
-        pSource->Release();
+        pSource = nullptr;
         VCamDiagLog(L"CreateInstance(source) riid=%s -> 0x%08X", riidStr, hr);
         return hr;
     }

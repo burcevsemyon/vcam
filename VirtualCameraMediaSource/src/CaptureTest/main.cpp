@@ -1,9 +1,11 @@
 #define INITGUID
 #include <windows.h>
+#include <cguid.h>
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mfobjects.h>
 #include <Mferror.h>
+#include <atlbase.h>
 #include <cstdio>
 #include <cstring>
 #include <cwchar>
@@ -178,7 +180,7 @@ static int RunDirectMode(int numFrames, const wchar_t* outputPrefix)
     if (FAILED(hr)) { LogW(L"MFStartup failed: 0x%08X", hr); CoUninitialize(); return 1; }
 
     // Create the media source
-    IMFMediaSource* pSource = nullptr;
+    ATL::CComPtr<IMFMediaSource> pSource;
     hr = CoCreateInstance(CLSID_VCamMediaSource, nullptr, CLSCTX_INPROC_SERVER, IID_IMFMediaSource, (void**)&pSource);
     if (FAILED(hr)) {
         LogW(L"CoCreateInstance failed: 0x%08X", hr);
@@ -188,11 +190,12 @@ static int RunDirectMode(int numFrames, const wchar_t* outputPrefix)
     }
 
     // Create presentation descriptor
-    IMFPresentationDescriptor* pPD = nullptr;
+    ATL::CComPtr<IMFPresentationDescriptor> pPD;
     hr = pSource->CreatePresentationDescriptor(&pPD);
     if (FAILED(hr)) {
         LogW(L"CreatePresentationDescriptor failed: 0x%08X", hr);
-        pSource->Release();
+        pPD = nullptr;
+        pSource = nullptr;
         MFShutdown();
         CoUninitialize();
         return 1;
@@ -200,14 +203,14 @@ static int RunDirectMode(int numFrames, const wchar_t* outputPrefix)
 
     // Negotiate NV12 640x480 via IMFMediaSource2::SetMediaType before Start.
     {
-        IMFMediaSource2* pSrc2 = nullptr;
+        ATL::CComPtr<IMFMediaSource2> pSrc2;
         HRESULT hrQI = pSource->QueryInterface(IID_PPV_ARGS(&pSrc2));
         {
             wchar_t g[64] = L"?";
             GuidToW(__uuidof(IMFMediaSource2), g, _countof(g));
-            LogW(L"direct QI src=%p iid=%s -> hr=0x%08X pSrc2=%p", pSource, g, (unsigned)hrQI, pSrc2);
+            LogW(L"direct QI src=%p iid=%s -> hr=0x%08X pSrc2=%p", pSource.p, g, (unsigned)hrQI, pSrc2.p);
         }
-        IMFMediaType* pType = nullptr;
+        ATL::CComPtr<IMFMediaType> pType;
         HRESULT hrMt = MFCreateMediaType(&pType);
         if (SUCCEEDED(hrQI) && pSrc2 && SUCCEEDED(hrMt) && pType) {
             pType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
@@ -222,8 +225,8 @@ static int RunDirectMode(int numFrames, const wchar_t* outputPrefix)
         } else {
             LogW(L"direct SetMediaType negotiate failed QI=0x%08X MT=0x%08X", (unsigned)hrQI, (unsigned)hrMt);
         }
-        if (pType) pType->Release();
-        if (pSrc2) pSrc2->Release();
+        pType = nullptr;
+        pSrc2 = nullptr;
     }
 
     // Start the source
@@ -232,20 +235,20 @@ static int RunDirectMode(int numFrames, const wchar_t* outputPrefix)
     hr = pSource->Start(pPD, nullptr, &vtStart);
     if (FAILED(hr)) {
         LogW(L"Start failed: 0x%08X", hr);
-        pPD->Release();
-        pSource->Release();
+        pPD = nullptr;
+        pSource = nullptr;
         MFShutdown();
         CoUninitialize();
         return 1;
     }
-    pPD->Release();
+    pPD = nullptr;
 
     LogW(L"Source started. Waiting for stream...");
 
     // Pump events to get the stream
-    IMFMediaStream* pStream = nullptr;
+    ATL::CComPtr<IMFMediaStream> pStream;
     for (int i = 0; i < 100; ++i) {
-        IMFMediaEvent* pEvent = nullptr;
+        ATL::CComPtr<IMFMediaEvent> pEvent;
         hr = pSource->GetEvent(MF_EVENT_FLAG_NO_WAIT, &pEvent);
         if (hr == MF_E_NO_MORE_ITEMS) break;
         if (FAILED(hr)) continue;
@@ -256,19 +259,18 @@ static int RunDirectMode(int numFrames, const wchar_t* outputPrefix)
             PROPVARIANT vt;
             vt.vt = VT_UNKNOWN;
             pEvent->GetValue(&vt);
-            pStream = static_cast<IMFMediaStream*>(vt.punkVal);
-            pStream->AddRef();
+            pStream = static_cast<IMFMediaStream*>(vt.punkVal); // AddRef в operator=
             PropVariantClear(&vt);
             LogW(L"Got stream.");
             break;
         }
-        pEvent->Release();
+        pEvent = nullptr;
     }
 
     if (pStream == nullptr) {
         LogW(L"Failed to get stream.");
         pSource->Shutdown();
-        pSource->Release();
+        pSource = nullptr;
         MFShutdown();
         CoUninitialize();
         return 1;
@@ -280,11 +282,12 @@ static int RunDirectMode(int numFrames, const wchar_t* outputPrefix)
     for (int i = 0; i < numFrames * 3; ++i) { // Request extra to account for timing
         if (framesReceived >= numFrames) break;
 
-        CToken* pToken = new CToken();
+        ATL::CComPtr<CToken> pToken;
+        pToken.Attach(new CToken());
 
         hr = pStream->RequestSample(pToken);
         if (FAILED(hr)) {
-            pToken->Release();
+            pToken = nullptr;
             break;
         }
 
@@ -292,7 +295,7 @@ static int RunDirectMode(int numFrames, const wchar_t* outputPrefix)
         ULONGLONG st0 = GetTickCount64();
         bool gotSample = false;
         while (!gotSample && (GetTickCount64() - st0) < 2000) {
-            IMFMediaEvent* pEvent = nullptr;
+            ATL::CComPtr<IMFMediaEvent> pEvent;
             hr = pStream->GetEvent(MF_EVENT_FLAG_NO_WAIT, &pEvent);
             if (FAILED(hr)) { Sleep(20); continue; }
 
@@ -302,12 +305,12 @@ static int RunDirectMode(int numFrames, const wchar_t* outputPrefix)
                 PROPVARIANT vt;
                 vt.vt = VT_UNKNOWN;
                 pEvent->GetValue(&vt);
-                IMFSample* pSample = static_cast<IMFSample*>(vt.punkVal);
-                pSample->AddRef();
+                ATL::CComPtr<IMFSample> pSample;
+                pSample = static_cast<IMFSample*>(vt.punkVal); // AddRef в operator=
                 PropVariantClear(&vt);
 
                 // Get buffer
-                IMFMediaBuffer* pBuffer = nullptr;
+                ATL::CComPtr<IMFMediaBuffer> pBuffer;
                 pSample->ConvertToContiguousBuffer(&pBuffer);
                 if (pBuffer) {
                     BYTE* pBits = nullptr;
@@ -324,29 +327,29 @@ static int RunDirectMode(int numFrames, const wchar_t* outputPrefix)
                         }
                     }
                     pBuffer->Unlock();
-                    pBuffer->Release();
+                    pBuffer = nullptr;
                 }
 
-                pSample->Release();
+                pSample = nullptr;
                 framesReceived++;
                 LogW(L"Frame %d received.", framesReceived);
-                pEvent->Release();
+                pEvent = nullptr;
                 gotSample = true;
                 break;
             }
-            pEvent->Release();
+            pEvent = nullptr;
         }
 
-        pToken->Release();
+        pToken = nullptr;
         Sleep(40); // ~30 fps
     }
 
     LogW(L"\nTotal frames received: %d", framesReceived);
 
     // Stop and cleanup
-    pStream->Release();
+    pStream = nullptr;
     pSource->Shutdown();
-    pSource->Release();
+    pSource = nullptr;
     MFShutdown();
     CoUninitialize();
     return framesReceived >= numFrames ? 0 : 1;
@@ -371,13 +374,13 @@ static int RunDeviceMode(int numFrames, const wchar_t* nameFilter, UINT32 reqW, 
     // 1. Enumerate video capture device sources
     IMFActivate** ppDevices = nullptr;
     UINT32 count = 0;
-    IMFAttributes* pEnumAttr = nullptr;
+    ATL::CComPtr<IMFAttributes> pEnumAttr;
     hr = MFCreateAttributes(&pEnumAttr, 1);
     if (SUCCEEDED(hr)) {
         pEnumAttr->SetGUID(MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
                            MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID);
         hr = MFEnumDeviceSources(pEnumAttr, &ppDevices, &count);
-        pEnumAttr->Release();
+        pEnumAttr = nullptr; // до MFShutdown/CoUninitialize
     }
     LogW(L"MFEnumDeviceSources(VIDCAP filter): hr=0x%08X count=%u", hr, count);
     if (FAILED(hr)) {
@@ -457,16 +460,17 @@ static int RunDeviceMode(int numFrames, const wchar_t* nameFilter, UINT32 reqW, 
     }
     LogW(L"Matched device[%d] to filter '%s'", match, nameFilter);
 
-    IMFActivate* pAct = ppDevices[match];
-    pAct->AddRef();
+    ATL::CComPtr<IMFActivate> pAct;
+    pAct.Attach(ppDevices[match]);
+    pAct.p->AddRef(); // как раньше: владение из массива + AddRef (см. отчёт)
     CoTaskMemFree(ppDevices);
 
     // 2. Activate as IMFMediaSource
-    IMFMediaSource* pSource = nullptr;
+    ATL::CComPtr<IMFMediaSource> pSource;
     hr = pAct->ActivateObject(IID_IMFMediaSource, (void**)&pSource);
     LogW(L"ActivateObject(IID_IMFMediaSource): hr=0x%08X", hr);
     if (FAILED(hr)) {
-        pAct->Release();
+        pAct = nullptr;
         MFShutdown();
         CoUninitialize();
         return 1;
@@ -479,7 +483,7 @@ static int RunDeviceMode(int numFrames, const wchar_t* nameFilter, UINT32 reqW, 
     UINT32 stream0W = 0, stream0H = 0;
     bool stream0Known = false;
 
-    IMFPresentationDescriptor* pPD = nullptr;
+    ATL::CComPtr<IMFPresentationDescriptor> pPD;
     hr = pSource->CreatePresentationDescriptor(&pPD);
     LogW(L"CreatePresentationDescriptor: hr=0x%08X", hr);
     if (SUCCEEDED(hr)) {
@@ -488,7 +492,7 @@ static int RunDeviceMode(int numFrames, const wchar_t* nameFilter, UINT32 reqW, 
         LogW(L"  GetStreamDescriptorCount: hr=0x%08X count=%u", hr, nStreams);
         for (DWORD s = 0; s < nStreams; ++s) {
             BOOL bSelected = FALSE;
-            IMFStreamDescriptor* pSD = nullptr;
+            ATL::CComPtr<IMFStreamDescriptor> pSD;
             hr = pPD->GetStreamDescriptorByIndex(s, &bSelected, &pSD);
             if (FAILED(hr) || !pSD) {
                 LogW(L"  GetStreamDescriptorByIndex(%u): hr=0x%08X", s, hr);
@@ -506,14 +510,14 @@ static int RunDeviceMode(int numFrames, const wchar_t* nameFilter, UINT32 reqW, 
             pSD->GetStreamIdentifier(&sid);
             LogW(L"  stream[%u] name='%s' streamId=%u selected=%d", s, sname, sid, (int)bSelected);
 
-            IMFMediaTypeHandler* pMTH = nullptr;
+            ATL::CComPtr<IMFMediaTypeHandler> pMTH;
             hr = pSD->GetMediaTypeHandler(&pMTH);
             if (SUCCEEDED(hr) && pMTH) {
                 if ((s == 0 || sid == 0) && reqW > 0 && reqH > 0) {
                     DWORD countTypes = 0;
                     pMTH->GetMediaTypeCount(&countTypes);
                     for (DWORD t = 0; t < countTypes; ++t) {
-                        IMFMediaType* pMTType = nullptr;
+                        ATL::CComPtr<IMFMediaType> pMTType;
                         if (SUCCEEDED(pMTH->GetMediaTypeByIndex(t, &pMTType)) && pMTType) {
                             UINT32 w = 0, h = 0;
                             MFGetAttributeSize(pMTType, MF_MT_FRAME_SIZE, &w, &h);
@@ -523,17 +527,17 @@ static int RunDeviceMode(int numFrames, const wchar_t* nameFilter, UINT32 reqW, 
                             if (w == reqW && h == reqH && sub == want) {
                                 pMTH->SetCurrentMediaType(pMTType);
                                 LogW(L"Set requested media type: %ux%u %s", w, h, wantNv12 ? L"NV12" : L"RGB32");
-                                pMTType->Release();
+                                pMTType = nullptr;
                                 break;
                             }
-                            pMTType->Release();
+                            pMTType = nullptr;
                         }
                     }
                 }
 
                 // Capture the CURRENT media type of the stream we start (s==0 / sid==0):
                 // this is the format the sample buffers will actually be.
-                IMFMediaType* pCur = nullptr;
+                ATL::CComPtr<IMFMediaType> pCur;
                 hr = pMTH->GetCurrentMediaType(&pCur);
                 if (SUCCEEDED(hr) && pCur && (s == 0 || sid == 0) && !stream0Known) {
                     GUID major{}, sub{};
@@ -552,12 +556,12 @@ static int RunDeviceMode(int numFrames, const wchar_t* nameFilter, UINT32 reqW, 
                         GuidToW(sub, sg, _countof(sg));
                         LogW(L"    stream0 currentType: major=%s sub=%s size=%ux%u (stride=%u for RGB32)", mg, sg, w, h, w * 4);
                     }
-                    pCur->Release();
+                    pCur = nullptr;
                 } else if (pCur) {
-                    pCur->Release();
+                    pCur = nullptr;
                 }
 
-                IMFMediaType* pMT = nullptr;
+                ATL::CComPtr<IMFMediaType> pMT;
                 hr = pMTH->GetMediaTypeByIndex(0, &pMT);
                 if (SUCCEEDED(hr) && pMT) {
                     GUID major{}, sub{};
@@ -570,23 +574,23 @@ static int RunDeviceMode(int numFrames, const wchar_t* nameFilter, UINT32 reqW, 
                     GuidToW(major, mg, _countof(mg));
                     GuidToW(sub, sg, _countof(sg));
                     LogW(L"    mediaType[0]: major=%s sub=%s size=%ux%u rate=%u/%u", mg, sg, w, h, num, den);
-                    pMT->Release();
+                    pMT = nullptr;
                 } else {
                     LogW(L"    GetMediaTypeByIndex(0): hr=0x%08X", hr);
                 }
-                pMTH->Release();
+                pMTH = nullptr;
             } else {
                 LogW(L"    GetMediaTypeHandler: hr=0x%08X", hr);
             }
-            pSD->Release();
+            pSD = nullptr;
         }
         hr = pPD->SelectStream(0);
         LogW(L"SelectStream(0): hr=0x%08X", hr);
     }
     if (FAILED(hr)) {
-        if (pPD) pPD->Release();
-        pSource->Release();
-        pAct->Release();
+        pPD = nullptr;
+        pSource = nullptr;
+        pAct = nullptr;
         MFShutdown();
         CoUninitialize();
         return 1;
@@ -597,20 +601,20 @@ static int RunDeviceMode(int numFrames, const wchar_t* nameFilter, UINT32 reqW, 
     vtStart.vt = VT_EMPTY;
     hr = pSource->Start(pPD, nullptr, &vtStart);
     LogW(L"Start(pPD, nullptr, &wt): hr=0x%08X", hr);
-    pPD->Release();
+    pPD = nullptr;
     if (FAILED(hr)) {
-        pSource->Release();
-        pAct->Release();
+        pSource = nullptr;
+        pAct = nullptr;
         MFShutdown();
         CoUninitialize();
         return 1;
     }
 
     // 5. Wait for MENewStream (15 s deadline)
-    IMFMediaStream* pStream = nullptr;
+    ATL::CComPtr<IMFMediaStream> pStream;
     ULONGLONG t0 = GetTickCount64();
     while (!pStream && (GetTickCount64() - t0) < 15000) {
-        IMFMediaEvent* pEvent = nullptr;
+        ATL::CComPtr<IMFMediaEvent> pEvent;
         hr = pSource->GetEvent(MF_EVENT_FLAG_NO_WAIT, &pEvent);
         if (FAILED(hr)) { Sleep(20); continue; }
         MediaEventType met;
@@ -620,19 +624,18 @@ static int RunDeviceMode(int numFrames, const wchar_t* nameFilter, UINT32 reqW, 
             PROPVARIANT vt;
             vt.vt = VT_UNKNOWN;
             pEvent->GetValue(&vt);
-            pStream = static_cast<IMFMediaStream*>(vt.punkVal);
-            if (pStream) pStream->AddRef();
+            pStream = static_cast<IMFMediaStream*>(vt.punkVal); // AddRef в operator=
             PropVariantClear(&vt);
             LogW(L"MENewStream received.");
         }
-        pEvent->Release();
+        pEvent = nullptr;
     }
     if (!pStream) {
         LogW(L"NO MENewStream within 15 s.");
         pSource->Stop();
         pSource->Shutdown();
-        pSource->Release();
-        pAct->Release();
+        pSource = nullptr;
+        pAct = nullptr;
         MFShutdown();
         CoUninitialize();
         return 1;
@@ -645,14 +648,14 @@ static int RunDeviceMode(int numFrames, const wchar_t* nameFilter, UINT32 reqW, 
         bool started = false;
         ULONGLONG st0 = GetTickCount64();
         while (!started && (GetTickCount64() - st0) < 5000) {
-            IMFMediaEvent* pEvent = nullptr;
+            ATL::CComPtr<IMFMediaEvent> pEvent;
             HRESULT hrE = pStream->GetEvent(MF_EVENT_FLAG_NO_WAIT, &pEvent);
             if (SUCCEEDED(hrE)) {
                 MediaEventType met;
                 pEvent->GetType(&met);
                 LogW(L"  stream event: type=%d (0x%08X)", (int)met, (unsigned)met);
                 if (met == MEStreamStarted) started = true;
-                pEvent->Release();
+                pEvent = nullptr;
                 continue;
             }
             hrE = pSource->GetEvent(MF_EVENT_FLAG_NO_WAIT, &pEvent);
@@ -661,7 +664,7 @@ static int RunDeviceMode(int numFrames, const wchar_t* nameFilter, UINT32 reqW, 
                 pEvent->GetType(&met);
                 LogW(L"  source event(2): type=%d (0x%08X)", (int)met, (unsigned)met);
                 if (met == MEStreamStarted || met == MESourceStarted) started = true;
-                pEvent->Release();
+                pEvent = nullptr;
                 continue;
             }
             Sleep(10);
@@ -676,18 +679,19 @@ static int RunDeviceMode(int numFrames, const wchar_t* nameFilter, UINT32 reqW, 
     int framesReceived = 0;
     ULONGLONG deadline = GetTickCount64() + 30000;
     while (framesReceived < numFrames && GetTickCount64() < deadline) {
-        CToken* pToken = new CToken();
+        ATL::CComPtr<CToken> pToken;
+        pToken.Attach(new CToken());
         hr = pStream->RequestSample(pToken);
         if (FAILED(hr)) {
             LogW(L"RequestSample(frame %d): hr=0x%08X", framesReceived, hr);
-            pToken->Release();
+            pToken = nullptr;
             break;
         }
 
         bool got = false;
         ULONGLONG st0 = GetTickCount64();
         while (!got && (GetTickCount64() - st0) < 2000) {
-            IMFMediaEvent* pEvent = nullptr;
+            ATL::CComPtr<IMFMediaEvent> pEvent;
             hr = pStream->GetEvent(MF_EVENT_FLAG_NO_WAIT, &pEvent);
             if (FAILED(hr)) { Sleep(20); continue; }
             MediaEventType met;
@@ -696,11 +700,11 @@ static int RunDeviceMode(int numFrames, const wchar_t* nameFilter, UINT32 reqW, 
                 PROPVARIANT vt;
                 vt.vt = VT_UNKNOWN;
                 pEvent->GetValue(&vt);
-                IMFSample* pSample = static_cast<IMFSample*>(vt.punkVal);
-                pSample->AddRef();
+                ATL::CComPtr<IMFSample> pSample;
+                pSample = static_cast<IMFSample*>(vt.punkVal); // AddRef в operator=
                 PropVariantClear(&vt);
 
-                IMFMediaBuffer* pBuffer = nullptr;
+                ATL::CComPtr<IMFMediaBuffer> pBuffer;
                 hr = pSample->ConvertToContiguousBuffer(&pBuffer);
                 if (SUCCEEDED(hr) && pBuffer) {
                     BYTE* pBits = nullptr;
@@ -744,19 +748,19 @@ static int RunDeviceMode(int numFrames, const wchar_t* nameFilter, UINT32 reqW, 
                         if (allZero64) LogW(L"  WARNING: first 64 bytes are all zero");
                     }
                     pBuffer->Unlock();
-                    pBuffer->Release();
+                    pBuffer = nullptr;
                 } else {
                     LogW(L"frame %d: buffer access failed hr=0x%08X", framesReceived, hr);
                 }
 
-                pSample->Release();
+                pSample = nullptr;
                 framesReceived++;
                 got = true;
             }
-            pEvent->Release();
+            pEvent = nullptr;
         }
         if (!got) LogW(L"no MEMediaSample for frame %d within 2 s", framesReceived);
-        pToken->Release();
+        pToken = nullptr;
     }
 
     LogW(L"total frames received: %d / %d", framesReceived, numFrames);
@@ -764,10 +768,10 @@ static int RunDeviceMode(int numFrames, const wchar_t* nameFilter, UINT32 reqW, 
     // 7. Stop + clean shutdown
     hr = pSource->Stop();
     LogW(L"Stop: hr=0x%08X", hr);
-    pStream->Release();
+    pStream = nullptr;
     pSource->Shutdown();
-    pSource->Release();
-    pAct->Release();
+    pSource = nullptr;
+    pAct = nullptr;
     MFShutdown();
     CoUninitialize();
     return framesReceived >= numFrames ? 0 : 1;
@@ -789,13 +793,13 @@ static int RunInspectMode()
 
     IMFActivate** ppDevices = nullptr;
     UINT32 count = 0;
-    IMFAttributes* pEnumAttr = nullptr;
+    ATL::CComPtr<IMFAttributes> pEnumAttr;
     hr = MFCreateAttributes(&pEnumAttr, 1);
     if (SUCCEEDED(hr)) {
         pEnumAttr->SetGUID(MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
                            MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID);
         hr = MFEnumDeviceSources(pEnumAttr, &ppDevices, &count);
-        pEnumAttr->Release();
+        pEnumAttr = nullptr; // до MFShutdown/CoUninitialize
     }
     LogW(L"MFEnumDeviceSources(VIDCAP): hr=0x%08X count=%u", hr, count);
     if (FAILED(hr) || count == 0) {
@@ -816,28 +820,28 @@ static int RunInspectMode()
         PropVariantClear(&vt);
         LogW(L"  device[%u] name='%s'", i, name);
 
-        IMFMediaSource* pSrc = nullptr;
+        ATL::CComPtr<IMFMediaSource> pSrc;
         hr = ppDevices[i]->ActivateObject(IID_IMFMediaSource, (void**)&pSrc);
         if (FAILED(hr)) {
             LogW(L"    ActivateObject(IID_IMFMediaSource): hr=0x%08X", hr);
             continue;
         }
-        IMFPresentationDescriptor* pPD = nullptr;
+        ATL::CComPtr<IMFPresentationDescriptor> pPD;
         hr = pSrc->CreatePresentationDescriptor(&pPD);
         if (SUCCEEDED(hr)) {
             DWORD ns = 0;
             pPD->GetStreamDescriptorCount(&ns);
             for (DWORD s = 0; s < ns; ++s) {
                 BOOL bSel = FALSE;
-                IMFStreamDescriptor* pSD = nullptr;
+                ATL::CComPtr<IMFStreamDescriptor> pSD;
                 if (SUCCEEDED(pPD->GetStreamDescriptorByIndex(s, &bSel, &pSD))) {
-                    IMFMediaTypeHandler* pMTH = nullptr;
+                    ATL::CComPtr<IMFMediaTypeHandler> pMTH;
                     if (SUCCEEDED(pSD->GetMediaTypeHandler(&pMTH))) {
                         DWORD mtCount = 0;
                         pMTH->GetMediaTypeCount(&mtCount);
                         LogW(L"    stream[%u] selected=%d mediaTypes=%u", s, (int)bSel, mtCount);
                         for (DWORD m = 0; m < mtCount; ++m) {
-                            IMFMediaType* pMT = nullptr;
+                            ATL::CComPtr<IMFMediaType> pMT;
                             if (SUCCEEDED(pMTH->GetMediaTypeByIndex(m, &pMT))) {
                                 GUID major{}, sub{};
                                 UINT32 w = 0, h = 0, num = 0, den = 0;
@@ -849,20 +853,20 @@ static int RunInspectMode()
                                 GuidToW(major, mg, _countof(mg));
                                 GuidToW(sub, sg, _countof(sg));
                                 LogW(L"      type[%u] major=%s sub=%s size=%ux%u rate=%u/%u", m, mg, sg, w, h, num, den);
-                                pMT->Release();
+                                pMT = nullptr;
                             }
                         }
-                        pMTH->Release();
+                        pMTH = nullptr;
                     }
-                    pSD->Release();
+                    pSD = nullptr;
                 }
             }
-            pPD->Release();
+            pPD = nullptr;
         } else {
             LogW(L"    CreatePresentationDescriptor: hr=0x%08X", hr);
         }
         pSrc->Shutdown();
-        pSrc->Release();
+        pSrc = nullptr;
     }
 
     CoTaskMemFree(ppDevices);

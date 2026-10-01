@@ -5,6 +5,7 @@
 #include <mfreadwrite.h>
 #include <mferror.h>
 #include <propidl.h>
+#include <atlbase.h>
 
 #include <cmath>
 #include <cstring>
@@ -148,7 +149,7 @@ void RenderToFrame(const BYTE* data, UINT w, UINT h, LONG stride, BYTE* dst)
 }
 
 struct VideoState {
-    IMFSourceReader* reader = nullptr;
+    ATL::CComPtr<IMFSourceReader> reader;
     DWORD streamIndex = 0;
     UINT outW = 0;
     UINT outH = 0;
@@ -157,7 +158,7 @@ struct VideoState {
 
 void CloseVideo(VideoState& v)
 {
-    if (v.reader) { v.reader->Release(); v.reader = nullptr; }
+    v.reader = nullptr;
     v.outW = v.outH = 0;
     v.stride = 0;
 }
@@ -169,11 +170,10 @@ bool ConfigureReader(IMFSourceReader* rdr, VideoState& out, std::wstring& err)
 {
     DWORD vid = MAXDWORD;
     for (DWORD i = 0; i < 128; i++) {
-        IMFMediaType* mt = nullptr;
+        ATL::CComPtr<IMFMediaType> mt;
         if (FAILED(rdr->GetNativeMediaType(i, 0, &mt)) || !mt) break;
         GUID maj = GUID_NULL;
         mt->GetMajorType(&maj);
-        mt->Release();
         if (maj == MFMediaType_Video) { vid = i; break; }
     }
     if (vid == MAXDWORD) { err = L"no video stream"; return false; }
@@ -182,14 +182,13 @@ bool ConfigureReader(IMFSourceReader* rdr, VideoState& out, std::wstring& err)
     rdr->SetStreamSelection(vid, TRUE);
 
     UINT32 srcW = 0, srcH = 0;
-    IMFMediaType* pNat = nullptr;
+    ATL::CComPtr<IMFMediaType> pNat;
     if (SUCCEEDED(rdr->GetNativeMediaType(vid, 0, &pNat)) && pNat) {
         UINT64 fs = 0;
         if (SUCCEEDED(pNat->GetUINT64(MF_MT_FRAME_SIZE, &fs))) {
             srcW = (UINT32)(fs >> 32);
             srcH = (UINT32)(fs & 0xFFFFFFFFu);
         }
-        pNat->Release();
     }
 
     bool aspectPreserved = false;
@@ -220,14 +219,14 @@ bool ConfigureReader(IMFSourceReader* rdr, VideoState& out, std::wstring& err)
         if (c.w && !aspectPreserved &&
             c.w == vcam::VCamWidth && c.h == vcam::VCamHeight) continue;
         if (c.w && c.w != vcam::VCamWidth && (c.w != srcW || c.h != srcH)) continue;
-        IMFMediaType* pOut = nullptr;
+        ATL::CComPtr<IMFMediaType> pOut;
         if (FAILED(MFCreateMediaType(&pOut)) || !pOut) continue;
         pOut->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
         pOut->SetGUID(MF_MT_SUBTYPE, c.subtype);
         if (c.w && c.h) pOut->SetUINT64(MF_MT_FRAME_SIZE, ((UINT64)c.w << 32) | (UINT64)c.h);
         if (c.interlace) pOut->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
         HRESULT hr = rdr->SetCurrentMediaType(vid, nullptr, pOut);
-        pOut->Release();
+        pOut = nullptr;
         hrSet = hr;
         if (SUCCEEDED(hr)) { usedCand = c.name; break; }
         LogVideo(std::wstring(c.name) + L" -> " + HrHex(hr));
@@ -239,14 +238,14 @@ bool ConfigureReader(IMFSourceReader* rdr, VideoState& out, std::wstring& err)
     }
     LogVideo(std::wstring(L"output format: ") + usedCand);
 
-    IMFMediaType* pCur = nullptr;
+    ATL::CComPtr<IMFMediaType> pCur;
     HRESULT hr = rdr->GetCurrentMediaType(vid, &pCur);
     if (FAILED(hr) || !pCur) { err = L"GetCurrentMediaType failed: " + HrHex(hr); return false; }
     UINT64 cur = 0;
     if (FAILED(pCur->GetUINT64(MF_MT_FRAME_SIZE, &cur))) cur = 0;
     LONG stride = 0;
     if (FAILED(pCur->GetUINT32(MF_MT_DEFAULT_STRIDE, (UINT32*)&stride))) stride = 0;
-    pCur->Release();
+    pCur = nullptr;
 
     UINT w = (UINT32)(cur >> 32);
     UINT h = (UINT32)(cur & 0xFFFFFFFFu);
@@ -271,16 +270,16 @@ bool OpenVideo(const std::wstring& path, VideoState& out, std::wstring& err)
     };
 
     for (const auto& pass : passes) {
-        IMFAttributes* pAttr = nullptr;
+        ATL::CComPtr<IMFAttributes> pAttr;
         if (pass.attr) {
             if (FAILED(MFCreateAttributes(&pAttr, 1)) || !pAttr) pAttr = nullptr;
             else pAttr->SetUINT32(*pass.attr, TRUE);
         }
-        IMFSourceReader* rdr = nullptr;
+        ATL::CComPtr<IMFSourceReader> rdr;
         HRESULT hr = MFCreateSourceReaderFromURL(path.c_str(), pAttr, &rdr);
-        if (pAttr) pAttr->Release();
+        pAttr = nullptr;
         if (FAILED(hr)) {
-            if (rdr) rdr->Release();
+            rdr = nullptr;
             err = L"MFCreateSourceReaderFromURL failed: " + HrHex(hr);
             return false;
         }
@@ -288,13 +287,13 @@ bool OpenVideo(const std::wstring& path, VideoState& out, std::wstring& err)
         VideoState tmp;
         std::wstring e2;
         if (ConfigureReader(rdr, tmp, e2)) {
-            tmp.reader = rdr;
-            out = tmp;
+            tmp.reader = std::move(rdr);
+            out = std::move(tmp);
             LogVideo(std::wstring(L"reader mode: ") + pass.name);
             return true;
         }
         err = e2;
-        if (rdr) rdr->Release();
+        rdr = nullptr;
         LogVideo(std::wstring(L"reader mode ") + pass.name + L" failed: " + e2);
     }
     return false;
@@ -486,11 +485,11 @@ void VideoFileSource::DecodeLoop()
     bool failed = false;
 
     while (WaitForSingleObject(stopEvent_, 0) != WAIT_OBJECT_0) {
-        IMFMediaBuffer* buf = nullptr;
+        ATL::CComPtr<IMFMediaBuffer> buf;
         DWORD actualStream = 0;
         DWORD flags = 0;
         LONGLONG ts = 0;
-        IMFSample* sample = nullptr;
+        ATL::CComPtr<IMFSample> sample;
         HRESULT hr = vs.reader->ReadSample(vs.streamIndex, 0, &actualStream, &flags, &ts, &sample);
 
         if (FAILED(hr)) {
@@ -509,7 +508,7 @@ void VideoFileSource::DecodeLoop()
             if (target > (LONGLONG)now) {
                 DWORD wait = (DWORD)(target - now);
                 if (WaitForSingleObject(stopEvent_, wait) != WAIT_TIMEOUT) {
-                    sample->Release();
+                    sample = nullptr;
                     break;
                 }
             }
@@ -526,10 +525,8 @@ void VideoFileSource::DecodeLoop()
                     LeaveCriticalSection(&cs_);
                     buf->Unlock();
                 }
-                buf->Release();
                 buf = nullptr;
             }
-            sample->Release();
             sample = nullptr;
         }
 

@@ -1,5 +1,6 @@
 #pragma once
 #include <windows.h>
+#include <atlbase.h>
 #include <mfidl.h>
 #include <mfobjects.h>
 #include "ModuleLifetime.h"
@@ -15,9 +16,8 @@ class CAttrLogProxy final : public IMFAttributes
 {
 public:
     CAttrLogProxy(IMFAttributes* pInner, const wchar_t* tag)
-        : m_pInner(pInner), m_tag(tag), m_ref(1)
+        : m_pInner(pInner), m_tag(tag), m_ref(1) // CComPtr ctor AddRefs pInner
     {
-        if (m_pInner) m_pInner->AddRef();
         VCamObjectInc();
     }
 
@@ -41,7 +41,7 @@ public:
     {
         LONG r = InterlockedDecrement(&m_ref);
         if (r == 0) {
-            if (m_pInner) m_pInner->Release();
+            m_pInner = nullptr; // release the inner store (was m_pInner->Release())
             VCamObjectDec();
             delete this;
         }
@@ -124,7 +124,7 @@ private:
         return _hr;
     }
 
-    IMFAttributes* m_pInner;    // owned
+    ATL::CComPtr<IMFAttributes> m_pInner;    // owned
     const wchar_t* m_tag;
     volatile LONG m_ref;
 };

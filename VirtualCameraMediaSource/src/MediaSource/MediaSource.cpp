@@ -30,10 +30,10 @@ CMediaSource::CMediaSource()
 CMediaSource::~CMediaSource()
 {
     VCamDiagLog(L"Src.~dtor");
-    if (m_pStream) m_pStream->Release();
-    if (m_pEventQueue) m_pEventQueue->Release();
-    if (m_pSourceAttrsProxy) m_pSourceAttrsProxy->Release();
-    if (m_pSourceAttrs) m_pSourceAttrs->Release();
+    m_pStream = nullptr;
+    m_pEventQueue = nullptr;
+    m_pSourceAttrsProxy = nullptr;
+    m_pSourceAttrs = nullptr;
     VCamObjectDec();
 }
 
@@ -98,8 +98,8 @@ HRESULT CMediaSource::QueryInterface(REFIID riid, void** ppvObject)
     else if (riid == IID_IMFAttributes ||
         riid == kIID_IMFAttributes_Canonical) {
         // Debug proxy when present, the real store otherwise (release builds).
-        IMFAttributes* pAttrs = (m_pSourceAttrsProxy != nullptr)
-            ? static_cast<IMFAttributes*>(m_pSourceAttrsProxy) : m_pSourceAttrs;
+        IMFAttributes* pAttrs = (m_pSourceAttrsProxy.p != nullptr)
+            ? static_cast<IMFAttributes*>(m_pSourceAttrsProxy.p) : m_pSourceAttrs.p;
         if (pAttrs != nullptr) {
             hr = pAttrs->QueryInterface(riid, ppvObject);
         }
@@ -234,11 +234,11 @@ HRESULT CMediaSource::CreatePresentationDescriptor(IMFPresentationDescriptor** p
     VCamDiagLog(L"Src.CreatePresentationDescriptor");
     if (ppDesc == nullptr) return E_POINTER;
     if (m_shutdown) return MF_E_SHUTDOWN;
-    IMFStreamDescriptor* pSd = nullptr;
+    ATL::CComPtr<IMFStreamDescriptor> pSd;
     HRESULT hr = m_pStream->GetStreamDescriptor(&pSd);
     if (FAILED(hr)) return hr;
-    hr = MFCreatePresentationDescriptor(1, &pSd, ppDesc);
-    pSd->Release();
+    hr = MFCreatePresentationDescriptor(1, &pSd.p, ppDesc);
+    pSd = nullptr;
     if (SUCCEEDED(hr)) {
         hr = (*ppDesc)->SelectStream(0);
         if (FAILED(hr)) {
@@ -269,9 +269,9 @@ HRESULT CMediaSource::Start(IMFPresentationDescriptor* pPresentationDescriptor, 
 
     // Verify stream 0 is selected
     BOOL selected = FALSE;
-    IMFStreamDescriptor* pSd = nullptr;
+    ATL::CComPtr<IMFStreamDescriptor> pSd;
     HRESULT hr = pPresentationDescriptor->GetStreamDescriptorByIndex(0, &selected, &pSd);
-    if (SUCCEEDED(hr)) pSd->Release();
+    if (SUCCEEDED(hr)) pSd = nullptr;
     if (FAILED(hr) || !selected) return MF_E_INVALIDREQUEST;
 
     m_started = true;
@@ -288,7 +288,7 @@ HRESULT CMediaSource::Start(IMFPresentationDescriptor* pPresentationDescriptor, 
     }
 
     // 2. Queue MENewStream (stream as IUnknown) on source queue
-    IUnknown* pStreamUnknown = nullptr;
+    ATL::CComPtr<IUnknown> pStreamUnknown;
     hr = m_pStream->QueryInterface(IID_IUnknown, reinterpret_cast<void**>(&pStreamUnknown));
     if (FAILED(hr) || pStreamUnknown == nullptr) {
         PROPVARIANT vtErr;
@@ -300,7 +300,7 @@ HRESULT CMediaSource::Start(IMFPresentationDescriptor* pPresentationDescriptor, 
     PROPVARIANT vtNewStream;
     PropVariantInit(&vtNewStream);
     vtNewStream.vt = VT_UNKNOWN;
-    vtNewStream.punkVal = pStreamUnknown;
+    vtNewStream.punkVal = pStreamUnknown.Detach(); // transfer; PropVariantClear releases
     hr = QueueEvent(MENewStream, GUID_NULL, S_OK, &vtNewStream);
     PropVariantClear(&vtNewStream);
     if (FAILED(hr)) {
@@ -359,14 +359,13 @@ HRESULT CMediaSource::Shutdown()
 
     if (m_pStream) {
         m_pStream->ShutDownInternal();
-        m_pStream->Release();
         m_pStream = nullptr;
     }
     QueueEvent(MEError, GUID_NULL, MF_E_SHUTDOWN, nullptr);
 
-    if (m_pEventQueue) { m_pEventQueue->Release(); m_pEventQueue = nullptr; }
-    if (m_pSourceAttrsProxy) { m_pSourceAttrsProxy->Release(); m_pSourceAttrsProxy = nullptr; }
-    if (m_pSourceAttrs) { m_pSourceAttrs->Release(); m_pSourceAttrs = nullptr; }
+    m_pEventQueue = nullptr;
+    m_pSourceAttrsProxy = nullptr;
+    m_pSourceAttrs = nullptr;
     return S_OK;
 }
 
@@ -376,7 +375,7 @@ HRESULT CMediaSource::GetSourceAttributes(IMFAttributes** ppAttributes)
     VCamDiagLog(L"Src.GetSourceAttributes");
     if (ppAttributes == nullptr) return E_POINTER;
     if (m_shutdown) return MF_E_SHUTDOWN;
-    *ppAttributes = (m_pSourceAttrsProxy != nullptr) ? static_cast<IMFAttributes*>(m_pSourceAttrsProxy) : m_pSourceAttrs;
+    *ppAttributes = (m_pSourceAttrsProxy.p != nullptr) ? static_cast<IMFAttributes*>(m_pSourceAttrsProxy.p) : m_pSourceAttrs.p;
     (*ppAttributes)->AddRef();
     return S_OK;
 }
@@ -511,19 +510,19 @@ HRESULT CMediaSource::FinalConstruct()
     if (FAILED(hr)) return hr;
 
 #ifndef NDEBUG // TEMP DIAGNOSTIC: attribute-access proxy is debug-only
-    m_pSourceAttrsProxy = new (std::nothrow) CAttrLogProxy(m_pSourceAttrs, L"Src");
+    m_pSourceAttrsProxy.Attach(new (std::nothrow) CAttrLogProxy(m_pSourceAttrs, L"Src"));
     if (m_pSourceAttrsProxy == nullptr) return E_OUTOFMEMORY;
 #endif
 
-    CMediaStream* pStream = new (std::nothrow) CMediaStream();
+    ATL::CComPtr<CMediaStream> pStream;
+    pStream.Attach(new (std::nothrow) CMediaStream());
     if (pStream == nullptr) return E_OUTOFMEMORY;
-    pStream->AddRef();
+    pStream.p->AddRef(); // one local ref; transferred into m_pStream below
     hr = pStream->FinalConstruct(this);
     if (FAILED(hr)) {
-        pStream->Release();
-        return hr;
+        return hr; // pStream dtor releases (was pStream->Release())
     }
-    m_pStream = pStream;
+    m_pStream = std::move(pStream); // transfer the owned ref
 
     return S_OK;
 }
@@ -549,29 +548,29 @@ HRESULT CMediaSource::SetIntrinsicAttributes()
 
     // Reference parity: MF_DEVICEMFT_SENSORPROFILE_COLLECTION — camera
     // profiles the capture engine enumerates (Legacy + HighFrameRate).
-    IMFSensorProfileCollection* pProfileCollection = nullptr;
+    ATL::CComPtr<IMFSensorProfileCollection> pProfileCollection;
     hr = MFCreateSensorProfileCollection(&pProfileCollection);
     if (FAILED(hr)) return hr;
 
-    IMFSensorProfile* pProfile = nullptr;
+    ATL::CComPtr<IMFSensorProfile> pProfile;
     hr = MFCreateSensorProfile(kKsCameraProfileLegacy, 0, nullptr, &pProfile);
-    if (FAILED(hr)) { pProfileCollection->Release(); return hr; }
+    if (FAILED(hr)) return hr;
     hr = pProfile->AddProfileFilter(0, L"((RES==;FRT<=30,1;SUT==))");
-    if (FAILED(hr)) { pProfile->Release(); pProfileCollection->Release(); return hr; }
+    if (FAILED(hr)) return hr;
     hr = pProfileCollection->AddProfile(pProfile);
-    pProfile->Release();
-    if (FAILED(hr)) { pProfileCollection->Release(); return hr; }
+    pProfile = nullptr;
+    if (FAILED(hr)) return hr;
 
     hr = MFCreateSensorProfile(kKsCameraProfileHighFrameRate, 0, nullptr, &pProfile);
-    if (FAILED(hr)) { pProfileCollection->Release(); return hr; }
+    if (FAILED(hr)) return hr;
     hr = pProfile->AddProfileFilter(0, L"((RES==;FRT>=60,1;SUT==))");
-    if (FAILED(hr)) { pProfile->Release(); pProfileCollection->Release(); return hr; }
+    if (FAILED(hr)) return hr;
     hr = pProfileCollection->AddProfile(pProfile);
-    pProfile->Release();
-    if (FAILED(hr)) { pProfileCollection->Release(); return hr; }
+    pProfile = nullptr;
+    if (FAILED(hr)) return hr;
 
     hr = m_pSourceAttrs->SetUnknown(MF_DEVICEMFT_SENSORPROFILE_COLLECTION, pProfileCollection);
-    pProfileCollection->Release();
+    pProfileCollection = nullptr;
     if (FAILED(hr)) return hr;
 
     // 24H2 (NTDDI_WIN10_CO) flag; the frameserver may probe it

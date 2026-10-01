@@ -1,6 +1,7 @@
 #include "StaticImageSource.h"
 
 #include <wincodec.h>
+#include <atlbase.h>
 
 #include <cmath>
 #include <cstring>
@@ -35,28 +36,28 @@ bool LoadAndScaleImage(const wchar_t* filePath, ScaleMode mode, CropRect crop, b
 {
     CoInitialize(nullptr);
 
-    IWICImagingFactory* pFactory = nullptr;
+    ATL::CComPtr<IWICImagingFactory> pFactory;
     HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
                                   IID_PPV_ARGS(&pFactory));
-    if (FAILED(hr)) { CoUninitialize(); return false; }
+    if (FAILED(hr)) { pFactory = nullptr; CoUninitialize(); return false; }
 
-    IWICBitmapDecoder* pDecoder = nullptr;
+    ATL::CComPtr<IWICBitmapDecoder> pDecoder;
     hr = pFactory->CreateDecoderFromFilename(filePath, nullptr, GENERIC_READ,
                                               WICDecodeMetadataCacheOnLoad, &pDecoder);
-    if (FAILED(hr)) { pFactory->Release(); CoUninitialize(); return false; }
+    if (FAILED(hr)) { pDecoder = nullptr; pFactory = nullptr; CoUninitialize(); return false; }
 
-    IWICBitmapFrameDecode* pFrame = nullptr;
+    ATL::CComPtr<IWICBitmapFrameDecode> pFrame;
     hr = pDecoder->GetFrame(0, &pFrame);
-    if (FAILED(hr)) { pDecoder->Release(); pFactory->Release(); CoUninitialize(); return false; }
+    if (FAILED(hr)) { pFrame = nullptr; pDecoder = nullptr; pFactory = nullptr; CoUninitialize(); return false; }
 
     UINT sw = 0, sh = 0;
     pFrame->GetSize(&sw, &sh);
     if (sw == 0 || sh == 0) {
-        pFrame->Release(); pDecoder->Release(); pFactory->Release(); CoUninitialize();
+        pFrame = nullptr; pDecoder = nullptr; pFactory = nullptr; CoUninitialize();
         return false;
     }
 
-    IWICFormatConverter* pConverter = nullptr;
+    ATL::CComPtr<IWICFormatConverter> pConverter;
     hr = pFactory->CreateFormatConverter(&pConverter);
     if (SUCCEEDED(hr)) {
         hr = pConverter->Initialize(pFrame, GUID_WICPixelFormat32bppBGRA,
@@ -65,7 +66,7 @@ bool LoadAndScaleImage(const wchar_t* filePath, ScaleMode mode, CropRect crop, b
     }
 
     IWICBitmapSource* pSource = pConverter;
-    IWICBitmapClipper* pCropClipper = nullptr;
+    ATL::CComPtr<IWICBitmapClipper> pCropClipper;
     UINT srcW = sw, srcH = sh;
 
     if (SUCCEEDED(hr) && mode == ScaleMode::Crop) {
@@ -113,7 +114,7 @@ bool LoadAndScaleImage(const wchar_t* filePath, ScaleMode mode, CropRect crop, b
         }
     }
 
-    IWICBitmapScaler* pScaler = nullptr;
+    ATL::CComPtr<IWICBitmapScaler> pScaler;
     if (SUCCEEDED(hr) && pSource && (nw != srcW || nh != srcH)) {
         hr = pFactory->CreateBitmapScaler(&pScaler);
         if (SUCCEEDED(hr)) {
@@ -137,23 +138,22 @@ bool LoadAndScaleImage(const wchar_t* filePath, ScaleMode mode, CropRect crop, b
                 ok = true;
             }
         } else {
-            IWICBitmapClipper* pClipper = nullptr;
+            ATL::CComPtr<IWICBitmapClipper> pClipper;
             if (SUCCEEDED(pFactory->CreateBitmapClipper(&pClipper))) {
                 WICRect rc = { (INT)((nw - tw) / 2), (INT)((nh - th) / 2), (INT)tw, (INT)th };
                 if (SUCCEEDED(pClipper->Initialize(pSource, &rc))) {
                     ok = SUCCEEDED(pClipper->CopyPixels(nullptr, tstride, tstride * th, pTargetBuffer));
                 }
-                pClipper->Release();
             }
         }
     }
 
-    if (pScaler) pScaler->Release();
-    if (pCropClipper) pCropClipper->Release();
-    if (pConverter) pConverter->Release();
-    if (pFrame) pFrame->Release();
-    if (pDecoder) pDecoder->Release();
-    pFactory->Release();
+    pScaler = nullptr;
+    pCropClipper = nullptr;
+    pConverter = nullptr;
+    pFrame = nullptr;
+    pDecoder = nullptr;
+    pFactory = nullptr;
     CoUninitialize();
 
     return ok;

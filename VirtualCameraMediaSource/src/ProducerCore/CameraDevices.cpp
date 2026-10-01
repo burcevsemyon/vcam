@@ -12,6 +12,8 @@
 #include <mutex>
 #include <utility>
 
+#include <atlbase.h>
+
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "mfplat.lib")
 #pragma comment(lib, "mf.lib")
@@ -81,7 +83,7 @@ bool EnumerateRaw(std::vector<DeviceEntry>& out, bool& comHere)
     HRESULT hr = MFStartup(MF_VERSION, MFSTARTUP_FULL);
     if (FAILED(hr)) return false;
 
-    IMFAttributes* attr = nullptr;
+    ATL::CComPtr<IMFAttributes> attr;
     IMFActivate** devs = nullptr;
     UINT32 count = 0;
     bool ok = false;
@@ -89,7 +91,7 @@ bool EnumerateRaw(std::vector<DeviceEntry>& out, bool& comHere)
         attr->SetGUID(MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
                       MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID);
         hr = MFEnumDeviceSources(attr, &devs, &count);
-        attr->Release();
+        attr = nullptr;
         if (SUCCEEDED(hr)) {
             out.reserve(count);
             for (UINT32 i = 0; i < count; i++) {

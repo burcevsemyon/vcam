@@ -75,8 +75,8 @@ public:
     // Returns the (logging) attributes store with an added reference; caller must Release.
     IMFAttributes* GetStreamAttributes()
     {
-        IMFAttributes* pAttrs = (m_pStreamAttrsProxy != nullptr)
-            ? static_cast<IMFAttributes*>(m_pStreamAttrsProxy) : m_pStreamAttributes;
+        IMFAttributes* pAttrs = (m_pStreamAttrsProxy.p != nullptr)
+            ? static_cast<IMFAttributes*>(m_pStreamAttrsProxy.p) : m_pStreamAttributes.p;
         if (pAttrs) pAttrs->AddRef(); // COM contract: caller releases
         return pAttrs;
     }
@@ -90,14 +90,14 @@ private:
     void ResolveNegotiatedType(UINT32* pW, UINT32* pH, bool* pNv12) const;
 
     CMediaSource* m_pSource = nullptr;          // not owned (source owns stream)
-    IMFMediaEventQueue* m_pEventQueue = nullptr; // owned
-    IMFStreamDescriptor* m_pStreamDescriptor = nullptr; // owned
-    IMFMediaType* m_pMediaType = nullptr;          // owned (1280x720 RGB32)
-    IMFMediaType* m_pMediaTypeNv12 = nullptr;      // owned (1280x720 NV12)
-    IMFMediaType* m_pMediaType640 = nullptr;       // owned (640x480 RGB32)
-    IMFAttributes* m_pStreamAttributes = nullptr;  // owned
-    CAttrLogProxy* m_pStreamAttrsProxy = nullptr;  // owned (TEMP DIAGNOSTIC)
-    IMFVideoSampleAllocator* m_pAllocator = nullptr; // owned (shared cross-session allocator from SetDefaultAllocator)
+    ATL::CComPtr<IMFMediaEventQueue> m_pEventQueue; // owned
+    ATL::CComPtr<IMFStreamDescriptor> m_pStreamDescriptor; // owned
+    ATL::CComPtr<IMFMediaType> m_pMediaType;          // owned (1280x720 RGB32)
+    ATL::CComPtr<IMFMediaType> m_pMediaTypeNv12;      // owned (1280x720 NV12)
+    ATL::CComPtr<IMFMediaType> m_pMediaType640;       // owned (640x480 RGB32)
+    ATL::CComPtr<IMFAttributes> m_pStreamAttributes;  // owned
+    ATL::CComPtr<CAttrLogProxy> m_pStreamAttrsProxy;  // owned (TEMP DIAGNOSTIC)
+    ATL::CComPtr<IMFVideoSampleAllocator> m_pAllocator; // owned (shared cross-session allocator from SetDefaultAllocator)
     BYTE* m_pNv12Scratch = nullptr;                  // owned, lazy (RGB32 staging buffer for NV12 conversion)
     UINT32 m_selectedWidth = vcam::VCamWidth;        // negotiated width
     UINT32 m_selectedHeight = vcam::VCamHeight;      // negotiated height
@@ -111,7 +111,7 @@ private:
 
     std::mutex m_tokenMutex;
     std::condition_variable m_tokenCv;
-    std::deque<IUnknown*> m_tokens;
+    std::deque<ATL::CComPtr<IUnknown>> m_tokens;
     std::thread m_worker;
     bool m_workerStop = false;
 

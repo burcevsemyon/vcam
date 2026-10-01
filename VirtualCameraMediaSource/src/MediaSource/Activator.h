@@ -77,6 +77,6 @@ public:
 private:
     ~CVCamActivator();
 
-    CMediaSource* m_source = nullptr;  // owned (one ref held)
-    IMFAttributes* m_attrs = nullptr;  // owned
+    ATL::CComPtr<CMediaSource> m_source;  // owned (one ref held)
+    ATL::CComPtr<IMFAttributes> m_attrs;  // owned
 };

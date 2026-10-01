@@ -1,6 +1,7 @@
 #pragma once
 
 #include <windows.h>
+#include <atlbase.h>
 
 #include <cstdint>
 #include <mutex>
@@ -40,8 +41,8 @@ private:
 
     std::mutex mutex_;           // кэш + флаги: поток захвата <-> Render
     SourceConfig cfg_;
-    IMFSourceReader* reader_ = nullptr; // создатель/владелец — Open/Close (поток хоста)
-    IMFMediaSource* mediaSrc_ = nullptr; // ActivateObject; Shutdown+Release в Close
+    ATL::CComPtr<IMFSourceReader> reader_;  // создатель/владелец — Open/Close (поток хоста)
+    ATL::CComPtr<IMFMediaSource> mediaSrc_; // ActivateObject; Shutdown+Release в Close
     HANDLE thread_ = nullptr;
     HANDLE stopEvent_ = nullptr;
     DWORD streamIndex_ = 0;

@@ -28,15 +28,15 @@ CMediaStream::CMediaStream()
 CMediaStream::~CMediaStream()
 {
     VCamDiagLog(L"Stream.~dtor");
-    if (m_pEventQueue) m_pEventQueue->Release();
-    if (m_pStreamDescriptor) m_pStreamDescriptor->Release();
-    if (m_pMediaType) m_pMediaType->Release();
-    if (m_pMediaTypeNv12) m_pMediaTypeNv12->Release();
-    if (m_pMediaType640) m_pMediaType640->Release();
+    m_pEventQueue = nullptr;
+    m_pStreamDescriptor = nullptr;
+    m_pMediaType = nullptr;
+    m_pMediaTypeNv12 = nullptr;
+    m_pMediaType640 = nullptr;
     if (m_pNv12Scratch) { delete[] m_pNv12Scratch; m_pNv12Scratch = nullptr; }
-    if (m_pStreamAttrsProxy) m_pStreamAttrsProxy->Release();
-    if (m_pStreamAttributes) m_pStreamAttributes->Release();
-    if (m_pAllocator) m_pAllocator->Release();
+    m_pStreamAttrsProxy = nullptr;
+    m_pStreamAttributes = nullptr;
+    m_pAllocator = nullptr;
     if (m_csInit) DeleteCriticalSection(&m_cs);
     VCamObjectDec();
 }
@@ -76,8 +76,8 @@ HRESULT CMediaStream::QueryInterface(REFIID riid, void** ppvObject)
     else if (riid == IID_IMFAttributes ||
         riid == kIID_IMFAttributes_Canonical) {
         // Debug proxy when present, the real store otherwise (release builds).
-        IMFAttributes* pAttrs = (m_pStreamAttrsProxy != nullptr)
-            ? static_cast<IMFAttributes*>(m_pStreamAttrsProxy) : m_pStreamAttributes;
+        IMFAttributes* pAttrs = (m_pStreamAttrsProxy.p != nullptr)
+            ? static_cast<IMFAttributes*>(m_pStreamAttrsProxy.p) : m_pStreamAttributes.p;
         if (pAttrs != nullptr) {
             hr = pAttrs->QueryInterface(riid, ppvObject);
         }
@@ -151,16 +151,14 @@ HRESULT CMediaStream::SetAllocator(IUnknown* pAllocator)
     IMFVideoSampleAllocator* pShared = nullptr;
     HRESULT hr = pAllocator->QueryInterface(__uuidof(IMFVideoSampleAllocator),
                                             reinterpret_cast<void**>(&pShared));
-    IUnknown* pOld = m_pAllocator;
     if (SUCCEEDED(hr)) {
-        m_pAllocator = pShared;
+        m_pAllocator.Attach(pShared); // takes ownership; releases the previous allocator
         VCamDiagLog(L"Stream.SetAllocator shared=OK");
     }
     else {
         m_pAllocator = nullptr;
         VCamDiagLog(L"Stream.SetAllocator shared=no (0x%08X) -> local fallback", hr);
     }
-    if (pOld != nullptr) pOld->Release();
     return S_OK;
 }
 
@@ -211,9 +209,7 @@ HRESULT CMediaStream::GetStreamDescriptor(IMFStreamDescriptor** ppDescriptor)
     VCamDiagLog(L"Stream.GetStreamDescriptor");
     if (m_shutdown) return MF_E_SHUTDOWN;
     if (ppDescriptor == nullptr) return E_POINTER;
-    *ppDescriptor = m_pStreamDescriptor;
-    m_pStreamDescriptor->AddRef();
-    return S_OK;
+    return m_pStreamDescriptor.CopyTo(ppDescriptor); // assigns + AddRef (COM contract)
 }
 
 HRESULT CMediaStream::RequestSample(IUnknown* pToken)
@@ -289,11 +285,10 @@ HRESULT CMediaStream::SetMediaType(IMFMediaType* pMediaType)
     // through this path must be visible there too. Failure is non-fatal
     // (m_selected* already carries the negotiation), but log it.
     if (m_pStreamDescriptor != nullptr) {
-        IMFMediaTypeHandler* pHandler = nullptr;
+        ATL::CComPtr<IMFMediaTypeHandler> pHandler;
         if (SUCCEEDED(m_pStreamDescriptor->GetMediaTypeHandler(&pHandler)) && pHandler != nullptr) {
             HRESULT hrSync = pHandler->SetCurrentMediaType(pMediaType);
             VCamDiagLog(L"Stream.SetMediaType handler SetCurrentMediaType hr=0x%08X", (unsigned)hrSync);
-            pHandler->Release();
         }
     }
     return S_OK;
@@ -402,12 +397,12 @@ HRESULT CMediaStream::FinalConstruct(CMediaSource* pSource)
     // The frameserver's Start validation calls GetCurrentMediaType on the
     // handler; without an explicit current type it fails with
     // MF_E_INVALIDTYPE (0xC00D36BD).
-    IMFMediaTypeHandler* pHandler = nullptr;
+    ATL::CComPtr<IMFMediaTypeHandler> pHandler;
     hr = m_pStreamDescriptor->GetMediaTypeHandler(&pHandler);
     if (FAILED(hr)) return hr;
     hr = pHandler->SetCurrentMediaType(m_pMediaType);
-    if (FAILED(hr)) { pHandler->Release(); return hr; }
-    pHandler->Release();
+    if (FAILED(hr)) return hr;
+    pHandler = nullptr;
 
     hr = MFCreateAttributes(&m_pStreamAttributes, 4);
     if (FAILED(hr)) return hr;
@@ -421,7 +416,7 @@ HRESULT CMediaStream::FinalConstruct(CMediaSource* pSource)
     if (FAILED(hr)) return hr;
 
 #ifndef NDEBUG // TEMP DIAGNOSTIC: attribute-access proxy is debug-only
-    m_pStreamAttrsProxy = new (std::nothrow) CAttrLogProxy(m_pStreamAttributes, L"Stream");
+    m_pStreamAttrsProxy.Attach(new (std::nothrow) CAttrLogProxy(m_pStreamAttributes, L"Stream"));
     if (m_pStreamAttrsProxy == nullptr) return E_OUTOFMEMORY;
 #endif
 
@@ -465,7 +460,6 @@ HRESULT CMediaStream::StartForSession()
         HRESULT hrInit = m_pAllocator->InitializeSampleAllocator(10, pInitType);
         if (FAILED(hrInit)) {
             VCamDiagLog(L"Stream.StartForSession InitializeSampleAllocator FAIL 0x%08X -> local fallback", hrInit);
-            m_pAllocator->Release();
             m_pAllocator = nullptr;
         }
         else {
@@ -506,7 +500,6 @@ HRESULT CMediaStream::StopForSession()
     {
         std::lock_guard<std::mutex> lk(m_tokenMutex);
         while (!m_tokens.empty()) {
-            m_tokens.front()->Release();
             m_tokens.pop_front();
         }
     }
@@ -542,7 +535,6 @@ void CMediaStream::ShutDownInternal()
     {
         std::lock_guard<std::mutex> lk(m_tokenMutex);
         while (!m_tokens.empty()) {
-            m_tokens.front()->Release();
             m_tokens.pop_front();
         }
     }
@@ -560,7 +552,7 @@ void CMediaStream::ShutDownInternal()
 void CMediaStream::WorkerMain()
 {
     for (;;) {
-        IUnknown* pToken = nullptr;
+        ATL::CComPtr<IUnknown> pToken;
         {
             std::unique_lock<std::mutex> lk(m_tokenMutex);
             m_tokenCv.wait(lk, [&] { return m_workerStop || !m_tokens.empty(); });
@@ -568,12 +560,11 @@ void CMediaStream::WorkerMain()
                 if (m_workerStop) return;
                 continue;
             }
-            pToken = m_tokens.front();
+            pToken = std::move(m_tokens.front());
             m_tokens.pop_front();
         }
-        if (m_workerStop) { if (pToken) pToken->Release(); continue; }
+        if (m_workerStop) { continue; }
         DeliverNextSample(pToken);
-        if (pToken) pToken->Release();
     }
 }
 
@@ -679,9 +670,9 @@ void CMediaStream::ResolveNegotiatedType(UINT32* pW, UINT32* pH, bool* pNv12) co
     bool nv12 = m_selectedNv12;
 
     if (m_pStreamDescriptor != nullptr) {
-        IMFMediaTypeHandler* pHandler = nullptr;
+        ATL::CComPtr<IMFMediaTypeHandler> pHandler;
         if (SUCCEEDED(m_pStreamDescriptor->GetMediaTypeHandler(&pHandler)) && pHandler != nullptr) {
-            IMFMediaType* pCur = nullptr;
+            ATL::CComPtr<IMFMediaType> pCur;
             if (SUCCEEDED(pHandler->GetCurrentMediaType(&pCur)) && pCur != nullptr) {
                 GUID sub = GUID_NULL;
                 UINT32 hw = 0, hh = 0;
@@ -694,9 +685,7 @@ void CMediaStream::ResolveNegotiatedType(UINT32* pW, UINT32* pH, bool* pNv12) co
                         nv12 = (sub == MFVideoFormat_NV12);
                     }
                 }
-                pCur->Release();
             }
-            pHandler->Release();
         }
     }
 
@@ -716,8 +705,8 @@ HRESULT CMediaStream::DeliverNextSample(IUnknown* pToken)
 {
     VCamDiagLog(L"Stream.DeliverNextSample");
     HRESULT hr;
-    IMFMediaBuffer* pBuffer = nullptr;
-    IMFSample* pSample = nullptr;
+    ATL::CComPtr<IMFMediaBuffer> pBuffer;
+    ATL::CComPtr<IMFSample> pSample;
     BYTE* pBits = nullptr;
     bool shared = false;
 
@@ -746,7 +735,7 @@ HRESULT CMediaStream::DeliverNextSample(IUnknown* pToken)
     if (m_pAllocator != nullptr) {
         VCamDiagLog(L"Stream.DeliverNextSample before AllocateSample");
         hr = m_pAllocator->AllocateSample(&pSample);
-        VCamDiagLog(L"Stream.DeliverNextSample AllocateSample hr=0x%08X sample=%p", (unsigned)hr, (const void*)pSample);
+        VCamDiagLog(L"Stream.DeliverNextSample AllocateSample hr=0x%08X sample=%p", (unsigned)hr, (const void*)pSample.p);
         if (SUCCEEDED(hr)) shared = true;
     }
 
@@ -765,19 +754,19 @@ HRESULT CMediaStream::DeliverNextSample(IUnknown* pToken)
             pBuffer->Unlock();
         }
         hr = MFCreateSample(&pSample);
-        if (FAILED(hr)) { pBuffer->Release(); return hr; }
+        if (FAILED(hr)) { pBuffer = nullptr; return hr; }
         HRESULT hrCur = pBuffer->SetCurrentLength(useNv12 ? nv12Bytes : rgbBytes);
-        if (FAILED(hrCur)) { pBuffer->Release(); return hr; }
+        if (FAILED(hrCur)) { pBuffer = nullptr; return hr; }
         hr = pSample->AddBuffer(pBuffer);
-        pBuffer->Release();
-        if (FAILED(hr)) { pSample->Release(); return hr; }
+        pBuffer = nullptr;
+        if (FAILED(hr)) { pSample = nullptr; return hr; }
         VCamDiagLog(L"Stream.DeliverNextSample local buffer (no shared allocator)");
     }
     else {
         // Shared sample already carries a correctly-sized buffer.
         VCamDiagLog(L"Stream.DeliverNextSample before GetBufferByIndex");
         hr = pSample->GetBufferByIndex(0, &pBuffer);
-        VCamDiagLog(L"Stream.DeliverNextSample GetBufferByIndex hr=0x%08X buf=%p", (unsigned)hr, (const void*)pBuffer);
+        VCamDiagLog(L"Stream.DeliverNextSample GetBufferByIndex hr=0x%08X buf=%p", (unsigned)hr, (const void*)pBuffer.p);
         if (SUCCEEDED(hr)) {
             // Lock signature: (buffer, pcbMaxLength, pcbCurrentLength).
             DWORD maxLen = 0, curLen = 0;
@@ -803,7 +792,7 @@ HRESULT CMediaStream::DeliverNextSample(IUnknown* pToken)
             pBuffer->Unlock();
             VCamDiagLog(L"Stream.DeliverNextSample Unlock done");
         }
-        pBuffer->Release();
+        pBuffer = nullptr;
         }
         VCamDiagLog(L"Stream.DeliverNextSample shared sample allocated");
     }
@@ -814,12 +803,12 @@ HRESULT CMediaStream::DeliverNextSample(IUnknown* pToken)
     hr = pSample->SetSampleTime(time);
     if (SUCCEEDED(hr)) hr = pSample->SetSampleDuration(vcam::VCamFrameInterval100ns);
     if (SUCCEEDED(hr) && pToken) hr = pSample->SetUnknown(MFSampleExtension_Token, pToken);
-    if (FAILED(hr)) { pSample->Release(); return hr; }
+    if (FAILED(hr)) { pSample = nullptr; return hr; }
 
     PROPVARIANT vtSample;
     PropVariantInit(&vtSample);
     vtSample.vt = VT_UNKNOWN;
-    vtSample.punkVal = pSample;
+    vtSample.punkVal = pSample.Detach(); // transfer to PROPVARIANT; PropVariantClear releases
     hr = QueueEvent(MEMediaSample, GUID_NULL, S_OK, &vtSample);
     PropVariantClear(&vtSample);
     return hr;

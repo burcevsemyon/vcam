@@ -2,6 +2,7 @@
 #include <combaseapi.h>
 #include <mfapi.h>
 #include <mfvirtualcamera.h>
+#include <atlbase.h>
 #include <cstdio>
 #include <cwchar>
 #include <new>
@@ -202,7 +203,7 @@ int wmain(int argc, wchar_t* argv[])
     wchar_t sourceId[64];
     GuidToStringW(CLSID_VCamMediaSource, sourceId, 64);
 
-    IMFVirtualCamera* pVCam = nullptr;
+    ATL::CComPtr<IMFVirtualCamera> pVCam;
     hr = MFCreateVirtualCamera(
         MFVirtualCameraType_SoftwareCameraSource,
         MFVirtualCameraLifetime_Session,
@@ -215,6 +216,7 @@ int wmain(int argc, wchar_t* argv[])
     );
     if (FAILED(hr)) {
         wprintf(L"MFCreateVirtualCamera failed: 0x%08X\n", hr);
+        pVCam = nullptr;
         MFShutdown();
         CoUninitialize();
         return 1;
@@ -232,7 +234,7 @@ int wmain(int argc, wchar_t* argv[])
             // Референс держим весь цикл (как hold): удержание камеры — сам
             // процесс; hold-watch уходит, когда писатель и потребители мертвы.
             int rc = HoldWatchLoop();
-            pVCam->Release();
+            pVCam = nullptr;
             MFShutdown();
             CoUninitialize();
             return rc;
@@ -259,7 +261,7 @@ int wmain(int argc, wchar_t* argv[])
     }
     else {
         PrintUsage();
-        pVCam->Release();
+        pVCam = nullptr;
         MFShutdown();
         CoUninitialize();
         return 1;
@@ -268,7 +270,7 @@ int wmain(int argc, wchar_t* argv[])
     if (wcscmp(action, L"add") != 0) {
         pVCam->Shutdown();
     }
-    pVCam->Release();
+    pVCam = nullptr;
     MFShutdown();
     CoUninitialize();
     return SUCCEEDED(hr) ? 0 : 1;

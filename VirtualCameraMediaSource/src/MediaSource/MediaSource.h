@@ -89,10 +89,10 @@ public:
 private:
     ~CMediaSource();
 
-    CMediaStream* m_pStream = nullptr;           // owned
-    IMFMediaEventQueue* m_pEventQueue = nullptr; // owned
-    IMFAttributes* m_pSourceAttrs = nullptr;     // owned
-    CAttrLogProxy* m_pSourceAttrsProxy = nullptr; // owned (TEMP DIAGNOSTIC)
+    ATL::CComPtr<CMediaStream> m_pStream;           // owned
+    ATL::CComPtr<IMFMediaEventQueue> m_pEventQueue; // owned
+    ATL::CComPtr<IMFAttributes> m_pSourceAttrs;     // owned
+    ATL::CComPtr<CAttrLogProxy> m_pSourceAttrsProxy; // owned (TEMP DIAGNOSTIC)
     DWORD m_characteristics = MFMEDIASOURCE_IS_LIVE | MFMEDIASOURCE_DOES_NOT_USE_NETWORK;
     bool m_shutdown = false;
     bool m_started = false;

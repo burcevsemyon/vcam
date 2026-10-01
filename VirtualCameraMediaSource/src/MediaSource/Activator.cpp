@@ -25,8 +25,8 @@ CVCamActivator::CVCamActivator()
 CVCamActivator::~CVCamActivator()
 {
     VCamDiagLog(L"Act.~dtor");
-    if (m_source) m_source->Release();
-    if (m_attrs) m_attrs->Release();
+    m_source = nullptr;
+    m_attrs = nullptr;
     VCamObjectDec();
 }
 
@@ -119,9 +119,10 @@ HRESULT CVCamActivator::ActivateObject(REFIID riid, void** ppv)
     VCamDiagLog(L"Act.ActivateObject %s", guidStr);
     if (m_source == nullptr)
     {
-        CMediaSource* pSource = new (std::nothrow) CMediaSource();
+        ATL::CComPtr<CMediaSource> pSource;
+        pSource.Attach(new (std::nothrow) CMediaSource());
         if (pSource == nullptr) return E_OUTOFMEMORY;
-        pSource->AddRef();
+        pSource.p->AddRef(); // the one ref m_source will own
         HRESULT hr = pSource->FinalConstruct();
         if (SUCCEEDED(hr)) {
             // Parity with smourier/VCamSample: the source inherits the activator's
@@ -135,11 +136,10 @@ HRESULT CVCamActivator::ActivateObject(REFIID riid, void** ppv)
             hr = pSource->SetIntrinsicAttributes();
         }
         if (SUCCEEDED(hr)) {
-            m_source = pSource;
+            m_source = std::move(pSource); // transfer the owned ref
         }
         else {
-            pSource->Release();
-            return hr;
+            return hr; // pSource dtor releases (was pSource->Release())
         }
     }
     return m_source->QueryInterface(riid, ppv);
@@ -150,7 +150,6 @@ HRESULT CVCamActivator::ShutdownObject()
     VCamDiagLog(L"Act.ShutdownObject");
     if (m_source) {
         m_source->Shutdown();
-        m_source->Release();
         m_source = nullptr;
     }
     return S_OK;
@@ -160,7 +159,6 @@ HRESULT CVCamActivator::DetachObject()
 {
     VCamDiagLog(L"Act.DetachObject");
     if (m_source) {
-        m_source->Release();
         m_source = nullptr;
     }
     return S_OK;
