@@ -31,7 +31,12 @@ struct VCamSectionHeader {
     UINT32 frameWriteIndex;
     volatile LONGLONG seq;   // seqlock: odd = writing, even = stable
     UINT64 lastFrameTime100ns;
-    UINT64 reserved[2];
+    // Heartbeat активного потребителя (MediaSource, GetTickCount64): пишется при
+    // каждой доставке сэмплов живой MF-сессии. Хост на «Выход» и hold-watch
+    // холдер используют для решения «потребитель есть / нет». Лейаут и версия v1
+    // не менялись (бывший reserved[0]); старые читатели пишут 0 = «нет».
+    UINT64 readerLastActiveTick;
+    UINT64 reserved;
 };
 
 constexpr const wchar_t* VCamSectionName = L"Global\\VCam.FrameBuffer.v1";

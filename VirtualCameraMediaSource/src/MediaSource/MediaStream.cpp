@@ -440,6 +440,7 @@ HRESULT CMediaStream::StartForSession()
     if (m_state == MF_STREAM_STATE_RUNNING) return S_OK;
 
     m_state = MF_STREAM_STATE_RUNNING;
+    SharedMemoryFrameSource::Instance().TouchReader(); // heartbeat потребителя с 1-го момента сессии
     UINT32 selW = 0, selH = 0;
     bool selNv12 = false;
     ResolveNegotiatedType(&selW, &selH, &selNv12);

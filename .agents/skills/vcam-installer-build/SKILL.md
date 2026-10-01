@@ -16,7 +16,7 @@ description: >-
 
 ## Структура дистрибутива и версии
 
-- **Текущая версия**: `0.0.2` (инкрементируется при каждом релизе в `vcam_installer.iss` и
+- **Текущая версия**: `0.0.3` (инкрементируется при каждом релизе в `vcam_installer.iss` и
   `vcam-installer.memory.md`); артефакты в `releases/VCamSetup-<ver>-x64.exe`.
 - **Состав продукта (`Release|x64`)**:
   - `MediaSource.dll` → `C:\Program Files\VCam\MediaSource.dll` (фиксированный путь, критично для hash-guard E2E).
@@ -47,8 +47,15 @@ description: >-
 
 Решение пользователя: много ярлыков отталкивает, всё нужное уже в tray-меню хоста и в UI.
 
-- **«Запуск камеры VCam»** → `{app}\VCamVideoStreamProducer.exe` — единственный ярлык; нужен только
+- **«Запуск камеры VCam»** → `{sys}\wscript.exe "{app}\vcam_run_host.vbs"` (IconFilename = хост) —
+  единственный ярлык; нужен только
   для запуска после явного выхода (tray → «Выход») или при выключенном автозапуске.
+  **НЕ запускать exe напрямую из ярлыка**: не-elevated токен без SeCreateGlobalPrivilege →
+  FrameWriter уходит в `Local\`-секцию → svchost FrameServer (session 0) её не видит →
+  device-режим (ktalk) без кадров. Задача VCamHost (Highest) даёт elevated-токен и `Global\`
+  (проверено: `schtasks /run` из не-elevated шела — без UAC-промта).
+  **Не `powershell -WindowStyle Hidden`**: conhost создаётся до парсинга ключа — окно
+  мелькает (жалоба юзера); `vcam_run_host.vbs` (WScript, window style 0) не даёт окон.
 
 Остальное (было 3 ярлыка, удалены):
 - Настройки / Предпросмотр → **tray-меню хоста** («Настройки VCam…», «Окно предпросмотра…»;
@@ -60,7 +67,7 @@ description: >-
 
 В tray-меню хоста также есть **«О программе…»** — версия из VERSIONINFO
 (`src/VCamVideoStreamProducer/version.rc`, `ProductVersionString()`); при смене версии править
-`version.rc` **и** `AppVersion` в `.iss` (оба = 0.0.2).
+`version.rc` **и** `AppVersion` в `.iss` (оба = 0.0.3).
 
 ## Ключевые механизмы инсталлятора (`vcam_installer.iss`)
 
@@ -83,12 +90,11 @@ description: >-
    `AllowStartOnBatteries` в ITaskSettings нет). Результат (успех/текст ошибки) —
    `%LOCALAPPDATA%\VCam\setup_task.log`. **Прямой `Exec('schtasks.exe', ...)` из инсталлятора не
    использовать** — стабильно отдаёт 0x80004005, хотя та же команда elevated вручную работает.
-   В `ssPostInstall` также чистится legacy `HKCU\Run\VCamAutostart` (апгрейд ≤0.0.2, иначе двойной
-   старт), в `usUninstall` — `Unregister-ScheduledTask`. В `[Registry]`/`HKCU\Run` остаётся только
-   `VCamRegistrar`:
-   - `VCamRegistrar`: запускает холдер скрыто через PowerShell:
-     `powershell.exe -WindowStyle Hidden -Command "Start-Process -FilePath '{app}\Registrar.exe' -ArgumentList 'add','VCam','hold' -WindowStyle Hidden"`.
-   После установки скрипт немедленно стартует холдер и хост, чтобы камера была доступна сразу.
+   В `ssPostInstall` также чистятся legacy `HKCU\Run\VCamAutostart` (апгрейд ≤0.0.2, иначе двойной
+   старт) **и `VCamRegistrar`** (апгрейд ≤0.0.2), в `usUninstall` — `Unregister-ScheduledTask` и оба
+   Run-ключа. **`[Registry]`-ключ `VCamRegistrar` и запуск холдера из ssPostInstall удалены в 0.0.3**:
+   камеру поднимает сам хост (`StartCameraHolder` при старте, `taskkill Registrar` при tray «Выход»,
+   vcam-camera-lifecycle) — после установки хост стартует первым и регистрирует камеру.
 3. **Деинсталляция**:
    - Завершение процессов (`VCamVideoStreamProducer`, `Preview`, `SettingsUi`, `Registrar`).
    - Удаление задачи `VCamHost` (`Unregister-ScheduledTask` из powershell) и legacy-ключа Run.

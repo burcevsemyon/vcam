@@ -9,7 +9,7 @@
 | Проект | Назначение |
 |---|---|
 | `src/MediaSource` (MediaSource.dll) | COM media source: видео-потоки 1280×720@30 и 640×480@30 (RGB32 + NV12), автоматический даунскейлинг и конверсия в потоке. `IMFMediaSourceEx`, `IKsControl`, `IMFGetService`, синхронный pull-путь `RequestSample` (AllocateSample на COM-потоке клиента). |
-| `src/Registrar` (Registrar.exe) | Регистрация камеры: `add [name] [hold]` / `remove`. Процесс нужно держать живым (Session lifetime). |
+| `src/Registrar` (Registrar.exe) | Регистрация камеры: `add [name] [hold\|hold-watch]` / `remove`. Процесс нужно держать живым (Session lifetime). `hold` — вечно; `hold-watch` — сам выходит, когда писатель (seq секции) и потребители (heartbeat) молчат ≥30 с (хост запускает именно его). |
 | `src/ProducerCore` (ProducerCore.lib) | Общее ядро продюсеров: `Settings` (чтение/миграция/запись settings.json), `SettingsWatcher` (опрос 500 мс + debounce 200 мс), `FrameWriter` (запись в общую память, seqlock, FlushLast), источники `StaticImageSource` / `VideoFileSource` / `CameraSource` (захват физической камеры, MF Source Reader, letterbox), `CameraDevices` (перечисление камер), `SourceFactory`, `ToSourceConfig`. Используется хостом и CLI. |
 | `src/VCamVideoStreamProducer` (VCamVideoStreamProducer.exe) | Основной продюсер-хост: tray-иконка с меню (статус, «Настройки VCam…», «Окно предпросмотра…», «Автозагрузка», «Выход»), ядро state machine (hot-switch без перезапуска, fallback NO SIGNAL при ошибках источника), мьютекс `VCamVideoStreamProducer.Instance`, автозапуск через задачу Task Scheduler `VCamHost` по `settings.autostart`. |
 | `src/VCamProducerCli` (VCamProducerCli.exe) | Консольный хост для отладки и E2E: `run [--type static\|video\|camera] [--path <file>] [--device <id>] [--settings <path>]` — то же ядро без tray (логи в stdout @30 FPS, остановка по Ctrl+C/Ctrl+Break/Esc); `list-devices` — перечисление физических камер (`id\tname` в stdout); `status` — путь/схема settings, `source.type`, секции, автозапуск, состояние хоста и writer-секции. |
@@ -35,6 +35,10 @@
    ```bat
    build\x64\Release\Registrar.exe add VCam hold
    ```
+   Ручной режим/отладка: `hold` (вечно). Трей-хост при старте сам поднимает
+   `hold-watch` (само-выход при отсутствии писателя и потребителей ≥30 с) и
+   снимает камеру на tray «Выход» (если потребители есть — камеру оставляет,
+   потребители видят NO SIGNAL через 7 с).
 3. Провайдер кадров:
    - **Основной способ — tray-хост** (отдельная консоль; в трее меню с настройками,
      предпросмотром и автозагрузкой):

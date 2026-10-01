@@ -119,6 +119,7 @@ bool FrameWriter::Open(std::wstring& err)
     pHeader_->frameWriteIndex = 0;
     pHeader_->seq = 0;
     pHeader_->lastFrameTime100ns = 0;
+    pHeader_->readerLastActiveTick = 0;
 
     LARGE_INTEGER start;
     QueryPerformanceCounter(&start);

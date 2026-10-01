@@ -1,14 +1,14 @@
 ﻿; VCam Installer Script (Inno Setup)
-; Version: 0.0.2
+; Version: 0.0.3
 
 [Setup]
 AppName=VCam Virtual Camera
-AppVersion=0.0.2
+AppVersion=0.0.3
 AppPublisher=VCam Project
 DefaultDirName={autopf}\VCam
 DefaultGroupName=VCam
 OutputDir=.
-OutputBaseFilename=VCamSetup-0.0.2-x64
+OutputBaseFilename=VCamSetup-0.0.3-x64
 Compression=lzma2
 SolidCompression=yes
 PrivilegesRequired=admin
@@ -29,20 +29,27 @@ Source: "build\x64\Release\VCamProducerCli.exe"; DestDir: "{app}"; Flags: ignore
 Source: "build\x64\Release\CaptureTest.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "vcam_restart_host.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "vcam_install_task.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "vcam_run_host.vbs"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 ; Start menu (current user, mirrors HKCU autostart semantics)
 ; Один ярлык — только основной процесс (хост). Настройки/Предпросмотр живут в tray-меню хоста,
 ; перезапуск — кнопка в VCamSettingsUi; дубли в меню Пуск отталкивают (решение пользователя).
-Name: "{userprograms}\VCam\Запуск камеры VCam"; Filename: "{app}\VCamVideoStreamProducer.exe"; WorkingDir: "{app}"
+; Ярлык идёт через задачу VCamHost (RunLevel=Highest), а НЕ напрямую на exe: прямой запуск
+; из меню Пуск — не-elevated токен без SeCreateGlobalPrivilege → FrameWriter уходит в Local\-
+; секцию, которую svchost FrameServer (session 0) не видит → device-режим без кадров.
+; schtasks /run из не-elevated шела запускает Highest-задачу без UAC-промта (проверено).
+; Обёртка — wscript+vcam_run_host.vbs (window style 0, окон НЕТ): powershell
+; -WindowStyle Hidden всё равно мелькает conhost (окно создаётся до парсинга ключа).
+Name: "{userprograms}\VCam\Запуск камеры VCam"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\vcam_run_host.vbs"""; WorkingDir: "{app}"; IconFilename: "{app}\VCamVideoStreamProducer.exe"; IconIndex: 0
 
 [Registry]
 ; Autostart: больше НЕ HKCU\Run — там всегда Limited-токен (UAC) и хост после
 ; ребута писал бы в Local-секцию, которую сервис MF не видит. Единственный
 ; механизм — задача Task Scheduler\VCamHost (создаётся ниже в ssPostInstall,
 ; /SC ONLOGON /RL HIGHEST = полный токен при входе).
-; Autostart Camera Holder (Registrar hold) for current user (hidden powershell wrapper)
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "VCamRegistrar"; ValueData: "powershell.exe -WindowStyle Hidden -Command ""Start-Process -FilePath '{app}\Registrar.exe' -ArgumentList 'add','VCam','hold' -WindowStyle Hidden"""; Flags: uninsdeletevalue
+; Camera Holder (HKCU\Run\VCamRegistrar, <=0.0.2) удалён: камеру поднимает и
+; убирает сам хост (tray «Выход» → taskkill Registrar); см. vcam-camera-lifecycle.
 
 [Code]
 function InitializeSetup(): Boolean;
@@ -65,6 +72,9 @@ begin
     // Legacy cleanup: HKCU\Run\VCamAutostart (upgrades from <=0.0.2) would
     // double-start the host together with the new scheduled task.
     RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'VCamAutostart');
+    // Legacy cleanup: HKCU\Run\VCamRegistrar (<=0.0.2) поднимал холдер без
+    // хоста — камера оставалась в списке после «Выход». Хост владеет камерой.
+    RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'VCamRegistrar');
 
     // Autostart task: ONLOGON + highest privileges = full token at logon
     // (Run key was always UAC-Limited -> host landed in Local\ section).
@@ -88,10 +98,14 @@ begin
     
     // Start FrameServer service back up
     Exec('sc.exe', 'start FrameServer', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    
-    // Immediately launch Registrar hold so camera is active right now
-    Exec('powershell.exe', '-WindowStyle Hidden -Command "Start-Process -FilePath ''' + ExpandConstant('{app}\Registrar.exe') + ''' -ArgumentList ''add'',''VCam'',''hold'' -WindowStyle Hidden"', '', SW_HIDE, ewNoWait, ResultCode);
-    
+
+    // Legacy cleanup: <=0.0.2 поднимал холдер элевированным (из инсталлятора),
+    // и не-элевированный хост его не может убить (taskkill -> Access Denied).
+    // Инсталлер сам элевирован — убиваем здесь, новый холдер поднимет хост.
+    Exec('taskkill.exe', '/f /im Registrar.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+
+    // Registrar hold больше НЕ запускается здесь: холдер поднимает сам хост
+    // (StartCameraHolder) и убирает при tray «Выход».
     // Launch tray host
     Exec(ExpandConstant('{app}\VCamVideoStreamProducer.exe'), '', '', SW_SHOW, ewNoWait, ResultCode);
   end;
@@ -108,6 +122,7 @@ begin
     Exec('powershell.exe', '-NoProfile -Command "Unregister-ScheduledTask -TaskName ''VCamHost'' -Confirm:$false"',
       '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
     RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'VCamAutostart');
+    RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'VCamRegistrar');
 
     // Kill VCam processes if running
     Exec('taskkill.exe', '/f /im VCamVideoStreamProducer.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);

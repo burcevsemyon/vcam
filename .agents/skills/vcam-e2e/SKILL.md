@@ -35,14 +35,21 @@ description: >-
    `Get-Process Registrar` + `CaptureTest inspect` → `count=2`). **Elevation
    на самом деле НЕ нужен** (MFVirtualCameraAccess_CurrentUser, verified);
    hold-режим — вечный цикл с `[holder alive]` каждые 5 с, kill процесса =
-   стоп камеры («will NOT remove on exit»). После каждой остановки/рестарта
+   стоп камеры («will NOT remove on exit»). **Хост тоже владеет холдером**
+   (vcam-camera-lifecycle): он сам запускает `Registrar.exe add VCam hold-watch`
+   при старте и `taskkill` при tray «Выход» — **но только если потребителей нет**
+   (heartbeat `readerLastActiveTick` в секции, порог 3 с): с активной
+   MF-сессией (ktalk и т.п.) хост останавливает только писателя и логирует
+   `consumers active - camera kept`, камера продолжает отдавать NO SIGNAL
+   (через 7 с после стопа писателя), а hold-watch сам выходит, когда секция
+   и heartbeat молчат ≥30 с (проверка каждые 5 с). Ручное включение хоста
+   перед прогоном e2e НЕ требуется — держить холдера самому (команда выше,
+   hold подходит). После каждой остановки/рестарта
    FrameServer и после чистки процессов перед прогоном — убедиться, что
    Registrar жив, иначе фазы D/E падают с «VCam device not enumerated»
-   (inspect count=1). **Автозапуск после перезагрузки**: запись
-   `HKCU\...\CurrentVersion\Run\VCamRegistrar` =
-   `powershell.exe -WindowStyle Hidden -Command "Start-Process -FilePath '<build>\Registrar.exe' -ArgumentList 'add','VCam','hold' -WindowStyle Hidden"`
-   (session-lifetime камера после ребута не поднимается сама; скрытый запуск
-   проверен — MainWindowHandle=0). Скрипт дополнительно делает
+   (inspect count=1). **Автозапуск**: HKCU\Run\VCamRegistrar **УДАЛЁН**
+   (<=0.0.2; install-чистка в ssPostInstall) — камеру даёт хост из задачи
+   VCamHost; для ручного прогона без хоста держать холдер живым самому. Скрипт дополнительно делает
    `regsvr32 /s MediaSource.dll` — **из НЕ-elevated шелла это no-op**
   (exit 5, E_ACCESSDENIED, HKLM не пишется); поэтому скрипт регистрирует
    build-путь ещё и в **HKCU** (`HKCU\Software\Classes\CLSID\{B2B674D4-…}\InprocServer32`
@@ -79,8 +86,10 @@ powershell -ExecutionPolicy Bypass -File e2e_test.ps1   # exit 0 = SUCCESS
   `Lock maxLen=3686400`, нет `buffer too small`), E = 640×480 RGB32
   (letterbox + контент-строки, `negotiated … RGB640`, `Lock maxLen=1228800`).
   Занятая сессия (0xC00D3E9B) → SKIP; установлена ≠ сборка → SKIP.
-- **Фаза F** — остановка CLI → 3 кадра идентичны (fallback: кэш/NO SIGNAL,
-  не чёрные) → рестарт → кадры снова движутся.
+- **Фаза F** — остановка CLI → 3 кадра идентичны (fallback: кэш последнего
+  кадра в пределах **7 с** после последнего свежего, дальше NO SIGNAL —
+  vcam-camera-lifecycle; сразу после остановки кэш ещё в окне, не чёрные)
+  → рестарт → кадры снова движутся.
 - **finally** — settings.json восстанавливается **байт-в-байт**
   (SHA256-сверка); если файла не было — тестовый удаляется. Нарушение
   SHA256 = FAIL. HKCU-ключ CLSID удаляется/восстанавливается.
@@ -165,7 +174,9 @@ powershell -ExecutionPolicy Bypass -File e2e_test.ps1   # exit 0 = SUCCESS
 ## Связанные константы контракта
 
 - 1280×720 BGRX, stride 5120, 8 слотов, seqlock; fallback: нет свежего
-  кадра 40 мс → кэш последнего кадра (не чёрный); без кэша → NO SIGNAL.
+  кадра 40 мс → кэш последнего кадра, но **не дольше 7 с** после последнего
+  свежего кадра (vcam-camera-lifecycle) → дальше NO SIGNAL; без кэша — сразу
+  NO SIGNAL.
 - Тайминги хоста: hot-switch окно 5 с (FlushLast), Preview: timeout 1.5 с,
   reconnect 3 с.
 
@@ -178,7 +189,7 @@ powershell -ExecutionPolicy Bypass -File e2e_test.ps1   # exit 0 = SUCCESS
 |---|---|---|
 | «картинка только в верхней части, ниже чёрное» | доставляемый размер ≠ размер буфера аллокатора (640×480 данные в 720p-буфере) | в msrc_diag.log: `StartForSession negotiated … -> allocator type …`, `Lock … maxLen=` (1228800=640×480 RGB32, 3686400=720p RGB32, 1384448=NV12 720p) |
 | «вытянута по вертикали» (1.33×) | неравномерный downsample 16:9→4:3 в `DownsampleRgb32` (MediaStream.cpp) — лечится letterbox-вписыванием | код: `DownsampleRgb32`; симптом появляется ТОЛЬКО когда размеры совпали (предыдущий баг маскировал) |
-| «статична» / кадры не обновляются | встал producer (камера/источник), НЕ media source | `VCamProducerCli status` → «no new frames»; или напрямую seq в `Global\VCam.FrameBuffer.v1` (см. ниже) |
+| «статична» / кадры не обновляются | встал producer (камера/источник), НЕ media source; если producer мёртв дольше 7 с — кадр сменится на NO SIGNAL (vcam-camera-lifecycle) | `VCamProducerCli status` → «no new frames»; или напрямую seq в `Global\VCam.FrameBuffer.v1` (см. ниже) |
 | «камера не подключена» | баг потребителя (его выбор устройства), на нашей стороне не лечится | — |
 | НЕ причина: окно превью | `VCamPreview` — чистый read-only читатель shm (`FILE_MAP_READ`), в MF/камеру/писателя не вмешивается | код VCamPreview.cpp:125 |
 

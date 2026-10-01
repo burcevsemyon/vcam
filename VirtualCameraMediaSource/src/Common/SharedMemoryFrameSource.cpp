@@ -8,6 +8,10 @@ namespace {
 constexpr int kNamePrefixCount = 2;
 const wchar_t* const kNamePrefixes[kNamePrefixCount] = { L"Global\\", L"Local\\" };
 
+// Кэш последнего кадра отдаётся только в течение этого окна после последнего
+// свежего кадра; дальше — NO SIGNAL. Перекрывает hot-switch окно хоста (5000 мс).
+constexpr ULONGLONG kNoSignalAfterMs = 7000;
+
 const wchar_t* ObjectBaseName(const wchar_t* namedObjectName)
 {
     const wchar_t* pSep = wcschr(namedObjectName, L'\\');
@@ -143,6 +147,7 @@ HRESULT SharedMemoryFrameSource::Init()
         m_pHeader->frameWriteIndex = 0;
         m_pHeader->seq = 0;
         m_pHeader->lastFrameTime100ns = 0;
+        m_pHeader->readerLastActiveTick = 0;
     }
     m_pCache = new (std::nothrow) BYTE[vcam::VCamFrameSize];
     if (m_pCache == nullptr) {
@@ -161,6 +166,9 @@ HRESULT SharedMemoryFrameSource::AcquireFrame(BYTE* pDest, DWORD timeoutMs)
 {
     if (!m_bInit || m_bShutDown) return E_UNEXPECTED;
     if (pDest == nullptr) return E_POINTER;
+    // Heartbeat потребителя: вызов идёт только когда живая MF-сессия тянет
+    // сэмплы (включая fallback/NO SIGNAL) — хост/hold-watch видят «потребитель есть».
+    TouchReader();
     CsGuard guard(&m_cs); // сериализация параллельных клиентов (кэш + событие)
 
     if (m_bOffline) {
@@ -206,13 +214,22 @@ HRESULT SharedMemoryFrameSource::AcquireFrame(BYTE* pDest, DWORD timeoutMs)
             memcpy(m_pCache, pDest, vcam::VCamFrameSize);
             m_bHaveCache = true;
         }
+        m_lastFreshMs = GetTickCount64();
         return S_OK;
     }
 }
 
+void SharedMemoryFrameSource::TouchReader()
+{
+    if (!m_bInit || m_bShutDown || m_bOffline || m_pHeader == nullptr) return;
+    m_pHeader->readerLastActiveTick = GetTickCount64();
+}
+
 HRESULT SharedMemoryFrameSource::FallbackFrame(BYTE* pDest)
 {
-    if (m_pCache && m_bHaveCache) {
+    // Кэш живёт только kNoSignalAfterMs после последнего свежего кадра: пока
+    // писатель в hot-switch/микро-обрыве — статика; писатель мёртв — NO SIGNAL.
+    if (m_pCache && m_bHaveCache && (GetTickCount64() - m_lastFreshMs) <= kNoSignalAfterMs) {
         memcpy(pDest, m_pCache, vcam::VCamFrameSize);
         return S_OK;
     }

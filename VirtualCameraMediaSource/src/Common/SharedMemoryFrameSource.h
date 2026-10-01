@@ -11,6 +11,9 @@ public:
     // Copy latest frame into pDest (must be VCamFrameSize bytes).
     // On timeout: use last cached frame or fill black. Always returns S_OK on success.
     HRESULT AcquireFrame(BYTE* pDest, DWORD timeoutMs);
+    // Heartbeat потребителя: сессия стартовала (первый сэмпл может прийти
+    // позже). Пишет readerLastActiveTick, пока сессия живёт.
+    void TouchReader();
     void Shutdown();
 
     SharedMemoryFrameSource(const SharedMemoryFrameSource&) = delete;
@@ -30,5 +33,6 @@ private:
     vcam::VCamSectionHeader* m_pHeader = nullptr;
     BYTE* m_pCache = nullptr;
     bool m_bHaveCache = false;
+    ULONGLONG m_lastFreshMs = 0; // GetTickCount64 of last fresh frame read
     bool m_bOffline = false;
 };

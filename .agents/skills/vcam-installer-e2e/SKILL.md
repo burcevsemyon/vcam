@@ -3,7 +3,7 @@ name: vcam-installer-e2e
 description: >-
   E2E-проверка инсталлятора VCam в Hyper-V VM (Win11 «Среда разработки»): установка /VERYSILENT через
   PowerShell Direct, пост-инсталл-чеки (файлы+SHA256, ярлык 1/1 «Запуск камеры VCam», задача
-  Task Scheduler\VCamHost + setup_task.log, HKCU Run только VCamRegistrar, процессы, host.log,
+  Task Scheduler\VCamHost + setup_task.log, HKCU Run пуст (VCamRegistrar удалён в 0.0.3), процессы, host.log,
   list-devices rows=0, inspect count=1), ребут-тест с автологоном и верификацией авторанта из задачи
   VCamHost (фикс «после ребута нет сигнала» → token: elevated=1 SeCreateGlobalPrivilege=2 +
   writer ready (Global\...)), cleanup автологона. Use when: проверить
@@ -28,7 +28,7 @@ description: >-
   escape'ить в `\uXXXX` перед печатью в консоль.
 - **Инсталлятор** копировать в гость `Copy-Item -ToSession` (например, в `C:\Users\User\`) и запускать
   оттуда: `Start-Process '...\VCamSetup-<ver>-x64.exe' '/VERYSILENT /SUPPRESSMSGBOXES' -Wait`.
-  Версии линейки «по порядку релизов»: `0.0.1`, `0.0.2` (инкремент — в `vcam_installer.iss`).
+  Версии линейки «по порядку релизов»: `0.0.1`, `0.0.2`, `0.0.3` (инкремент — в `vcam_installer.iss`).
 
 ## КРИТИЧЕСКИЙ питфол: сеансы 0 vs 2
 
@@ -64,23 +64,31 @@ description: >-
 ### F1 — Установка
 - `/VERYSILENT /SUPPRESSMSGBOXES`, `-Wait`; инсталлятор сам: стоп FrameServer → копирование →
   regsvr32 → старт FrameServer → задача `VCamHost` (через `vcam_install_task.ps1`, log —
-  `setup_task.log`) + legacy-чистка `HKCU\Run\VCamAutostart` → **пост-инсталл-запуск Registrar + хоста**
-  (их токен Full → `writer ready (Global\...)` допустим; важно `active` без `(write failed)`).
+  `setup_task.log`) + legacy-чистка `HKCU\Run\VCamAutostart` **и `VCamRegistrar`** → запуск хоста
+  (хост сам поднимает холдер `Registrar.exe add VCam hold` — vcam-camera-lifecycle; их токен Full →
+  `writer ready (Global\...)` допустим; важно `active` без `(write failed)`).
 
 ### F2 — Post-install чеки (из PS Direct)
 - **Файлы** в `C:\Program Files\VCam\`: `MediaSource.dll`, `VCamVideoStreamProducer.exe`,
   `VCamSettingsUi.exe`, `VCamPreview.exe`, `Registrar.exe`, `VCamProducerCli.exe`, `CaptureTest.exe`,
   `vcam_restart_host.ps1`, `vcam_install_task.ps1`; SHA256 vs `build\x64\Release` (и vs publish UI).
 - **Ярлык 1/1** в `%APPDATA%\Microsoft\Windows\Start Menu\Programs\VCam\`: «Запуск камеры VCam» →
+  **`{sys}\wscript.exe "{app}\vcam_run_host.vbs"`**
+  (IconFilename = хост; НЕ прямой exe — прямой запуск даёт `Local\`-секцию и слепой device-режим;
+  НЕ powershell — conhost мелькает, vbs даёт 0 окон);
   хост (единственный; Настройки/Предпросмотр — в tray-меню хоста, перезапуск — кнопка в UI;
   старых ярлыков «Настройки/Предпросмотр/Перезапуск» в свежей сборке быть не должно).
 - **Задача автозапуска**: `schtasks /Query /TN VCamHost` — есть; `/XML`: `<Command>` ЦЕЛИКОМ
   `C:\Program Files\VCam\VCamVideoStreamProducer.exe` (без разрыва на `C:\Program`+`Files\...`),
   `RunLevel HighestAvailable`, `<LogonTrigger>`; `%LOCALAPPDATA%\VCam\setup_task.log` = «created: \VCamHost».
-  **`HKCU\Run`**: только `VCamRegistrar` (`VCamAutostart` быть не должно — устарел и удаляется).
-- **Процессы**: `Registrar`, `VCamVideoStreamProducer`.
-- **host.log** (`%LOCALAPPDATA%\VCam\host.log`): `starting → autostart → tray → watching → writer ready
-  (...) → switch → source opened → active`. Читается живьём (`Get-Content -Encoding UTF8`).
+  **`HKCU\Run`**: **пусто** — `VCamAutostart` устарел и удаляется, `VCamRegistrar` удалён в 0.0.3
+  (камеру поднимает хост; наличие `VCamRegistrar` = апгрейд со старой версии, ключ должен быть
+  удалён ssPostInstall).
+- **Процессы**: `Registrar` (хост-холдер), `VCamVideoStreamProducer`.
+- **host.log** (`%LOCALAPPDATA%\VCam\host.log`): `starting → autostart → tray → camera holder started
+  → watching → writer ready (...) → switch → source opened → active`. Читается живьём
+  (`Get-Content -Encoding UTF8`). Строка `camera holder started` = хост зарегистрировал камеру
+  (0.0.3+); при tray «Выход» ожидается `camera holder stopped`.
 - **`CaptureTest inspect` → `count=1`** в VM (физ. камер нет; `count=2` — для рабочей машины).
 - **`VCamProducerCli list-devices` → `rows=0`** — фильтр `IsVirtualCamera` скрывает нашу камеру
   (в VM больше камер и нет — rows=0 = SUCCESS, не провал).

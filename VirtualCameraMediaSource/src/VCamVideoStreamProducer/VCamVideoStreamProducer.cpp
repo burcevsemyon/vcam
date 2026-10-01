@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <shellapi.h>
+#include <tlhelp32.h>
 
 #include <cstdarg>
 #include <cstdio>
@@ -36,6 +37,7 @@ constexpr DWORD kFrameMs = 33;
 constexpr DWORD kSwitchWindowMs = 5000;  // окно hot-switch: FlushLast, пока новый источник не готов
 constexpr DWORD kOpenRetryMs = 250;
 constexpr DWORD kFallbackRetryMs = 1000;
+constexpr DWORD kConsumerStaleMs = 3000; // heartbeat читателя старше → потребителя нет
 
 HINSTANCE g_inst = nullptr;
 HWND g_hwnd = nullptr;
@@ -213,6 +215,127 @@ void OpenPreview()
         return;
     }
     LaunchHelper(p);
+}
+
+// --- Жизненный цикл камеры: хост владеет холдером Registrar.exe.
+// Старт: поднимаем `Registrar.exe add VCam hold-watch` (если его ещё нет) —
+// камера registered, пока живёт хост/потребители. «Выход» из tray:
+//   - есть активный потребитель (heartbeat readerLastActiveTick свежий) —
+//     холдер НЕ трогаем, сессия не рвётся: писатель остановлен, и через 7 с
+//     потребитель видит NO SIGNAL;
+//   - потребителей нет — taskkill холдера, камера исчезает из списка устройств.
+// Stop-event/краш холдера НЕ трогают: отдельный процесс переживает рестарт
+// хоста; hold-watch сам выходит (без писателя и потребителей >30 с).
+
+bool IsRegistrarRunning()
+{
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return false;
+    bool found = false;
+    PROCESSENTRY32W pe = {};
+    pe.dwSize = sizeof(pe);
+    if (Process32FirstW(snap, &pe)) {
+        do {
+            if (_wcsicmp(pe.szExeFile, L"Registrar.exe") == 0) { found = true; break; }
+        } while (Process32NextW(snap, &pe));
+    }
+    CloseHandle(snap);
+    return found;
+}
+
+// Активен ли сейчас потребитель камеры: свежий heartbeat читателя (MediaSource
+// пишет на каждой доставке сэмплов живой MF-сессии). Секцию открываем read-only,
+// сами ничего не создаём — нет секции → нет и потребителя.
+bool IsConsumerActive()
+{
+    const wchar_t* prefixes[] = { L"Global\\", L"Local\\" };
+    const wchar_t* base = wcschr(vcam::VCamSectionName, L'\\');
+    base = base ? base + 1 : vcam::VCamSectionName;
+    for (const wchar_t* pre : prefixes) {
+        wchar_t name[MAX_PATH] = {};
+        swprintf_s(name, L"%s%s", pre, base);
+        HANDLE h = OpenFileMappingW(FILE_MAP_READ, FALSE, name);
+        if (!h) continue;
+        bool active = false;
+        void* p = MapViewOfFile(h, FILE_MAP_READ, 0, 0, sizeof(vcam::VCamSectionHeader));
+        if (p) {
+            auto* hdr = static_cast<vcam::VCamSectionHeader*>(p);
+            if (hdr->magic == vcam::VCamMagic) {
+                ULONGLONG tick = hdr->readerLastActiveTick;
+                ULONGLONG now = GetTickCount64();
+                active = (tick != 0) && (now >= tick) && (now - tick) <= kConsumerStaleMs;
+            }
+            UnmapViewOfFile(p);
+        }
+        CloseHandle(h);
+        if (active) return true;
+    }
+    return false;
+}
+
+void StartCameraHolder()
+{
+    if (IsRegistrarRunning()) {
+        Log(L"[host] camera holder already running");
+        return;
+    }
+    std::wstring p = FindHelperExe(L"Registrar.exe", L"build\\x64\\Release\\Registrar.exe");
+    if (p.empty()) {
+        Log(L"[host] Registrar.exe not found - camera will NOT be registered");
+        return;
+    }
+    std::wstring cmd = L"\"" + p + L"\" add VCam hold-watch";
+    std::vector<wchar_t> buf(cmd.begin(), cmd.end()); buf.push_back(0);
+    STARTUPINFOW si = {}; si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESHOWWINDOW; si.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION pi = {};
+    if (!CreateProcessW(nullptr, buf.data(), nullptr, nullptr, FALSE,
+                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        Log(L"[host] camera holder start failed: %s (%lu)", p.c_str(), GetLastError());
+        return;
+    }
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess); // detached: холдер переживает смерть хоста
+    Log(L"[host] camera holder started: %s", p.c_str());
+}
+
+void StopCameraHolder()
+{
+    if (!IsRegistrarRunning()) {
+        Log(L"[host] camera holder not running - camera already gone");
+        return;
+    }
+    // Потребитель держит сессию — камеру не трогаем (сессию не рвём): писатель
+    // уже остановлен, через 7 с потребитель увидит NO SIGNAL. Холдер уйдёт сам
+    // (hold-watch), когда потребитель закроется.
+    if (IsConsumerActive()) {
+        Log(L"[host] consumers active - camera kept (writers stopped -> NO SIGNAL in 7s)");
+        return;
+    }
+    wchar_t sys[MAX_PATH] = {};
+    GetSystemDirectoryW(sys, MAX_PATH);
+    std::wstring cmd = std::wstring(L"\"") + sys + L"\\taskkill.exe\" /IM Registrar.exe /F";
+    std::vector<wchar_t> buf(cmd.begin(), cmd.end()); buf.push_back(0);
+    STARTUPINFOW si = {}; si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESHOWWINDOW; si.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION pi = {};
+    if (!CreateProcessW(nullptr, buf.data(), nullptr, nullptr, FALSE,
+                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        Log(L"[host] taskkill(Registrar) failed: %lu", GetLastError());
+        return;
+    }
+    CloseHandle(pi.hThread);
+    WaitForSingleObject(pi.hProcess, 10000);
+    DWORD rc = 1;
+    GetExitCodeProcess(pi.hProcess, &rc);
+    CloseHandle(pi.hProcess);
+    // taskkill падает с Access Denied, если холдер элевирован (legacy <=0.0.2
+    // поднимал его инсталлер) — не врём в лог; апгрейд-инсталлер убивает
+    // legacy-холдера в ssPostInstall, после чего хост поднимает свой.
+    if (rc == 0 && !IsRegistrarRunning())
+        Log(L"[host] camera holder stopped - camera removed from device list");
+    else
+        Log(L"[host] taskkill(Registrar) rc=%lu - holder may still be running (elevated?)", rc);
 }
 
 // Версия из VERSIONINFO (version.rc) — единый источник с AppVersion инсталлятора.
@@ -646,6 +769,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         case ID_EXIT:
             Log(L"[host] exit requested (tray menu)");
             SetEvent(g_stop);
+            StopCameraHolder();
             break;
         }
         return 0;
@@ -763,6 +887,8 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     wcsncpy_s(g_nid.szTip, kTrayTip, _TRUNCATE);
     if (!Shell_NotifyIconW(NIM_ADD, &g_nid)) Log(L"[host] Shell_NotifyIcon(add) failed");
     Log(L"[host] tray icon added");
+
+    StartCameraHolder();
 
     std::wstring settingsPath = DefaultSettingsPath();
     if (!g_watcher.Start(settingsPath, OnSettingsChanged)) {
