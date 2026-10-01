@@ -151,6 +151,14 @@ STDAPI DllRegisterServer()
     GetModuleFileNameW(s_hModule, dllPath, MAX_PATH);
     lstat = RegSetValueExW(hKey, nullptr, 0, REG_SZ,
         (const BYTE*)dllPath, (DWORD)((wcslen(dllPath) + 1) * sizeof(wchar_t)));
+    // ThreadingModel=Both: an empty/missing ThreadingModel makes COM marshal
+    // every call from an MTA client through a proxy that answers E_NOINTERFACE
+    // for IMFMediaSource2 (QI fails, SetMediaType never runs, no frames).
+    if (lstat == ERROR_SUCCESS) {
+        static const wchar_t kBoth[] = L"Both";
+        lstat = RegSetValueExW(hKey, L"ThreadingModel", 0, REG_SZ,
+            (const BYTE*)kBoth, (DWORD)((wcslen(kBoth) + 1) * sizeof(wchar_t)));
+    }
     RegCloseKey(hKey);
     return (lstat == ERROR_SUCCESS) ? S_OK : HRESULT_FROM_WIN32(lstat);
 }

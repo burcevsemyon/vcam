@@ -202,6 +202,11 @@ static int RunDirectMode(int numFrames, const wchar_t* outputPrefix)
     {
         IMFMediaSource2* pSrc2 = nullptr;
         HRESULT hrQI = pSource->QueryInterface(IID_PPV_ARGS(&pSrc2));
+        {
+            wchar_t g[64] = L"?";
+            GuidToW(__uuidof(IMFMediaSource2), g, _countof(g));
+            LogW(L"direct QI src=%p iid=%s -> hr=0x%08X pSrc2=%p", pSource, g, (unsigned)hrQI, pSrc2);
+        }
         IMFMediaType* pType = nullptr;
         HRESULT hrMt = MFCreateMediaType(&pType);
         if (SUCCEEDED(hrQI) && pSrc2 && SUCCEEDED(hrMt) && pType) {

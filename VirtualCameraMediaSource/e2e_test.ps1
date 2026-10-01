@@ -289,6 +289,9 @@ if (Test-Path "$ClsidKey\InprocServer32") {
     $ClsidKeyCreated = $true
 }
 Set-ItemProperty -Path "$ClsidKey\InprocServer32" -Name "(default)" -Value $MediaDll
+# ThreadingModel=Both: without it COM marshals MTA-client QI through a proxy
+# that returns E_NOINTERFACE for IMFMediaSource2 (direct phases get 0 frames).
+Set-ItemProperty -Path "$ClsidKey\InprocServer32" -Name "ThreadingModel" -Value "Both"
 Pass "HKCU CLSID -> $MediaDll (direct mode tests the build)"
 
 if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Path $OutDir | Out-Null }
