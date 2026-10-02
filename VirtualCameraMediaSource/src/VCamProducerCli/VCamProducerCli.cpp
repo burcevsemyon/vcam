@@ -1,4 +1,5 @@
 #include <windows.h>
+#include <atlbase.h>
 
 #include <cstdarg>
 #include <cstdio>
@@ -142,10 +143,10 @@ void PrintSectionState()
     const wchar_t* baseName = (pSep != nullptr) ? pSep + 1 : vcam::VCamSectionName;
     const wchar_t* prefixes[2] = { L"Global\\", L"Local\\" };
     wchar_t sectionName[128] = {};
-    HANDLE h = nullptr;
-    for (int i = 0; i < 2 && h == nullptr; i++) {
+    ATL::CHandle h;
+    for (int i = 0; i < 2 && !h; i++) {
         swprintf_s(sectionName, L"%s%s", prefixes[i], baseName);
-        h = OpenFileMappingW(FILE_MAP_READ, FALSE, sectionName);
+        h.Attach(OpenFileMappingW(FILE_MAP_READ, FALSE, sectionName));
     }
     if (!h) {
         Log(L"writer section %s: not open (no producer holds it)", vcam::VCamSectionName);
@@ -155,7 +156,6 @@ void PrintSectionState()
     if (!p) {
         Log(L"writer section %s: open (MapView failed: %lu)", vcam::VCamSectionName,
             GetLastError());
-        CloseHandle(h);
         return;
     }
     LONGLONG seq1 = reinterpret_cast<vcam::VCamSectionHeader*>(p)->seq;
@@ -169,7 +169,6 @@ void PrintSectionState()
             sectionName, seq1);
     }
     UnmapViewOfFile(p);
-    CloseHandle(h);
 }
 
 enum class Phase { Switch, Active, Fallback };

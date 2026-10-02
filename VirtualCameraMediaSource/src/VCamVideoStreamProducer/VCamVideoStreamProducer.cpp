@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <tlhelp32.h>
+#include <atlbase.h>
 
 #include <cstdarg>
 #include <cstdio>
@@ -254,7 +255,7 @@ bool IsConsumerActive()
     for (const wchar_t* pre : prefixes) {
         wchar_t name[MAX_PATH] = {};
         swprintf_s(name, L"%s%s", pre, base);
-        HANDLE h = OpenFileMappingW(FILE_MAP_READ, FALSE, name);
+        ATL::CHandle h(OpenFileMappingW(FILE_MAP_READ, FALSE, name));
         if (!h) continue;
         bool active = false;
         void* p = MapViewOfFile(h, FILE_MAP_READ, 0, 0, sizeof(vcam::VCamSectionHeader));
@@ -267,7 +268,6 @@ bool IsConsumerActive()
             }
             UnmapViewOfFile(p);
         }
-        CloseHandle(h);
         if (active) return true;
     }
     return false;

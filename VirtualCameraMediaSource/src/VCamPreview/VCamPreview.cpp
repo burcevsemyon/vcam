@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <windowsx.h>
 #include <gdiplus.h>
+#include <atlbase.h>
 #include <cstdio>
 #include <cwchar>
 #include <cstring>
@@ -120,9 +121,9 @@ bool TryConnect(UINT64 now)
     g.lastConnectTry = now;
 
     const wchar_t* names[] = { vcam::VCamSectionName, L"Local\\VCam.FrameBuffer.v1" };
-    HANDLE hSection = nullptr;
+    ATL::CHandle hSection;
     for (const wchar_t* name : names) {
-        hSection = OpenFileMappingW(FILE_MAP_READ, FALSE, name);
+        hSection.Attach(OpenFileMappingW(FILE_MAP_READ, FALSE, name));
         if (hSection) break;
         DWORD err = GetLastError();
         if (err != ERROR_FILE_NOT_FOUND && err != ERROR_ACCESS_DENIED) break;
@@ -130,7 +131,7 @@ bool TryConnect(UINT64 now)
     if (!hSection) return false;
 
     BYTE* pBase = (BYTE*)MapViewOfFile(hSection, FILE_MAP_READ, 0, 0, 0);
-    if (!pBase) { CloseHandle(hSection); return false; }
+    if (!pBase) return false;
 
     MEMORY_BASIC_INFORMATION mbi = {};
     SIZE_T cbMapped = 0;
@@ -140,7 +141,6 @@ bool TryConnect(UINT64 now)
     if (cbMapped < sizeof(vcam::VCamSectionHeader) || !ValidateHeader(pHeader)
         || (UINT64)sizeof(vcam::VCamSectionHeader) + (UINT64)pHeader->slotCount * pHeader->frameSize > cbMapped) {
         UnmapViewOfFile(pBase);
-        CloseHandle(hSection);
         return false;
     }
 
@@ -148,11 +148,10 @@ bool TryConnect(UINT64 now)
     BYTE* pFrame = new (std::nothrow) BYTE[frameBytes];
     if (!pFrame) {
         UnmapViewOfFile(pBase);
-        CloseHandle(hSection);
         return false;
     }
 
-    g.hSection = hSection;
+    g.hSection = hSection.Detach();
     g.pBase = pBase;
     g.cbMapped = cbMapped;
     g.pHeader = pHeader;
