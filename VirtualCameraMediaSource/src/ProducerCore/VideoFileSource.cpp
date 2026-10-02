@@ -37,18 +37,6 @@ std::wstring HrHex(HRESULT hr)
     return std::wstring(buf);
 }
 
-void RenderToFrame(const BYTE* data, UINT w, UINT h, LONG stride, BYTE* dst)
-{
-    if (w == vcam::VCamWidth && h == vcam::VCamHeight &&
-        stride == (LONG)vcam::VCamStride) {
-        for (UINT y = 0; y < h; y++) {
-            memcpy(dst + (size_t)y * vcam::VCamStride, RowPtr(data, stride, h, y), vcam::VCamStride);
-        }
-        return;
-    }
-    LetterboxBilinear(data, w, h, stride, dst, (LONG)vcam::VCamStride);
-}
-
 struct VideoState {
     ATL::CComPtr<IMFSourceReader> reader;
     DWORD streamIndex = 0;
@@ -222,6 +210,22 @@ bool EnsureMfStarted(std::wstring& err)
 }
 
 } // namespace
+
+void VideoFileSource::RenderToFrame(const BYTE* data, UINT w, UINT h, LONG stride, BYTE* dst)
+{
+    if (w == vcam::VCamWidth && h == vcam::VCamHeight &&
+        stride == (LONG)vcam::VCamStride) {
+        for (UINT y = 0; y < h; y++) {
+            memcpy(dst + (size_t)y * vcam::VCamStride, RowPtr(data, stride, h, y), vcam::VCamStride);
+        }
+        return;
+    }
+    // Reader отдаёт RGB32 (кандидаты ConfigureReader — RGB32/ARGB32 native,
+    // layout идентичен): сначала Video Processor MFT, при false — CPU.
+    if (mftScaler_.Scale(data, w, h, stride, dst))
+        return;
+    LetterboxBilinear(data, w, h, stride, dst, (LONG)vcam::VCamStride);
+}
 
 VideoFileSource::VideoFileSource()
 {

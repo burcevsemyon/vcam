@@ -388,7 +388,9 @@ bool CameraSource::Render(uint8_t* bgrx, int stride, std::wstring& err)
     if (capW_ == vcam::VCamWidth && capH_ == vcam::VCamHeight) {
         vcam::CopyFrameRowwise(bgrx, (size_t)stride, cache_.data(), vcam::VCamStride,
                                vcam::VCamWidth, vcam::VCamHeight, vcam::VCamPixelSize);
-    } else {
+    } else if (stride != (int)vcam::VCamStride ||
+               // MFT пишет packed 1280x720 stride 5120; чужой stride — только CPU.
+               !mftScaler_.Scale(cache_.data(), capW_, capH_, (LONG)(capW_ * 4), bgrx)) {
         LetterboxBilinear(cache_.data(), capW_, capH_, (LONG)(capW_ * 4), bgrx, stride);
     }
     return true;
@@ -431,6 +433,11 @@ bool CameraSource::Shutdown(DWORD timeoutMs)
     capStride_ = 0;
     streamIndex_ = 0;
     cfg_ = SourceConfig();
+
+    // Скейлер — ДО MFShutdown, пока платформа жива (его MFT нельзя отпускать
+    // после MFShutdown/teardown — AV на выходе; см. VideoProcessorScaler).
+    // Безвредно и на холодном пути (Shutdown до первого Open).
+    mftScaler_.Shutdown();
 
     if (mfUp_) { MFShutdown(); mfUp_ = false; } // парный MFStartup в Open
     if (comUp_) { CoUninitialize(); comUp_ = false; }

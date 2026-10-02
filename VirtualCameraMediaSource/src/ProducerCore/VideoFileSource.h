@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "ProducerApi.h"
+#include "VideoProcessorScaler.h"
 
 // Видеофайл через MF SourceReader: декод в фоновом потоке с frame-holding по
 // timestamp и лупом SetPosition(0). Render отдаёт последний декодированный кадр;
@@ -30,6 +31,9 @@ private:
     static DWORD WINAPI ThreadProc(LPVOID self);
     void DecodeLoop();
     void SetFailed(const std::wstring& reason);
+    // Скейл декодированного кадра в frame_ (1280x720 BGRX): точное совпадение —
+    // memcpy, иначе сначала Video Processor MFT, при false — LetterboxBilinear.
+    void RenderToFrame(const BYTE* data, UINT w, UINT h, LONG stride, BYTE* dst);
     // Остановка decode-потока с таймаутом: false = поток не успел выйти,
     // никакие ресурсы/состояние не тронуты (иначе — UAF под живым DecodeLoop).
     bool Shutdown(DWORD timeoutMs);
@@ -43,4 +47,5 @@ private:
     bool frameReady_ = false;
     bool failed_ = false;
     std::wstring failReason_;
+    VideoProcessorScaler mftScaler_; // GPU-скейл; недоступен -> CPU-fallback
 };

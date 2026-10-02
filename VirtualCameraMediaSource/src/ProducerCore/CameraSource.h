@@ -9,14 +9,15 @@
 #include <vector>
 
 #include "ProducerApi.h"
+#include "VideoProcessorScaler.h"
 
 struct IMFSourceReader;
 struct IMFMediaSource;
 
 // Захват с физической камеры через MF SourceReader. Фоновый поток читает
 // сэмплы (RGB32 capW x capH) в кэш последнего кадра под мьютексом; Render
-// отдаёт кэш в буфер хоста (построчный memcpy при 1280x720, иначе letterbox-fit
-// билинейный). Ошибка/молчание камеры ~3 с -> failed_ и Render=false с причиной
+// отдаёт кэш в буфер хоста (построчный memcpy при 1280x720, иначе сначала
+// Video Processor MFT, при его недоступности — letterbox-fit билинейный). Ошибка/молчание камеры ~3 с -> failed_ и Render=false с причиной
 // (хост уходит в fallback NO SIGNAL; никакого keep-previous).
 class CameraSource : public IFrameSource {
 public:
@@ -56,4 +57,5 @@ private:
     bool mfUp_ = false;          // парный MFStartup/MFShutdown
     bool comUp_ = false;         // парный CoInitializeEx/CoUninitialize
     std::wstring failReason_;
+    VideoProcessorScaler mftScaler_; // GPU-скейл кэша; недоступен -> CPU-fallback
 };
