@@ -114,20 +114,19 @@ static int HoldWatchLoop()
     for (;;) {
         Sleep((DWORD)kCheckMs);
 
-        HANDLE hSection = nullptr;
-        void* pView = nullptr;
+        ATL::CHandle hSection;
         for (const wchar_t* pre : prefixes) {
             wchar_t name[MAX_PATH] = {};
             swprintf_s(name, L"%s%s", pre, base);
-            hSection = OpenFileMappingW(FILE_MAP_READ, FALSE, name);
+            hSection.Attach(OpenFileMappingW(FILE_MAP_READ, FALSE, name));
             if (hSection) break;
         }
 
         ULONGLONG now = GetTickCount64();
 
         if (hSection) {
-            pView = MapViewOfFile(hSection, FILE_MAP_READ, 0, 0,
-                                  sizeof(vcam::VCamSectionHeader));
+            void* pView = MapViewOfFile(hSection, FILE_MAP_READ, 0, 0,
+                                        sizeof(vcam::VCamSectionHeader));
             if (pView) {
                 auto* hdr = static_cast<vcam::VCamSectionHeader*>(pView);
                 if (hdr->magic == vcam::VCamMagic) {
@@ -150,7 +149,6 @@ static int HoldWatchLoop()
                 }
                 UnmapViewOfFile(pView);
             }
-            CloseHandle(hSection);
         }
 
         ULONGLONG writerIdle = now - seqChangedAt;
