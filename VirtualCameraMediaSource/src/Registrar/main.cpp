@@ -101,8 +101,6 @@ static int HoldWatchLoop()
     const wchar_t* base = wcschr(vcam::VCamSectionName, L'\\');
     base = base ? base + 1 : vcam::VCamSectionName;
 
-    HANDLE hSection = nullptr;
-    void* pView = nullptr;
     ULONGLONG seqChangedAt = GetTickCount64();      // «writer жив» отсюда
     ULONGLONG consumerActiveAt = GetTickCount64();  // «потребитель жив» отсюда
     LONGLONG lastSeq = 0;
@@ -116,52 +114,43 @@ static int HoldWatchLoop()
     for (;;) {
         Sleep((DWORD)kCheckMs);
 
-        // (Re)open секции: её может не быть (писатель ещё не стартовал) или
-        // она могла умереть (все handle'ы закрыты) и появиться заново.
-        if (!hSection) {
-            for (const wchar_t* pre : prefixes) {
-                wchar_t name[MAX_PATH] = {};
-                swprintf_s(name, L"%s%s", pre, base);
-                hSection = OpenFileMappingW(FILE_MAP_READ, FALSE, name);
-                if (hSection) break;
-            }
-            if (hSection) {
-                pView = MapViewOfFile(hSection, FILE_MAP_READ, 0, 0,
-                                      sizeof(vcam::VCamSectionHeader));
-                if (!pView) { CloseHandle(hSection); hSection = nullptr; }
-                else {
-                    auto* hdr = static_cast<vcam::VCamSectionHeader*>(pView);
-                    if (hdr->magic == vcam::VCamMagic) {
-                        lastSeq = hdr->seq;
-                        haveSeq = true;
-                    }
-                    openedOnce = true;
-                }
-            }
+        HANDLE hSection = nullptr;
+        void* pView = nullptr;
+        for (const wchar_t* pre : prefixes) {
+            wchar_t name[MAX_PATH] = {};
+            swprintf_s(name, L"%s%s", pre, base);
+            hSection = OpenFileMappingW(FILE_MAP_READ, FALSE, name);
+            if (hSection) break;
         }
 
         ULONGLONG now = GetTickCount64();
 
-        // Писатель жив: seq продвинулся с прошлой проверки.
-        if (pView) {
-            auto* hdr = static_cast<vcam::VCamSectionHeader*>(pView);
-            if (hdr->magic == vcam::VCamMagic) {
-                LONGLONG seq = hdr->seq;
-                if (!haveSeq || seq != lastSeq) {
-                    lastSeq = seq;
-                    haveSeq = true;
-                    seqChangedAt = now;
+        if (hSection) {
+            pView = MapViewOfFile(hSection, FILE_MAP_READ, 0, 0,
+                                  sizeof(vcam::VCamSectionHeader));
+            if (pView) {
+                auto* hdr = static_cast<vcam::VCamSectionHeader*>(pView);
+                if (hdr->magic == vcam::VCamMagic) {
+                    LONGLONG seq = hdr->seq;
+                    if (!haveSeq || seq != lastSeq || seq < lastSeq) {
+                        lastSeq = seq;
+                        haveSeq = true;
+                        seqChangedAt = now;
+                    }
+                    // Потребитель жив: heartbeat свежий.
+                    if (hdr->readerLastActiveTick != 0 &&
+                        now >= hdr->readerLastActiveTick &&
+                        now - hdr->readerLastActiveTick <= 3000) {
+                        consumerActiveAt = now;
+                    }
+                    openedOnce = true;
                 }
-                // Потребитель жив: heartbeat свежий.
-                if (hdr->readerLastActiveTick != 0 &&
-                    now >= hdr->readerLastActiveTick &&
-                    now - hdr->readerLastActiveTick <= 3000) {
-                    consumerActiveAt = now;
+                else {
+                    haveSeq = false; // секция невалидна — ждём seq заново
                 }
+                UnmapViewOfFile(pView);
             }
-            else {
-                haveSeq = false; // секция переинициализирована — ждём seq заново
-            }
+            CloseHandle(hSection);
         }
 
         ULONGLONG writerIdle = now - seqChangedAt;
@@ -178,8 +167,6 @@ static int HoldWatchLoop()
             wprintf(L"Holder watch: writer and consumers idle %llu ms - exiting,"
                     L" camera will be removed\n", kWatchIdleMs);
             fflush(stdout);
-            if (pView) UnmapViewOfFile(pView);
-            if (hSection) CloseHandle(hSection);
             return 0; // Session lifetime: выход процесса = камера исчезла
         }
     }
