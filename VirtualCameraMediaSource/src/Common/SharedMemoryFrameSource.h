@@ -3,6 +3,7 @@
 #include <mfobjects.h>
 #include <memory>
 #include "SharedMemoryContract.h"
+#include "MappedViewOfFilePtr.h"
 
 class SharedMemoryFrameSource {
 public:
@@ -30,7 +31,7 @@ private:
     bool m_bShutDown = false;
     HANDLE m_hSection = nullptr;
     HANDLE m_hReadyEvent = nullptr;
-    BYTE* m_pBase = nullptr;
+    vcam::MappedViewOfFilePtr m_view;
     vcam::VCamSectionHeader* m_pHeader = nullptr;
     std::unique_ptr<BYTE[]> m_pCache; // owned
     bool m_bHaveCache = false;

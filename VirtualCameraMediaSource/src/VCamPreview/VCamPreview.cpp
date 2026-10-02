@@ -7,6 +7,7 @@
 #include <cstring>
 #include <new>
 #include "../Common/SharedMemoryContract.h"
+#include "../Common/MappedViewOfFilePtr.h"
 
 #pragma comment(lib, "gdiplus.lib")
 
@@ -28,8 +29,8 @@ constexpr const wchar_t* kInstanceMutexName = L"VCamPreview.Instance";
 
 struct PreviewState {
     // shared memory reader
-    HANDLE hSection = nullptr;
-    BYTE* pBase = nullptr;
+    ATL::CHandle hSection;
+    vcam::MappedViewOfFilePtr view;
     SIZE_T cbMapped = 0;
     vcam::VCamSectionHeader* pHeader = nullptr;
     bool connected = false;
@@ -90,8 +91,8 @@ void ReleaseFrameBuffer()
 void Disconnect()
 {
     ReleaseFrameBuffer();
-    if (g.pBase) { UnmapViewOfFile(g.pBase); g.pBase = nullptr; }
-    if (g.hSection) { CloseHandle(g.hSection); g.hSection = nullptr; }
+    g.view.Close();
+    g.hSection.Close();
     g.pHeader = nullptr;
     g.cbMapped = 0;
     g.connected = false;
@@ -130,8 +131,10 @@ bool TryConnect(UINT64 now)
     }
     if (!hSection) return false;
 
-    BYTE* pBase = (BYTE*)MapViewOfFile(hSection, FILE_MAP_READ, 0, 0, 0);
-    if (!pBase) return false;
+    BYTE* pRaw = (BYTE*)MapViewOfFile(hSection, FILE_MAP_READ, 0, 0, 0);
+    vcam::MappedViewOfFilePtr view(pRaw);
+    if (!view) return false;
+    BYTE* pBase = (BYTE*)view.Get();
 
     MEMORY_BASIC_INFORMATION mbi = {};
     SIZE_T cbMapped = 0;
@@ -140,19 +143,17 @@ bool TryConnect(UINT64 now)
     vcam::VCamSectionHeader* pHeader = reinterpret_cast<vcam::VCamSectionHeader*>(pBase);
     if (cbMapped < sizeof(vcam::VCamSectionHeader) || !ValidateHeader(pHeader)
         || (UINT64)sizeof(vcam::VCamSectionHeader) + (UINT64)pHeader->slotCount * pHeader->frameSize > cbMapped) {
-        UnmapViewOfFile(pBase);
         return false;
     }
 
     UINT32 frameBytes = pHeader->stride * pHeader->height;
     BYTE* pFrame = new (std::nothrow) BYTE[frameBytes];
     if (!pFrame) {
-        UnmapViewOfFile(pBase);
         return false;
     }
 
-    g.hSection = hSection.Detach();
-    g.pBase = pBase;
+    g.hSection.Attach(hSection.Detach());
+    g.view.Attach(view.Detach());
     g.cbMapped = cbMapped;
     g.pHeader = pHeader;
     g.pFrame = pFrame;
@@ -173,7 +174,7 @@ bool TryConnect(UINT64 now)
 // has been copied. seq is reported through outSeq for liveness tracking.
 bool ReadFrame(LONGLONG* outSeq)
 {
-    if (!g.connected || !g.pBase || !g.pHeader || !g.pFrame) return false;
+    if (!g.connected || !g.view || !g.pHeader || !g.pFrame) return false;
 
     for (int spin = 0; spin < 4096; ++spin) {
         LONGLONG seq = g.pHeader->seq;
@@ -203,7 +204,7 @@ bool ReadFrame(LONGLONG* outSeq)
             g.frameH = h;
         }
 
-        const BYTE* pSrc = g.pBase + sizeof(vcam::VCamSectionHeader) + (SIZE_T)idx * g.pHeader->frameSize;
+        const BYTE* pSrc = (const BYTE*)g.view.Get() + sizeof(vcam::VCamSectionHeader) + (SIZE_T)idx * g.pHeader->frameSize;
         if (dstStride != srcStride) {
             for (UINT32 y = 0; y < h; ++y)
                 memcpy(g.pFrame + (SIZE_T)y * dstStride, pSrc + (SIZE_T)y * srcStride, dstStride);

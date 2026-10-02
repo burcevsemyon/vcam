@@ -8,6 +8,7 @@
 #include <new>
 #include "../Common/GUIDs.h"
 #include "../Common/SharedMemoryContract.h"
+#include "../Common/MappedViewOfFilePtr.h"
 
 static constexpr GUID KSCATEGORY_VIDEO_CAMERA =
     { 0x06990ad0, 0xc7a0, 0x11d0, { 0x8a, 0x49, 0x00, 0xA0, 0xC9, 0x22, 0x31, 0x96 } };
@@ -125,10 +126,10 @@ static int HoldWatchLoop()
         ULONGLONG now = GetTickCount64();
 
         if (hSection) {
-            void* pView = MapViewOfFile(hSection, FILE_MAP_READ, 0, 0,
-                                        sizeof(vcam::VCamSectionHeader));
-            if (pView) {
-                auto* hdr = static_cast<vcam::VCamSectionHeader*>(pView);
+            vcam::MappedViewOfFilePtr view(MapViewOfFile(hSection, FILE_MAP_READ, 0, 0,
+                                                sizeof(vcam::VCamSectionHeader)));
+            if (view) {
+                auto* hdr = view.GetAs<vcam::VCamSectionHeader>();
                 if (hdr->magic == vcam::VCamMagic) {
                     LONGLONG seq = hdr->seq;
                     if (!haveSeq || seq != lastSeq || seq < lastSeq) {
@@ -147,7 +148,6 @@ static int HoldWatchLoop()
                 else {
                     haveSeq = false; // секция невалидна — ждём seq заново
                 }
-                UnmapViewOfFile(pView);
             }
         }
 

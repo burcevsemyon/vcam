@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "SharedMemoryContract.h"
+#include "MappedViewOfFilePtr.h"
 
 // Единственный писатель в shared memory (Global\VCam.FrameBuffer.v1).
 // Публикация: seqlock, slot = (idx+1) % 8, 30 FPS pacing внутри WriteFrame/FlushLast.
@@ -42,7 +43,7 @@ private:
     HANDLE hSection_ = nullptr;
     HANDLE hReady_ = nullptr;
     PSECURITY_DESCRIPTOR pSecDesc_ = nullptr;
-    uint8_t* pBase_ = nullptr;
+    vcam::MappedViewOfFilePtr view_;
     vcam::VCamSectionHeader* pHeader_ = nullptr;
     std::vector<uint8_t> cache_;
     bool hasFrame_ = false;

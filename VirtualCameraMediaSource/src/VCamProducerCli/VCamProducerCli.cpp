@@ -14,6 +14,7 @@
 #include "Settings.h"
 #include "SettingsWatcher.h"
 #include "SharedMemoryContract.h"
+#include "MappedViewOfFilePtr.h"
 
 namespace {
 
@@ -152,15 +153,16 @@ void PrintSectionState()
         Log(L"writer section %s: not open (no producer holds it)", vcam::VCamSectionName);
         return;
     }
-    void* p = MapViewOfFile(h, FILE_MAP_READ, 0, 0, sizeof(vcam::VCamSectionHeader));
-    if (!p) {
+    void* raw = MapViewOfFile(h, FILE_MAP_READ, 0, 0, sizeof(vcam::VCamSectionHeader));
+    vcam::MappedViewOfFilePtr view(raw);
+    if (!view) {
         Log(L"writer section %s: open (MapView failed: %lu)", vcam::VCamSectionName,
             GetLastError());
         return;
     }
-    LONGLONG seq1 = reinterpret_cast<vcam::VCamSectionHeader*>(p)->seq;
+    LONGLONG seq1 = view.GetAs<vcam::VCamSectionHeader>()->seq;
     Sleep(300);
-    LONGLONG seq2 = reinterpret_cast<vcam::VCamSectionHeader*>(p)->seq;
+    LONGLONG seq2 = view.GetAs<vcam::VCamSectionHeader>()->seq;
     if (seq2 != seq1) {
         Log(L"writer section %s: open, frames are being written (seq %lld -> %lld)",
             sectionName, seq1, seq2);
@@ -168,7 +170,6 @@ void PrintSectionState()
         Log(L"writer section %s: open, no new frames in the last 300 ms (seq %lld)",
             sectionName, seq1);
     }
-    UnmapViewOfFile(p);
 }
 
 enum class Phase { Switch, Active, Fallback };

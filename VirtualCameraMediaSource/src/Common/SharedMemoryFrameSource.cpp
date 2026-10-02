@@ -118,9 +118,8 @@ HRESULT SharedMemoryFrameSource::Init()
         return S_OK;
     }
 
-    m_pBase = (BYTE*)MapViewOfFileEx(m_hSection, FILE_MAP_ALL_ACCESS, 0, 0, totalSize, nullptr);
-    if (m_pBase == nullptr) {
-        if (m_pBase) { UnmapViewOfFile(m_pBase); m_pBase = nullptr; m_pHeader = nullptr; }
+    m_view.Attach(MapViewOfFileEx(m_hSection, FILE_MAP_ALL_ACCESS, 0, 0, totalSize, nullptr));
+    if (!m_view) {
         if (m_hReadyEvent) { CloseHandle(m_hReadyEvent); m_hReadyEvent = nullptr; }
         if (m_hSection) { CloseHandle(m_hSection); m_hSection = nullptr; }
         if (pSecDesc) LocalFree(pSecDesc);
@@ -137,13 +136,13 @@ HRESULT SharedMemoryFrameSource::Init()
 
     if (pSecDesc) LocalFree(pSecDesc);
 
-    m_pHeader = reinterpret_cast<vcam::VCamSectionHeader*>(m_pBase);
+    m_pHeader = m_view.GetAs<vcam::VCamSectionHeader>();
     if (m_pHeader->magic != vcam::VCamMagic) {
         vcam::InitSectionHeader(m_pHeader);
     }
     m_pCache.reset(new (std::nothrow) BYTE[vcam::VCamFrameSize]);
     if (m_pCache == nullptr) {
-        UnmapViewOfFile(m_pBase); m_pBase = nullptr; m_pHeader = nullptr;
+        m_view.Close(); m_pHeader = nullptr;
         CloseHandle(m_hReadyEvent); m_hReadyEvent = nullptr;
         CloseHandle(m_hSection); m_hSection = nullptr;
         m_bShutDown = true;
@@ -208,7 +207,7 @@ HRESULT SharedMemoryFrameSource::AcquireFrame(BYTE* pDest, DWORD timeoutMs)
     if (offline) {
         return FallbackFrame(pDest);
     }
-    if (m_pHeader == nullptr || m_pBase == nullptr) {
+    if (m_pHeader == nullptr || !m_view) {
         return FallbackFrame(pDest);
     }
     if (hReady != nullptr) {
@@ -230,7 +229,7 @@ HRESULT SharedMemoryFrameSource::AcquireFrame(BYTE* pDest, DWORD timeoutMs)
         LONGLONG seq2 = m_pHeader->seq;
         if (seq != seq2) continue;
 
-        const BYTE* pSrc = m_pBase + sizeof(vcam::VCamSectionHeader) + (SIZE_T)idx * vcam::VCamFrameSize;
+        const BYTE* pSrc = (const BYTE*)m_view.Get() + sizeof(vcam::VCamSectionHeader) + (SIZE_T)idx * vcam::VCamFrameSize;
         vcam::CopyFrameRowwise(pDest, vcam::VCamStride, pSrc, vcam::VCamStride,
                                vcam::VCamWidth, vcam::VCamHeight, vcam::VCamPixelSize);
         if (m_pCache) {
@@ -266,7 +265,7 @@ void SharedMemoryFrameSource::Shutdown()
     if (m_bShutDown) { LeaveCriticalSection(&m_cs); return; }
     m_bShutDown = true;
     m_bInit = false;
-    if (m_pBase) { UnmapViewOfFile(m_pBase); m_pBase = nullptr; m_pHeader = nullptr; }
+    m_view.Close(); m_pHeader = nullptr;
     m_pCache.reset();
     if (m_hReadyEvent) { CloseHandle(m_hReadyEvent); m_hReadyEvent = nullptr; }
     if (m_hSection) { CloseHandle(m_hSection); m_hSection = nullptr; }

@@ -4,6 +4,7 @@
 #include <cstring>
 #include <cwchar>
 #include "../Common/SharedMemoryContract.h"
+#include "../Common/MappedViewOfFilePtr.h"
 
 #pragma comment(lib, "advapi32.lib")
 
@@ -44,7 +45,8 @@ int wmain(int argc, wchar_t* argv[])
         return 1;
     }
 
-    BYTE* pBase = (BYTE*)MapViewOfFileEx(hSection, FILE_MAP_ALL_ACCESS, 0, 0, totalSize, nullptr);
+    vcam::MappedViewOfFilePtr view(MapViewOfFileEx(hSection, FILE_MAP_ALL_ACCESS, 0, 0, totalSize, nullptr));
+    BYTE* pBase = (BYTE*)view.Get();
     if (pBase == nullptr) {
         wprintf(L"MapViewOfFileEx failed: %lu\n", GetLastError());
         CloseHandle(hReadyEvent);
@@ -135,7 +137,7 @@ int wmain(int argc, wchar_t* argv[])
     wprintf(L"Total frames written: %lu\n", frameIndex);
 
     // Cleanup
-    UnmapViewOfFile(pBase);
+    view.Close();
     CloseHandle(hReadyEvent);
     CloseHandle(hSection);
     LocalFree(pSecDesc);

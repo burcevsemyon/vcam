@@ -13,6 +13,7 @@
 #include <vector>
 #include <new>
 #include "../Common/SharedMemoryContract.h"
+#include "../Common/MappedViewOfFilePtr.h"
 
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "ole32.lib")
@@ -674,7 +675,8 @@ int wmain(int argc, wchar_t* argv[])
     }
 
     HANDLE hReadyEvent = CreateEventW(&sa, FALSE, FALSE, vcam::VCamReadyEventName);
-    BYTE* pBase = (BYTE*)MapViewOfFileEx(hSection, FILE_MAP_ALL_ACCESS, 0, 0, totalSize, nullptr);
+    vcam::MappedViewOfFilePtr view(MapViewOfFileEx(hSection, FILE_MAP_ALL_ACCESS, 0, 0, totalSize, nullptr));
+    BYTE* pBase = (BYTE*)view.Get();
 
     vcam::VCamSectionHeader* pHeader = (vcam::VCamSectionHeader*)pBase;
     pHeader->magic = vcam::VCamMagic;
@@ -721,7 +723,7 @@ int wmain(int argc, wchar_t* argv[])
     if (hDecode) { WaitForSingleObject(hDecode, 3000); CloseHandle(hDecode); }
     if (hWatcher) { WaitForSingleObject(hWatcher, 2000); CloseHandle(hWatcher); }
 
-    UnmapViewOfFile(pBase);
+    view.Close();
     CloseHandle(hReadyEvent);
     CloseHandle(hSection);
     LocalFree(pSecDesc);

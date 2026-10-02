@@ -101,8 +101,8 @@ bool FrameWriter::Open(std::wstring& err)
                       L" open=" + std::to_wstring(GetLastError()));
         }
     }
-    pBase_ = (uint8_t*)MapViewOfFileEx(hSection_, FILE_MAP_ALL_ACCESS, 0, 0, totalSize, nullptr);
-    if (!pBase_) {
+    view_.Attach(MapViewOfFileEx(hSection_, FILE_MAP_ALL_ACCESS, 0, 0, totalSize, nullptr));
+    if (!view_) {
         err = L"MapViewOfFileEx failed: " + std::to_wstring(GetLastError());
         CloseHandle(hReady_); hReady_ = nullptr;
         CloseHandle(hSection_); hSection_ = nullptr;
@@ -110,7 +110,7 @@ bool FrameWriter::Open(std::wstring& err)
         return false;
     }
 
-    pHeader_ = (vcam::VCamSectionHeader*)pBase_;
+    pHeader_ = view_.GetAs<vcam::VCamSectionHeader>();
     vcam::InitSectionHeader(pHeader_);
 
     LARGE_INTEGER start;
@@ -125,7 +125,7 @@ bool FrameWriter::Open(std::wstring& err)
 
 void FrameWriter::Close()
 {
-    if (pBase_) { UnmapViewOfFile(pBase_); pBase_ = nullptr; }
+    view_.Close();
     pHeader_ = nullptr;
     if (hReady_) { CloseHandle(hReady_); hReady_ = nullptr; }
     if (hSection_) { CloseHandle(hSection_); hSection_ = nullptr; }
@@ -136,10 +136,11 @@ void FrameWriter::Close()
 
 bool FrameWriter::PublishLocked()
 {
-    if (!open_ || !pBase_ || !pHeader_) return false;
+    if (!open_ || !view_ || !pHeader_) return false;
 
     UINT32 slot = (pHeader_->frameWriteIndex + 1) % vcam::VCamSlotCount;
-    uint8_t* dst = pBase_ + sizeof(vcam::VCamSectionHeader) + (SIZE_T)slot * vcam::VCamFrameSize;
+    uint8_t* dst = (uint8_t*)view_.Get() + sizeof(vcam::VCamSectionHeader) +
+                   (SIZE_T)slot * vcam::VCamFrameSize;
 
     _InterlockedExchangeAdd64((volatile LONGLONG*)&pHeader_->seq, 1);
     memcpy(dst, cache_.data(), vcam::VCamFrameSize);

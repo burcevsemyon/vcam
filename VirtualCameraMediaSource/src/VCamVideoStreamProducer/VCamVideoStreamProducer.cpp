@@ -15,6 +15,7 @@
 #include "Settings.h"
 #include "SettingsWatcher.h"
 #include "SharedMemoryContract.h"
+#include "MappedViewOfFilePtr.h"
 
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "version.lib")
@@ -258,15 +259,15 @@ bool IsConsumerActive()
         ATL::CHandle h(OpenFileMappingW(FILE_MAP_READ, FALSE, name));
         if (!h) continue;
         bool active = false;
-        void* p = MapViewOfFile(h, FILE_MAP_READ, 0, 0, sizeof(vcam::VCamSectionHeader));
-        if (p) {
-            auto* hdr = static_cast<vcam::VCamSectionHeader*>(p);
+        vcam::MappedViewOfFilePtr view(MapViewOfFile(h, FILE_MAP_READ, 0, 0,
+                                            sizeof(vcam::VCamSectionHeader)));
+        if (view) {
+            auto* hdr = view.GetAs<vcam::VCamSectionHeader>();
             if (hdr->magic == vcam::VCamMagic) {
                 ULONGLONG tick = hdr->readerLastActiveTick;
                 ULONGLONG now = GetTickCount64();
                 active = (tick != 0) && (now >= tick) && (now - tick) <= kConsumerStaleMs;
             }
-            UnmapViewOfFile(p);
         }
         if (active) return true;
     }
