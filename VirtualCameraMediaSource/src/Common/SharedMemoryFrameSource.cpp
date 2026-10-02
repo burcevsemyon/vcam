@@ -3,6 +3,9 @@
 #include <sddl.h>
 #include <wchar.h>
 
+#include "FrameCopy.h"
+#include "SectionHeaderInit.h"
+
 namespace {
 
 constexpr int kNamePrefixCount = 2;
@@ -105,7 +108,7 @@ HRESULT SharedMemoryFrameSource::Init()
         if (m_hSection) { CloseHandle(m_hSection); m_hSection = nullptr; }
         if (pSecDesc) LocalFree(pSecDesc);
 
-        m_pCache = new (std::nothrow) BYTE[vcam::VCamFrameSize];
+        m_pCache.reset(new (std::nothrow) BYTE[vcam::VCamFrameSize]);
         if (m_pCache == nullptr) {
             m_bShutDown = true;
             return E_OUTOFMEMORY;
@@ -122,7 +125,7 @@ HRESULT SharedMemoryFrameSource::Init()
         if (m_hSection) { CloseHandle(m_hSection); m_hSection = nullptr; }
         if (pSecDesc) LocalFree(pSecDesc);
 
-        m_pCache = new (std::nothrow) BYTE[vcam::VCamFrameSize];
+        m_pCache.reset(new (std::nothrow) BYTE[vcam::VCamFrameSize]);
         if (m_pCache == nullptr) {
             m_bShutDown = true;
             return E_OUTOFMEMORY;
@@ -136,20 +139,9 @@ HRESULT SharedMemoryFrameSource::Init()
 
     m_pHeader = reinterpret_cast<vcam::VCamSectionHeader*>(m_pBase);
     if (m_pHeader->magic != vcam::VCamMagic) {
-        m_pHeader->magic = vcam::VCamMagic;
-        m_pHeader->version = vcam::VCamVersion;
-        m_pHeader->width = vcam::VCamWidth;
-        m_pHeader->height = vcam::VCamHeight;
-        m_pHeader->stride = vcam::VCamStride;
-        m_pHeader->pixelFormat = (UINT32)vcam::VCamPixelFormat::RGB32;
-        m_pHeader->frameSize = vcam::VCamFrameSize;
-        m_pHeader->slotCount = vcam::VCamSlotCount;
-        m_pHeader->frameWriteIndex = 0;
-        m_pHeader->seq = 0;
-        m_pHeader->lastFrameTime100ns = 0;
-        m_pHeader->readerLastActiveTick = 0;
+        vcam::InitSectionHeader(m_pHeader);
     }
-    m_pCache = new (std::nothrow) BYTE[vcam::VCamFrameSize];
+    m_pCache.reset(new (std::nothrow) BYTE[vcam::VCamFrameSize]);
     if (m_pCache == nullptr) {
         UnmapViewOfFile(m_pBase); m_pBase = nullptr; m_pHeader = nullptr;
         CloseHandle(m_hReadyEvent); m_hReadyEvent = nullptr;
@@ -169,28 +161,61 @@ HRESULT SharedMemoryFrameSource::AcquireFrame(BYTE* pDest, DWORD timeoutMs)
     // Heartbeat потребителя: вызов идёт только когда живая MF-сессия тянет
     // сэмплы (включая fallback/NO SIGNAL) — хост/hold-watch видят «потребитель есть».
     TouchReader();
-    CsGuard guard(&m_cs); // сериализация параллельных клиентов (кэш + событие)
 
-    if (m_bOffline) {
-        Sleep(33);
-        return FallbackFrame(pDest);
+    // Фаза 1 (под локом): снимок режима/события/заголовка. CsGuard защищает
+    // только reader-состояние (кэш/хендлы/флаги/вью секции); seqlock-чтение
+    // кадра синхронизируется с писателем через seq в SHM (другой процесс),
+    // не через этот лок. Wait/sleep — ВНЕ лока: параллельные клиенты не
+    // сериализуются на ожидании кадра (см. фазу 2).
+    bool offline;
+    HANDLE hReady;
+    vcam::VCamSectionHeader* pHeader;
+    LONGLONG startSeq = 0;
+    {
+        CsGuard guard(&m_cs);
+        if (!m_bInit || m_bShutDown) return E_UNEXPECTED;
+        offline = m_bOffline;
+        hReady = m_hReadyEvent;
+        pHeader = m_pHeader;
+        if (!offline && hReady == nullptr && pHeader != nullptr) {
+            startSeq = pHeader->seq;
+        }
     }
 
-    if (m_hReadyEvent != nullptr) {
-        if (WaitForSingleObject(m_hReadyEvent, timeoutMs) != WAIT_OBJECT_0) {
-            return FallbackFrame(pDest);
-        }
-        ResetEvent(m_hReadyEvent);
-    } else {
+    // Фаза 2 (ВНЕ лока): ожидание свежего кадра. Событие FrameReady —
+    // auto-reset (CreateEventW(..., FALSE, FALSE, ...) у всех продьюсеров):
+    // отпускает ровно одного ожидающего на publish, паритет «один publish —
+    // один пробуждший клиент» сохраняется и без удержания лока.
+    bool waitOk = true;     // event-ветка: событие успело сработать
+    bool progressed = true; // poll-ветка: seq продвинулся
+    if (offline) {
+        Sleep(33);
+    } else if (hReady != nullptr) {
+        waitOk = (WaitForSingleObject(hReady, timeoutMs) == WAIT_OBJECT_0);
+    } else if (pHeader != nullptr) {
         // Событие недоступно — ждём продвижения seq (poll) в пределах таймаута.
-        LONGLONG startSeq = m_pHeader->seq;
         ULONGLONG deadline = GetTickCount64() + timeoutMs;
-        while (m_pHeader->seq == startSeq && GetTickCount64() < deadline) {
+        while (pHeader->seq == startSeq && GetTickCount64() < deadline) {
             Sleep(1);
         }
-        if (m_pHeader->seq == startSeq) {
-            return FallbackFrame(pDest);
-        }
+        progressed = (pHeader->seq != startSeq);
+    }
+
+    // Фаза 3 (под локом): кэш/маппинг/копирование — как и раньше, но уже без
+    // удержания лока во время ожидания.
+    CsGuard guard(&m_cs);
+    if (!m_bInit || m_bShutDown) return FallbackFrame(pDest);
+    if (offline) {
+        return FallbackFrame(pDest);
+    }
+    if (m_pHeader == nullptr || m_pBase == nullptr) {
+        return FallbackFrame(pDest);
+    }
+    if (hReady != nullptr) {
+        if (!waitOk) return FallbackFrame(pDest);
+        ResetEvent(hReady);
+    } else if (!progressed) {
+        return FallbackFrame(pDest);
     }
     for (int spin = 0; ; ++spin) {
         LONGLONG seq = m_pHeader->seq;
@@ -206,12 +231,10 @@ HRESULT SharedMemoryFrameSource::AcquireFrame(BYTE* pDest, DWORD timeoutMs)
         if (seq != seq2) continue;
 
         const BYTE* pSrc = m_pBase + sizeof(vcam::VCamSectionHeader) + (SIZE_T)idx * vcam::VCamFrameSize;
-        const DWORD rowBytes = (DWORD)(vcam::VCamWidth * vcam::VCamPixelSize);
-        for (UINT32 y = 0; y < vcam::VCamHeight; ++y) {
-            memcpy(pDest + (SIZE_T)y * vcam::VCamStride, pSrc + (SIZE_T)y * vcam::VCamStride, rowBytes);
-        }
+        vcam::CopyFrameRowwise(pDest, vcam::VCamStride, pSrc, vcam::VCamStride,
+                               vcam::VCamWidth, vcam::VCamHeight, vcam::VCamPixelSize);
         if (m_pCache) {
-            memcpy(m_pCache, pDest, vcam::VCamFrameSize);
+            memcpy(m_pCache.get(), pDest, vcam::VCamFrameSize);
             m_bHaveCache = true;
         }
         m_lastFreshMs = GetTickCount64();
@@ -230,7 +253,7 @@ HRESULT SharedMemoryFrameSource::FallbackFrame(BYTE* pDest)
     // Кэш живёт только kNoSignalAfterMs после последнего свежего кадра: пока
     // писатель в hot-switch/микро-обрыве — статика; писатель мёртв — NO SIGNAL.
     if (m_pCache && m_bHaveCache && (GetTickCount64() - m_lastFreshMs) <= kNoSignalAfterMs) {
-        memcpy(pDest, m_pCache, vcam::VCamFrameSize);
+        memcpy(pDest, m_pCache.get(), vcam::VCamFrameSize);
         return S_OK;
     }
     PaintNoSignalPattern(pDest, vcam::VCamWidth, vcam::VCamHeight, vcam::VCamStride);
@@ -244,7 +267,7 @@ void SharedMemoryFrameSource::Shutdown()
     m_bShutDown = true;
     m_bInit = false;
     if (m_pBase) { UnmapViewOfFile(m_pBase); m_pBase = nullptr; m_pHeader = nullptr; }
-    if (m_pCache) { delete[] m_pCache; m_pCache = nullptr; }
+    m_pCache.reset();
     if (m_hReadyEvent) { CloseHandle(m_hReadyEvent); m_hReadyEvent = nullptr; }
     if (m_hSection) { CloseHandle(m_hSection); m_hSection = nullptr; }
     LeaveCriticalSection(&m_cs);

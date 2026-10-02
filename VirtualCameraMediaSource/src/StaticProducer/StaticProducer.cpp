@@ -7,6 +7,7 @@
 #include <cmath>
 #include <string>
 #include <vector>
+#include <memory>
 #include <new>
 #include "../Common/SharedMemoryContract.h"
 
@@ -381,12 +382,12 @@ static DWORD WINAPI SettingsWatcherThread(LPVOID)
             continue;
         }
 
-        BYTE* tmp = new (std::nothrow) BYTE[vcam::VCamFrameSize];
+        std::unique_ptr<BYTE[]> tmp(new (std::nothrow) BYTE[vcam::VCamFrameSize]);
         if (!tmp) continue;
-        if (TryLoadIntoBuffer(s, tmp)) {
+        if (TryLoadIntoBuffer(s, tmp.get())) {
             EnterCriticalSection(&g_frameCs);
             delete[] g_pFrame;
-            g_pFrame = tmp;
+            g_pFrame = tmp.release();
             g_currentImagePath = s.imagePath;
             g_currentMode = s.mode;
             g_currentCrop = s.crop;
@@ -396,9 +397,7 @@ static DWORD WINAPI SettingsWatcherThread(LPVOID)
             wprintf(L"[settings] reloaded: %s (mode=%s)\n", g_currentImagePath.c_str(), ModeName(g_currentMode));
             fflush(stdout);
             if (modeChanged) WarnIfVideoMode(s);
-        } else {
-            delete[] tmp;
-        }
+        } // else: tmp освобождается автоматически
     }
     return 0;
 }

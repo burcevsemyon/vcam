@@ -2,6 +2,9 @@
 
 #include <sddl.h>
 
+#include "FrameCopy.h"
+#include "SectionHeaderInit.h"
+
 #pragma comment(lib, "advapi32.lib")
 
 namespace {
@@ -108,18 +111,7 @@ bool FrameWriter::Open(std::wstring& err)
     }
 
     pHeader_ = (vcam::VCamSectionHeader*)pBase_;
-    pHeader_->magic = vcam::VCamMagic;
-    pHeader_->version = vcam::VCamVersion;
-    pHeader_->width = vcam::VCamWidth;
-    pHeader_->height = vcam::VCamHeight;
-    pHeader_->stride = vcam::VCamStride;
-    pHeader_->pixelFormat = (UINT32)vcam::VCamPixelFormat::RGB32;
-    pHeader_->frameSize = vcam::VCamFrameSize;
-    pHeader_->slotCount = vcam::VCamSlotCount;
-    pHeader_->frameWriteIndex = 0;
-    pHeader_->seq = 0;
-    pHeader_->lastFrameTime100ns = 0;
-    pHeader_->readerLastActiveTick = 0;
+    vcam::InitSectionHeader(pHeader_);
 
     LARGE_INTEGER start;
     QueryPerformanceCounter(&start);
@@ -191,14 +183,8 @@ bool FrameWriter::WriteFrame(const uint8_t* bgrx, int stride)
 
     bool ok;
     EnterCriticalSection(&cs_);
-    if (stride == (int)vcam::VCamStride) {
-        memcpy(cache_.data(), bgrx, vcam::VCamFrameSize);
-    } else {
-        for (UINT32 y = 0; y < vcam::VCamHeight; y++) {
-            memcpy(cache_.data() + (SIZE_T)y * vcam::VCamStride,
-                   bgrx + (SIZE_T)y * (size_t)stride, vcam::VCamStride);
-        }
-    }
+    vcam::CopyFrameRowwise(cache_.data(), vcam::VCamStride, bgrx, (size_t)stride,
+                           vcam::VCamWidth, vcam::VCamHeight, vcam::VCamPixelSize);
     hasFrame_ = true;
     ok = PublishLocked();
     LeaveCriticalSection(&cs_);

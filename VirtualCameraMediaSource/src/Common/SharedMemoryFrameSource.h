@@ -1,6 +1,7 @@
 #pragma once
 #include <windows.h>
 #include <mfobjects.h>
+#include <memory>
 #include "SharedMemoryContract.h"
 
 class SharedMemoryFrameSource {
@@ -31,7 +32,7 @@ private:
     HANDLE m_hReadyEvent = nullptr;
     BYTE* m_pBase = nullptr;
     vcam::VCamSectionHeader* m_pHeader = nullptr;
-    BYTE* m_pCache = nullptr;
+    std::unique_ptr<BYTE[]> m_pCache; // owned
     bool m_bHaveCache = false;
     ULONGLONG m_lastFreshMs = 0; // GetTickCount64 of last fresh frame read
     bool m_bOffline = false;

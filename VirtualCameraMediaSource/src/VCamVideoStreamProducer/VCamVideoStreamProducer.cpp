@@ -285,7 +285,7 @@ void StartCameraHolder()
         return;
     }
     std::wstring cmd = L"\"" + p + L"\" add VCam hold-watch";
-    std::vector<wchar_t> buf(cmd.begin(), cmd.end()); buf.push_back(0);
+    std::vector<wchar_t> buf(cmd.begin(), cmd.end()); buf.emplace_back(0);
     STARTUPINFOW si = {}; si.cb = sizeof(si);
     si.dwFlags = STARTF_USESHOWWINDOW; si.wShowWindow = SW_HIDE;
     PROCESS_INFORMATION pi = {};
@@ -315,7 +315,7 @@ void StopCameraHolder()
     wchar_t sys[MAX_PATH] = {};
     GetSystemDirectoryW(sys, MAX_PATH);
     std::wstring cmd = std::wstring(L"\"") + sys + L"\\taskkill.exe\" /IM Registrar.exe /F";
-    std::vector<wchar_t> buf(cmd.begin(), cmd.end()); buf.push_back(0);
+    std::vector<wchar_t> buf(cmd.begin(), cmd.end()); buf.emplace_back(0);
     STARTUPINFOW si = {}; si.cb = sizeof(si);
     si.dwFlags = STARTF_USESHOWWINDOW; si.wShowWindow = SW_HIDE;
     PROCESS_INFORMATION pi = {};
@@ -391,7 +391,7 @@ int RunSchtasks(const std::wstring& args, bool elevate)
     std::wstring exe = std::wstring(sys) + L"\\schtasks.exe";
     if (!elevate) {
         std::wstring cmd = L"\"" + exe + L"\" " + args;
-        std::vector<wchar_t> buf(cmd.begin(), cmd.end()); buf.push_back(0);
+        std::vector<wchar_t> buf(cmd.begin(), cmd.end()); buf.emplace_back(0);
         STARTUPINFOW si = {}; si.cb = sizeof(si);
         si.dwFlags = STARTF_USESHOWWINDOW; si.wShowWindow = SW_HIDE;
         PROCESS_INFORMATION pi = {};

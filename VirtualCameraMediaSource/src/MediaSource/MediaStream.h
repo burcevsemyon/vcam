@@ -12,6 +12,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <deque>
+#include <memory>
 #include "SharedMemoryFrameSource.h"
 #include "AttrLogProxy.h"
 
@@ -87,18 +88,23 @@ private:
     HRESULT DeliverNextSample(IUnknown* pToken);
     // Resolves the negotiated type: SD handler current type (authoritative —
     // the frameserver proxy may set it directly) with fallback to m_selected*.
+    // The handler pointer is cached in FinalConstruct (the descriptor never
+    // changes), but the current type is re-read live on every call: external
+    // writers (proxy / direct SetCurrentMediaType on the handler) are not
+    // observable, so the resolved result itself must NOT be cached.
     void ResolveNegotiatedType(UINT32* pW, UINT32* pH, bool* pNv12) const;
 
     CMediaSource* m_pSource = nullptr;          // not owned (source owns stream)
     ATL::CComPtr<IMFMediaEventQueue> m_pEventQueue; // owned
     ATL::CComPtr<IMFStreamDescriptor> m_pStreamDescriptor; // owned
+    ATL::CComPtr<IMFMediaTypeHandler> m_pTypeHandler;      // owned (handler of m_pStreamDescriptor; fixed in FinalConstruct)
     ATL::CComPtr<IMFMediaType> m_pMediaType;          // owned (1280x720 RGB32)
     ATL::CComPtr<IMFMediaType> m_pMediaTypeNv12;      // owned (1280x720 NV12)
     ATL::CComPtr<IMFMediaType> m_pMediaType640;       // owned (640x480 RGB32)
     ATL::CComPtr<IMFAttributes> m_pStreamAttributes;  // owned
     ATL::CComPtr<CAttrLogProxy> m_pStreamAttrsProxy;  // owned (TEMP DIAGNOSTIC)
     ATL::CComPtr<IMFVideoSampleAllocator> m_pAllocator; // owned (shared cross-session allocator from SetDefaultAllocator)
-    BYTE* m_pNv12Scratch = nullptr;                  // owned, lazy (RGB32 staging buffer for NV12 conversion)
+    std::unique_ptr<BYTE[]> m_pNv12Scratch;       // owned, lazy (RGB32 staging buffer for NV12 conversion)
     UINT32 m_selectedWidth = vcam::VCamWidth;        // negotiated width
     UINT32 m_selectedHeight = vcam::VCamHeight;      // negotiated height
     bool m_selectedNv12 = false;                     // NV12 negotiated (SetMediaType / SD handler)

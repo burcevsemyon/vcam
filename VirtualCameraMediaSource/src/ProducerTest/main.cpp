@@ -7,9 +7,9 @@
 
 #pragma comment(lib, "advapi32.lib")
 
-static const wchar_t* SectionName = vcam::VCamSectionName;
-static const wchar_t* ReadyEventName = vcam::VCamReadyEventName;
-static const wchar_t* Sddl = vcam::VCamDacSddl;
+static constexpr const wchar_t* SectionName = vcam::VCamSectionName;
+static constexpr const wchar_t* ReadyEventName = vcam::VCamReadyEventName;
+static constexpr const wchar_t* Sddl = vcam::VCamDacSddl;
 
 int wmain(int argc, wchar_t* argv[])
 {

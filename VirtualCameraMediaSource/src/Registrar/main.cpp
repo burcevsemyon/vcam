@@ -9,7 +9,7 @@
 #include "../Common/GUIDs.h"
 #include "../Common/SharedMemoryContract.h"
 
-static const GUID KSCATEGORY_VIDEO_CAMERA =
+static constexpr GUID KSCATEGORY_VIDEO_CAMERA =
     { 0x06990ad0, 0xc7a0, 0x11d0, { 0x8a, 0x49, 0x00, 0xA0, 0xC9, 0x22, 0x31, 0x96 } };
 
 #pragma comment(lib, "mfplat.lib")

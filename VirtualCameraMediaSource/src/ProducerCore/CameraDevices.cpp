@@ -11,6 +11,7 @@
 #include <cwctype>
 #include <mutex>
 #include <utility>
+#include <algorithm>
 
 #include <atlbase.h>
 
@@ -67,8 +68,8 @@ bool StartsWithNoCase(const std::wstring& s, const wchar_t* prefix)
 // версиями Windows). list-devices по контракту отдаёт физические камеры.
 bool IsVirtualCamera(const CameraDeviceInfo& d)
 {
-    static const wchar_t kSymlinkPrefix[] = L"\\\\?\\swd#vcamdevapi#";
-    static const wchar_t kNamePrefix[] = L"VCam (";
+    static constexpr wchar_t kSymlinkPrefix[] = L"\\\\?\\swd#vcamdevapi#";
+    static constexpr wchar_t kNamePrefix[] = L"VCam (";
     return StartsWithNoCase(d.id, kSymlinkPrefix) || StartsWithNoCase(d.name, kNamePrefix);
 }
 
@@ -94,18 +95,20 @@ bool EnumerateRaw(std::vector<DeviceEntry>& out, bool& comHere)
         attr = nullptr;
         if (SUCCEEDED(hr)) {
             out.reserve(count);
-            for (UINT32 i = 0; i < count; i++) {
+            auto readInfo = [](IMFActivate* act) {
                 CameraDeviceInfo info;
-                info.name = PropStr(devs[i], MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME);
+                info.name = PropStr(act, MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME);
                 // id = symlink устройства. Ключ VIDCAP_GUID в SDK — это значение
                 // типа источника ({8AC3587A...}), а не атрибут symlink: GetItem по
                 // нему возвращает MF_E_ATTRIBUTENOTFOUND. Symlink лежит в
                 // VIDCAP_SYMBOLIC_LINK; VIDCAP_GUID оставляем fallback'ом.
-                info.id = PropStr(devs[i], MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK);
+                info.id = PropStr(act, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK);
                 if (info.id.empty())
-                    info.id = PropStr(devs[i], MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID);
-                out.emplace_back(std::move(info), devs[i]); // владение activate
-            }
+                    info.id = PropStr(act, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID);
+                return info;
+            };
+            for (UINT32 i = 0; i < count; i++)
+                out.emplace_back(readInfo(devs[i]), devs[i]); // владение activate
             ok = true;
         }
     }
@@ -127,14 +130,24 @@ void ReleaseAll(std::vector<DeviceEntry>& v)
 int MatchIndex(const std::vector<DeviceEntry>& devs, const std::wstring& id,
                const std::wstring& name)
 {
-    if (!id.empty())
-        for (size_t i = 0; i < devs.size(); i++)
-            if (_wcsicmp(devs[i].first.id.c_str(), id.c_str()) == 0) return (int)i;
+    auto indexOf = [&devs](auto pred) -> int {
+        auto it = std::find_if(devs.begin(), devs.end(), pred);
+        return (it == devs.end()) ? -1 : static_cast<int>(it - devs.begin());
+    };
+    if (!id.empty()) {
+        int i = indexOf([&id](const DeviceEntry& e) {
+            return _wcsicmp(e.first.id.c_str(), id.c_str()) == 0;
+        });
+        if (i >= 0) return i;
+    }
     if (!name.empty()) {
-        for (size_t i = 0; i < devs.size(); i++)
-            if (_wcsicmp(devs[i].first.name.c_str(), name.c_str()) == 0) return (int)i;
-        for (size_t i = 0; i < devs.size(); i++)
-            if (ContainsNoCase(devs[i].first.name, name)) return (int)i;
+        int i = indexOf([&name](const DeviceEntry& e) {
+            return _wcsicmp(e.first.name.c_str(), name.c_str()) == 0;
+        });
+        if (i >= 0) return i;
+        return indexOf([&name](const DeviceEntry& e) {
+            return ContainsNoCase(e.first.name, name);
+        });
     }
     return -1;
 }
@@ -152,7 +165,7 @@ std::vector<CameraDeviceInfo> EnumerateCameraDevices()
         result.reserve(devs.size());
         for (auto& e : devs) {
             if (IsVirtualCamera(e.first)) continue; // наша виртуальная — не источник
-            result.push_back(std::move(e.first));
+            result.emplace_back(std::move(e.first));
         }
     }
     ReleaseAll(devs);

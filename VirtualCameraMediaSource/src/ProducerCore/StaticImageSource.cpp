@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstring>
 
+#include "FrameCopy.h"
 #include "SharedMemoryContract.h"
 
 #pragma comment(lib, "windowscodecs.lib")
@@ -194,14 +195,8 @@ bool StaticImageSource::Render(uint8_t* bgrx, int stride, std::wstring& err)
     if (!open_) { err = L"static source is not open"; return false; }
     if (!bgrx || stride < (int)vcam::VCamStride) { err = L"invalid target buffer"; return false; }
 
-    if (stride == (int)vcam::VCamStride) {
-        memcpy(bgrx, frame_.data(), vcam::VCamFrameSize);
-    } else {
-        for (UINT32 y = 0; y < vcam::VCamHeight; y++) {
-            memcpy(bgrx + (SIZE_T)y * (size_t)stride,
-                   frame_.data() + (SIZE_T)y * vcam::VCamStride, vcam::VCamStride);
-        }
-    }
+    vcam::CopyFrameRowwise(bgrx, (size_t)stride, frame_.data(), vcam::VCamStride,
+                           vcam::VCamWidth, vcam::VCamHeight, vcam::VCamPixelSize);
     return true;
 }
 

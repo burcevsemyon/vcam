@@ -29,11 +29,12 @@ CMediaStream::~CMediaStream()
 {
     VCamDiagLog(L"Stream.~dtor");
     m_pEventQueue = nullptr;
+    m_pTypeHandler = nullptr;
     m_pStreamDescriptor = nullptr;
     m_pMediaType = nullptr;
     m_pMediaTypeNv12 = nullptr;
     m_pMediaType640 = nullptr;
-    if (m_pNv12Scratch) { delete[] m_pNv12Scratch; m_pNv12Scratch = nullptr; }
+    m_pNv12Scratch.reset(); // порядок освобождений как с raw delete[] (до attrs/allocator)
     m_pStreamAttrsProxy = nullptr;
     m_pStreamAttributes = nullptr;
     m_pAllocator = nullptr;
@@ -402,6 +403,7 @@ HRESULT CMediaStream::FinalConstruct(CMediaSource* pSource)
     if (FAILED(hr)) return hr;
     hr = pHandler->SetCurrentMediaType(m_pMediaType);
     if (FAILED(hr)) return hr;
+    m_pTypeHandler = pHandler; // fixed for the descriptor's lifetime: skips the per-frame GetMediaTypeHandler QI
     pHandler = nullptr;
 
     hr = MFCreateAttributes(&m_pStreamAttributes, 4);
@@ -669,21 +671,22 @@ void CMediaStream::ResolveNegotiatedType(UINT32* pW, UINT32* pH, bool* pNv12) co
     UINT32 h = m_selectedHeight;
     bool nv12 = m_selectedNv12;
 
-    if (m_pStreamDescriptor != nullptr) {
-        ATL::CComPtr<IMFMediaTypeHandler> pHandler;
-        if (SUCCEEDED(m_pStreamDescriptor->GetMediaTypeHandler(&pHandler)) && pHandler != nullptr) {
-            ATL::CComPtr<IMFMediaType> pCur;
-            if (SUCCEEDED(pHandler->GetCurrentMediaType(&pCur)) && pCur != nullptr) {
-                GUID sub = GUID_NULL;
-                UINT32 hw = 0, hh = 0;
-                if (SUCCEEDED(pCur->GetGUID(MF_MT_SUBTYPE, &sub)) &&
-                    SUCCEEDED(MFGetAttributeSize(pCur, MF_MT_FRAME_SIZE, &hw, &hh)) &&
-                    hw != 0 && hh != 0) {
-                    if (sub == MFVideoFormat_NV12 || sub == MFVideoFormat_RGB32) {
-                        w = hw;
-                        h = hh;
-                        nv12 = (sub == MFVideoFormat_NV12);
-                    }
+    if (m_pTypeHandler != nullptr) {
+        // Handler закэширован в FinalConstruct; текущий тип читается живьём
+        // на каждый кадр — внешние писатели (frameserver-прокси, прямой
+        // SetCurrentMediaType у handler) не уведомляют нас, поэтому
+        // результат resolve кэшировать нельзя (см. MediaStream.h).
+        ATL::CComPtr<IMFMediaType> pCur;
+        if (SUCCEEDED(m_pTypeHandler->GetCurrentMediaType(&pCur)) && pCur != nullptr) {
+            GUID sub = GUID_NULL;
+            UINT32 hw = 0, hh = 0;
+            if (SUCCEEDED(pCur->GetGUID(MF_MT_SUBTYPE, &sub)) &&
+                SUCCEEDED(MFGetAttributeSize(pCur, MF_MT_FRAME_SIZE, &hw, &hh)) &&
+                hw != 0 && hh != 0) {
+                if (sub == MFVideoFormat_NV12 || sub == MFVideoFormat_RGB32) {
+                    w = hw;
+                    h = hh;
+                    nv12 = (sub == MFVideoFormat_NV12);
                 }
             }
         }
@@ -729,7 +732,7 @@ HRESULT CMediaStream::DeliverNextSample(IUnknown* pToken)
     }
 
     EnterCriticalSection(&m_cs);
-    if (m_pNv12Scratch == nullptr) m_pNv12Scratch = new (std::nothrow) BYTE[vcam::VCamFrameSize];
+    if (m_pNv12Scratch == nullptr) m_pNv12Scratch.reset(new (std::nothrow) BYTE[vcam::VCamFrameSize]);
     LeaveCriticalSection(&m_cs);
 
     if (m_pAllocator != nullptr) {
@@ -746,8 +749,15 @@ HRESULT CMediaStream::DeliverNextSample(IUnknown* pToken)
         hr = pBuffer->Lock(&pBits, nullptr, nullptr);
         if (SUCCEEDED(hr)) {
             if (m_pNv12Scratch != nullptr) {
-                SharedMemoryFrameSource::Instance().AcquireFrame(m_pNv12Scratch, vcam::VCamReadyTimeoutMs);
-                WriteFrameData(m_pNv12Scratch, pBits, w, h, useNv12);
+                if (!useNv12 && w == vcam::VCamWidth && h == vcam::VCamHeight) {
+                    // RGB32 1280x720: буфер создан ровно под rgbBytes ==
+                    // VCamFrameSize — пишем кадр сразу в sample (без копии
+                    // scratch→sample); NV12/640-ветки идут через scratch.
+                    SharedMemoryFrameSource::Instance().AcquireFrame(pBits, vcam::VCamReadyTimeoutMs);
+                } else {
+                    SharedMemoryFrameSource::Instance().AcquireFrame(m_pNv12Scratch.get(), vcam::VCamReadyTimeoutMs);
+                    WriteFrameData(m_pNv12Scratch.get(), pBits, w, h, useNv12);
+                }
             } else {
                 RtlZeroMemory(pBits, (DWORD)(useNv12 ? nv12Bytes : rgbBytes));
             }
@@ -777,8 +787,15 @@ HRESULT CMediaStream::DeliverNextSample(IUnknown* pToken)
             const DWORD needed = useNv12 ? nv12Bytes : rgbBytes;
             VCamDiagLog(L"Stream.DeliverNextSample before AcquireFrame");
             if (m_pNv12Scratch != nullptr && maxLen >= needed) {
-                SharedMemoryFrameSource::Instance().AcquireFrame(m_pNv12Scratch, vcam::VCamReadyTimeoutMs);
-                WriteFrameData(m_pNv12Scratch, pBits, w, h, useNv12);
+                if (!useNv12 && w == vcam::VCamWidth && h == vcam::VCamHeight) {
+                    // RGB32 1280x720: maxLen >= needed == VCamFrameSize — прямая
+                    // запись кадра в буфер sample (без копии scratch→sample);
+                    // NV12/640-ветки остаются на scratch (их WriteFrameData).
+                    SharedMemoryFrameSource::Instance().AcquireFrame(pBits, vcam::VCamReadyTimeoutMs);
+                } else {
+                    SharedMemoryFrameSource::Instance().AcquireFrame(m_pNv12Scratch.get(), vcam::VCamReadyTimeoutMs);
+                    WriteFrameData(m_pNv12Scratch.get(), pBits, w, h, useNv12);
+                }
                 hr = pBuffer->SetCurrentLength(needed);
             }
             else {

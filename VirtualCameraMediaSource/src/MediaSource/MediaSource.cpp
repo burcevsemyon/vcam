@@ -16,7 +16,7 @@ extern "C" HRESULT WINAPI WindowsCreateString(PCWSTR sourceString, UINT32 length
 // MF_VIRTUALCAMERA_PROVIDE_ASSOCIATED_CAMERA_SOURCES (mfvirtualcamera.h).
 // The FrameServer reads this UINT32 and faults (RPC_E_SERVERFAULT) when it is
 // missing; this camera provides no associated camera sources, so the value is 0.
-static const GUID kVcamProvideAssociatedCameraSources =
+static constexpr GUID kVcamProvideAssociatedCameraSources =
     { 0xf0273718, 0x4a4d, 0x4ac5, { 0xa1, 0x5d, 0x30, 0x5e, 0xb5, 0xe9, 0x06, 0x67 } };
 
 // Canonical IMFMediaEventGenerator IID (local SDK value differs)

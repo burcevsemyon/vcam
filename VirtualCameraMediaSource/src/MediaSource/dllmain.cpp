@@ -191,7 +191,7 @@ STDAPI DllRegisterServer()
     // every call from an MTA client through a proxy that answers E_NOINTERFACE
     // for IMFMediaSource2 (QI fails, SetMediaType never runs, no frames).
     if (lstat == ERROR_SUCCESS) {
-        static const wchar_t kBoth[] = L"Both";
+        static constexpr wchar_t kBoth[] = L"Both";
         lstat = RegSetValueExW(hKey, L"ThreadingModel", 0, REG_SZ,
             (const BYTE*)kBoth, (DWORD)((wcslen(kBoth) + 1) * sizeof(wchar_t)));
     }
