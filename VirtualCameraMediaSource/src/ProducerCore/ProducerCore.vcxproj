@@ -44,6 +44,7 @@
     <ClCompile Include="SourceFactory.cpp" />
     <ClCompile Include="StaticImageSource.cpp" />
     <ClCompile Include="VideoFileSource.cpp" />
+    <ClCompile Include="VideoProcessorScaler.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="CameraDevices.h" />
@@ -53,6 +54,7 @@
     <ClInclude Include="SettingsWatcher.h" />
     <ClInclude Include="StaticImageSource.h" />
     <ClInclude Include="VideoFileSource.h" />
+    <ClInclude Include="VideoProcessorScaler.h" />
     <ClInclude Include="..\Common\ProducerApi.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
