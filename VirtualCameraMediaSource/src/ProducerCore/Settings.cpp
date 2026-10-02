@@ -1,6 +1,7 @@
 #include "Settings.h"
 
 #include <windows.h>
+#include <atlbase.h>
 
 #include <cstdio>
 #include <string>
@@ -29,26 +30,26 @@ std::string WideToUtf8(const std::wstring& w)
 
 bool ReadUtf8File(const std::wstring& path, std::string& out)
 {
-    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ,
+    HANDLE raw = CreateFileW(path.c_str(), GENERIC_READ,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return false;
+    if (raw == INVALID_HANDLE_VALUE) return false;
+    ATL::CHandle h(raw);
     LARGE_INTEGER sz;
-    if (!GetFileSizeEx(h, &sz) || sz.QuadPart <= 0 || sz.QuadPart > 1000000) { CloseHandle(h); return false; }
+    if (!GetFileSizeEx(h, &sz) || sz.QuadPart <= 0 || sz.QuadPart > 1000000) return false;
     out.resize((size_t)sz.QuadPart);
     DWORD read = 0;
     BOOL ok = ReadFile(h, &out[0], (DWORD)out.size(), &read, nullptr);
-    CloseHandle(h);
     return ok && read == out.size();
 }
 
 bool WriteUtf8FileNoBom(const std::wstring& path, const std::string& content)
 {
-    HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+    HANDLE raw = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
         CREATE_ALWAYS, 0, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return false;
+    if (raw == INVALID_HANDLE_VALUE) return false;
+    ATL::CHandle h(raw);
     DWORD written = 0;
     BOOL ok = WriteFile(h, content.data(), (DWORD)content.size(), &written, nullptr);
-    CloseHandle(h);
     return ok && written == content.size();
 }
 

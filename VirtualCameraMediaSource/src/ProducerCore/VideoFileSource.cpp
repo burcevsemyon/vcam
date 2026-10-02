@@ -279,17 +279,16 @@ bool VideoFileSource::Open(const SourceConfig& cfg, std::wstring& err)
     failReason_.clear();
     LeaveCriticalSection(&cs_);
 
-    stopEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    stopEvent_.Attach(CreateEventW(nullptr, TRUE, FALSE, nullptr));
     if (!stopEvent_) {
         err = L"CreateEventW failed: " + std::to_wstring(GetLastError());
         frame_.clear();
         return false;
     }
-    thread_ = CreateThread(nullptr, 0, ThreadProc, this, 0, nullptr);
+    thread_.Attach(CreateThread(nullptr, 0, ThreadProc, this, 0, nullptr));
     if (!thread_) {
         err = L"CreateThread failed: " + std::to_wstring(GetLastError());
-        CloseHandle(stopEvent_);
-        stopEvent_ = nullptr;
+        stopEvent_.Close();
         frame_.clear();
         return false;
     }
@@ -327,10 +326,9 @@ bool VideoFileSource::Shutdown(DWORD timeoutMs)
     if (thread_) {
         if (WaitForSingleObject(thread_, timeoutMs) != WAIT_OBJECT_0)
             return false;   // поток жив: ресурсы/состояние не трогаем
-        CloseHandle(thread_);
-        thread_ = nullptr;
+        thread_.Close();
     }
-    if (stopEvent_) { CloseHandle(stopEvent_); stopEvent_ = nullptr; }
+    stopEvent_.Close();
 
     EnterCriticalSection(&cs_);
     open_ = false;

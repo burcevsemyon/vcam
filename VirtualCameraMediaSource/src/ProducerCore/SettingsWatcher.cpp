@@ -1,20 +1,21 @@
 #include "SettingsWatcher.h"
 
+#include <atlbase.h>
 #include <cstring>
 
 namespace {
 
 bool ReadUtf8File(const std::wstring& path, std::string& out)
 {
-    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ,
+    HANDLE raw = CreateFileW(path.c_str(), GENERIC_READ,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return false;
+    if (raw == INVALID_HANDLE_VALUE) return false;
+    ATL::CHandle h(raw);
     LARGE_INTEGER sz;
-    if (!GetFileSizeEx(h, &sz) || sz.QuadPart <= 0 || sz.QuadPart > 1000000) { CloseHandle(h); return false; }
+    if (!GetFileSizeEx(h, &sz) || sz.QuadPart <= 0 || sz.QuadPart > 1000000) return false;
     out.resize((size_t)sz.QuadPart);
     DWORD read = 0;
     BOOL ok = ReadFile(h, &out[0], (DWORD)out.size(), &read, nullptr);
-    CloseHandle(h);
     return ok && read == out.size();
 }
 
@@ -50,12 +51,11 @@ bool SettingsWatcher::Start(const std::wstring& path, ChangeCallback cb)
     lastRaw_ = raw;
     LeaveCriticalSection(&cs_);
 
-    stopEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    stopEvent_.Attach(CreateEventW(nullptr, TRUE, FALSE, nullptr));
     if (!stopEvent_) return false;
-    thread_ = CreateThread(nullptr, 0, ThreadProc, this, 0, nullptr);
+    thread_.Attach(CreateThread(nullptr, 0, ThreadProc, this, 0, nullptr));
     if (!thread_) {
-        CloseHandle(stopEvent_);
-        stopEvent_ = nullptr;
+        stopEvent_.Close();
         return false;
     }
     return true;
@@ -66,10 +66,9 @@ void SettingsWatcher::Stop()
     if (stopEvent_) SetEvent(stopEvent_);
     if (thread_) {
         WaitForSingleObject(thread_, 2000);
-        CloseHandle(thread_);
-        thread_ = nullptr;
+        thread_.Close();
     }
-    if (stopEvent_) { CloseHandle(stopEvent_); stopEvent_ = nullptr; }
+    stopEvent_.Close();
     cb_ = nullptr;
 }
 

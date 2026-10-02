@@ -1,5 +1,6 @@
 #pragma once
 #include <windows.h>
+#include <atlbase.h>
 #include <mfobjects.h>
 #include <memory>
 #include "SharedMemoryContract.h"
@@ -29,8 +30,8 @@ private:
     CRITICAL_SECTION m_cs;
     bool m_bInit = false;
     bool m_bShutDown = false;
-    HANDLE m_hSection = nullptr;
-    HANDLE m_hReadyEvent = nullptr;
+    ATL::CHandle m_hSection;
+    ATL::CHandle m_hReadyEvent;
     vcam::MappedViewOfFilePtr m_view;
     vcam::VCamSectionHeader* m_pHeader = nullptr;
     std::unique_ptr<BYTE[]> m_pCache; // owned

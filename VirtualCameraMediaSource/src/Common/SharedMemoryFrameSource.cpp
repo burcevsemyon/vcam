@@ -88,24 +88,23 @@ HRESULT SharedMemoryFrameSource::Init()
     for (int prefix = 0; prefix < kNamePrefixCount && m_hSection == nullptr; ++prefix) {
         wchar_t sectionName[MAX_PATH] = {};
         swprintf_s(sectionName, ARRAYSIZE(sectionName), L"%s%s", kNamePrefixes[prefix], ObjectBaseName(vcam::VCamSectionName));
-        m_hSection = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, sectionName);
+        m_hSection.Attach(OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, sectionName));
         if (m_hSection == nullptr && !IsRetryableOpenError(GetLastError())) break;
     }
     for (int prefix = 0; prefix < kNamePrefixCount && m_hSection == nullptr; ++prefix) {
         wchar_t sectionName[MAX_PATH] = {};
         swprintf_s(sectionName, ARRAYSIZE(sectionName), L"%s%s", kNamePrefixes[prefix], ObjectBaseName(vcam::VCamSectionName));
-        m_hSection = CreateFileMappingW(INVALID_HANDLE_VALUE, &sa, PAGE_READWRITE,
-            (DWORD)(totalSize >> 32), (DWORD)(totalSize & 0xFFFFFFFF), sectionName);
+        m_hSection.Attach(CreateFileMappingW(INVALID_HANDLE_VALUE, &sa, PAGE_READWRITE,
+            (DWORD)(totalSize >> 32), (DWORD)(totalSize & 0xFFFFFFFF), sectionName));
         if (m_hSection == nullptr && GetLastError() != ERROR_ACCESS_DENIED) break;
     }
     for (int prefix = 0; prefix < kNamePrefixCount && m_hReadyEvent == nullptr; ++prefix) {
         wchar_t eventName[MAX_PATH] = {};
         swprintf_s(eventName, ARRAYSIZE(eventName), L"%s%s", kNamePrefixes[prefix], ObjectBaseName(vcam::VCamReadyEventName));
-        m_hReadyEvent = OpenEventW(EVENT_MODIFY_STATE | SYNCHRONIZE, FALSE, eventName);
+        m_hReadyEvent.Attach(OpenEventW(EVENT_MODIFY_STATE | SYNCHRONIZE, FALSE, eventName));
     }
     if (m_hSection == nullptr) {
-        if (m_hReadyEvent) { CloseHandle(m_hReadyEvent); m_hReadyEvent = nullptr; }
-        if (m_hSection) { CloseHandle(m_hSection); m_hSection = nullptr; }
+        m_hReadyEvent.Close();
         if (pSecDesc) LocalFree(pSecDesc);
 
         m_pCache.reset(new (std::nothrow) BYTE[vcam::VCamFrameSize]);
@@ -120,8 +119,8 @@ HRESULT SharedMemoryFrameSource::Init()
 
     m_view.Attach(MapViewOfFileEx(m_hSection, FILE_MAP_ALL_ACCESS, 0, 0, totalSize, nullptr));
     if (!m_view) {
-        if (m_hReadyEvent) { CloseHandle(m_hReadyEvent); m_hReadyEvent = nullptr; }
-        if (m_hSection) { CloseHandle(m_hSection); m_hSection = nullptr; }
+        m_hReadyEvent.Close();
+        m_hSection.Close();
         if (pSecDesc) LocalFree(pSecDesc);
 
         m_pCache.reset(new (std::nothrow) BYTE[vcam::VCamFrameSize]);
@@ -143,8 +142,8 @@ HRESULT SharedMemoryFrameSource::Init()
     m_pCache.reset(new (std::nothrow) BYTE[vcam::VCamFrameSize]);
     if (m_pCache == nullptr) {
         m_view.Close(); m_pHeader = nullptr;
-        CloseHandle(m_hReadyEvent); m_hReadyEvent = nullptr;
-        CloseHandle(m_hSection); m_hSection = nullptr;
+        m_hReadyEvent.Close();
+        m_hSection.Close();
         m_bShutDown = true;
         return E_OUTOFMEMORY;
     }
@@ -267,7 +266,7 @@ void SharedMemoryFrameSource::Shutdown()
     m_bInit = false;
     m_view.Close(); m_pHeader = nullptr;
     m_pCache.reset();
-    if (m_hReadyEvent) { CloseHandle(m_hReadyEvent); m_hReadyEvent = nullptr; }
-    if (m_hSection) { CloseHandle(m_hSection); m_hSection = nullptr; }
+    m_hReadyEvent.Close();
+    m_hSection.Close();
     LeaveCriticalSection(&m_cs);
 }

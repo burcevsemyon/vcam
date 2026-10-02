@@ -332,7 +332,7 @@ bool CameraSource::Open(const SourceConfig& cfg, std::wstring& err)
         return false;
     }
 
-    stopEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    stopEvent_.Attach(CreateEventW(nullptr, TRUE, FALSE, nullptr));
     if (!stopEvent_) {
         err = L"CreateEventW failed: " + std::to_wstring(GetLastError());
         Close();
@@ -348,7 +348,7 @@ bool CameraSource::Open(const SourceConfig& cfg, std::wstring& err)
         open_ = true;
     }
 
-    thread_ = CreateThread(nullptr, 0, ThreadProc, this, 0, nullptr);
+    thread_.Attach(CreateThread(nullptr, 0, ThreadProc, this, 0, nullptr));
     if (!thread_) {
         err = L"CreateThread failed: " + std::to_wstring(GetLastError());
         {
@@ -410,11 +410,10 @@ bool CameraSource::Shutdown(DWORD timeoutMs)
                       L" ms (reader отложен)");
             return false;
         }
-        CloseHandle(thread_);
-        thread_ = nullptr;
+        thread_.Close();
     }
 
-    if (stopEvent_) { CloseHandle(stopEvent_); stopEvent_ = nullptr; }
+    stopEvent_.Close();
     reader_ = nullptr; // release before mediaSrc_/MFShutdown (order from 884a785)
     if (mediaSrc_) mediaSrc_->Shutdown();
     mediaSrc_ = nullptr;

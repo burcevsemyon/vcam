@@ -43,8 +43,8 @@ private:
     SourceConfig cfg_;
     ATL::CComPtr<IMFSourceReader> reader_;  // создатель/владелец — Open/Close (поток хоста)
     ATL::CComPtr<IMFMediaSource> mediaSrc_; // ActivateObject; Shutdown+Release в Close
-    HANDLE thread_ = nullptr;
-    HANDLE stopEvent_ = nullptr;
+    ATL::CHandle thread_;
+    ATL::CHandle stopEvent_;
     DWORD streamIndex_ = 0;
     std::vector<uint8_t> cache_; // RGB32, capW*4 stride, верхняя строка первая
     UINT32 capW_ = 0;

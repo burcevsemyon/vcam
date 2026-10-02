@@ -503,16 +503,14 @@ void ActivateExistingInstance()
 
 int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow)
 {
-    HANDLE hInstanceMutex = CreateMutexW(nullptr, TRUE, kInstanceMutexName);
+    ATL::CHandle hInstanceMutex(CreateMutexW(nullptr, TRUE, kInstanceMutexName));
     if (!hInstanceMutex) return 1;
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         ActivateExistingInstance();
-        CloseHandle(hInstanceMutex);
         return 0;
     }
 
     if (!InitGdiplus()) {
-        CloseHandle(hInstanceMutex);
         return 1;
     }
 
@@ -525,7 +523,6 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow)
     wc.lpszClassName = kWndClass;
     if (!RegisterClassExW(&wc)) {
         ShutdownGdiplus();
-        CloseHandle(hInstanceMutex);
         return 1;
     }
 
@@ -539,7 +536,6 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow)
     if (!hwnd) {
         ShutdownGdiplus();
         ReleaseMutex(hInstanceMutex);
-        CloseHandle(hInstanceMutex);
         return 1;
     }
 
@@ -566,6 +562,5 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow)
 
     ShutdownGdiplus();
     ReleaseMutex(hInstanceMutex);
-    CloseHandle(hInstanceMutex);
     return (int)msg.wParam;
 }

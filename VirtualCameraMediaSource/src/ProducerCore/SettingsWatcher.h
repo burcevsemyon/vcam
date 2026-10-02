@@ -1,6 +1,7 @@
 #pragma once
 
 #include <windows.h>
+#include <atlbase.h>
 
 #include <functional>
 #include <string>
@@ -36,7 +37,7 @@ private:
     ChangeCallback cb_;
     Settings current_;
     bool hasCurrent_ = false;
-    HANDLE thread_ = nullptr;
-    HANDLE stopEvent_ = nullptr;
+    ATL::CHandle thread_;
+    ATL::CHandle stopEvent_;
     std::string lastRaw_;
 };

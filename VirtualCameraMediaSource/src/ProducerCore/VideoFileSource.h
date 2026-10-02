@@ -1,6 +1,7 @@
 #pragma once
 
 #include <windows.h>
+#include <atlbase.h>
 
 #include <cstdint>
 #include <string>
@@ -35,8 +36,8 @@ private:
 
     CRITICAL_SECTION cs_ = {};
     SourceConfig cfg_;
-    HANDLE thread_ = nullptr;
-    HANDLE stopEvent_ = nullptr;
+    ATL::CHandle thread_;
+    ATL::CHandle stopEvent_;
     std::vector<uint8_t> frame_;
     bool open_ = false;
     bool frameReady_ = false;

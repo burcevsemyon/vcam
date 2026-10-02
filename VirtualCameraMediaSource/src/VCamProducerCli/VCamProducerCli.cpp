@@ -90,30 +90,28 @@ std::wstring TargetLabel(const SourceConfig& c)
 // 1 = мьютекс хоста занят (хост запущен), 0 = не запущен/не создан.
 int HostRunning()
 {
-    HANDLE m = OpenMutexW(SYNCHRONIZE, FALSE, kHostMutexName);
+    ATL::CHandle m(OpenMutexW(SYNCHRONIZE, FALSE, kHostMutexName));
     if (!m) return 0;
     DWORD r = WaitForSingleObject(m, 0);
     int running = (r == WAIT_TIMEOUT) ? 1 : 0;
     if (r == WAIT_OBJECT_0 || r == WAIT_ABANDONED) ReleaseMutex(m);
-    CloseHandle(m);
     return running;
 }
 
 bool ReadSmallFile(const std::wstring& path, std::string& out)
 {
-    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ,
-                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                           nullptr, OPEN_EXISTING, 0, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return false;
+    HANDLE raw = CreateFileW(path.c_str(), GENERIC_READ,
+                             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                             nullptr, OPEN_EXISTING, 0, nullptr);
+    if (raw == INVALID_HANDLE_VALUE) return false;
+    ATL::CHandle h(raw);
     LARGE_INTEGER sz;
     if (!GetFileSizeEx(h, &sz) || sz.QuadPart <= 0 || sz.QuadPart > 1000000) {
-        CloseHandle(h);
         return false;
     }
     out.resize((size_t)sz.QuadPart);
     DWORD read = 0;
     BOOL ok = ReadFile(h, &out[0], (DWORD)out.size(), &read, nullptr);
-    CloseHandle(h);
     return ok && read == out.size();
 }
 

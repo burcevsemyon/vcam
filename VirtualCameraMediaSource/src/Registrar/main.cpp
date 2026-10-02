@@ -36,9 +36,9 @@ extern const GUID IID_IMFAsyncCallback =
 class CStartCallback : public IMFAsyncCallback
 {
 public:
-    CStartCallback() : m_ref(1), m_hr(S_OK), m_hEvent(nullptr)
+    CStartCallback() : m_ref(1), m_hr(S_OK)
     {
-        m_hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        m_hEvent.Attach(CreateEventW(nullptr, TRUE, FALSE, nullptr));
     }
 
     // IUnknown
@@ -54,7 +54,7 @@ public:
         return E_NOINTERFACE;
     }
     ULONG AddRef() override { return InterlockedIncrement((LONG*)&m_ref); }
-    ULONG Release() override { ULONG r = InterlockedDecrement((LONG*)&m_ref); if (r == 0) { if (m_hEvent) CloseHandle(m_hEvent); delete this; } return r; }
+    ULONG Release() override { ULONG r = InterlockedDecrement((LONG*)&m_ref); if (r == 0) delete this; return r; }
 
     // IMFAsyncCallback
     HRESULT GetParameters(DWORD* pdwFlags, DWORD* pdwQueue) override
@@ -71,11 +71,11 @@ public:
     }
 
     HRESULT m_hr;
-    HANDLE m_hEvent;
+    ATL::CHandle m_hEvent;
 
 private:
     volatile LONG m_ref;
-    ~CStartCallback() { if (m_hEvent) CloseHandle(m_hEvent); }
+    ~CStartCallback() = default;
 };
 
 static void PrintUsage()

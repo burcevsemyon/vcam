@@ -50,8 +50,8 @@ bool FrameWriter::Open(std::wstring& err)
 
     SIZE_T totalSize = sizeof(vcam::VCamSectionHeader) +
                        (SIZE_T)vcam::VCamSlotCount * vcam::VCamFrameSize;
-    hSection_ = CreateFileMappingW(INVALID_HANDLE_VALUE, &sa, PAGE_READWRITE,
-        (DWORD)(totalSize >> 32), (DWORD)(totalSize & 0xFFFFFFFF), vcam::VCamSectionName);
+    hSection_.Attach(CreateFileMappingW(INVALID_HANDLE_VALUE, &sa, PAGE_READWRITE,
+        (DWORD)(totalSize >> 32), (DWORD)(totalSize & 0xFFFFFFFF), vcam::VCamSectionName));
     if (hSection_) {
         openedSection_ = vcam::VCamSectionName;
     } else {
@@ -60,15 +60,15 @@ bool FrameWriter::Open(std::wstring& err)
         // СОЗДАВАТЬ Global\-объекты (ERROR_ACCESS_DENIED). Открыть уже существующую
         // секцию и создать сеансовую Local\-копию при этом можно — читатели
         // (SharedMemoryFrameSource) перебирают Global\ -> Local\ сами.
-        hSection_ = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, vcam::VCamSectionName);
+        hSection_.Attach(OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, vcam::VCamSectionName));
         if (hSection_) {
             openedSection_ = vcam::VCamSectionName;
             LogWriter(L"section: opened existing Global after create failed: " +
                       std::to_wstring(createErr));
         } else {
             const std::wstring localName = L"Local\\" + baseName;
-            hSection_ = CreateFileMappingW(INVALID_HANDLE_VALUE, &sa, PAGE_READWRITE,
-                (DWORD)(totalSize >> 32), (DWORD)(totalSize & 0xFFFFFFFF), localName.c_str());
+            hSection_.Attach(CreateFileMappingW(INVALID_HANDLE_VALUE, &sa, PAGE_READWRITE,
+                (DWORD)(totalSize >> 32), (DWORD)(totalSize & 0xFFFFFFFF), localName.c_str()));
             if (hSection_) {
                 openedSection_ = localName;
                 LogWriter(L"section: created Local fallback (Global create failed: " +
@@ -83,20 +83,20 @@ bool FrameWriter::Open(std::wstring& err)
         return false;
     }
 
-    hReady_ = CreateEventW(&sa, FALSE, FALSE, vcam::VCamReadyEventName);
-    if (hReady_ == nullptr) {
+    hReady_.Attach(CreateEventW(&sa, FALSE, FALSE, vcam::VCamReadyEventName));
+    if (!hReady_) {
         // Нет SeCreateGlobalPrivilege — пробуем открыть уже существующее событие
         // (созданное держателем/читателем); без него читатель переходит в poll-режим.
         DWORD createErr = GetLastError();
-        hReady_ = OpenEventW(EVENT_MODIFY_STATE | SYNCHRONIZE, FALSE, vcam::VCamReadyEventName);
-        if (hReady_ == nullptr && openedSection_ != vcam::VCamSectionName) {
+        hReady_.Attach(OpenEventW(EVENT_MODIFY_STATE | SYNCHRONIZE, FALSE, vcam::VCamReadyEventName));
+        if (!hReady_ && openedSection_ != vcam::VCamSectionName) {
             // Секция в Local\ — событие тоже создаём в Local\ (читатели перебирают префиксы).
             const wchar_t* pSepE = wcschr(vcam::VCamReadyEventName, L'\\');
             const std::wstring baseEvent = (pSepE != nullptr) ? pSepE + 1 : vcam::VCamReadyEventName;
             const std::wstring localEvent = L"Local\\" + baseEvent;
-            hReady_ = CreateEventW(&sa, FALSE, FALSE, localEvent.c_str());
+            hReady_.Attach(CreateEventW(&sa, FALSE, FALSE, localEvent.c_str()));
         }
-        if (hReady_ == nullptr) {
+        if (!hReady_) {
             LogWriter(L"ready event unavailable: create=" + std::to_wstring(createErr) +
                       L" open=" + std::to_wstring(GetLastError()));
         }
@@ -104,8 +104,8 @@ bool FrameWriter::Open(std::wstring& err)
     view_.Attach(MapViewOfFileEx(hSection_, FILE_MAP_ALL_ACCESS, 0, 0, totalSize, nullptr));
     if (!view_) {
         err = L"MapViewOfFileEx failed: " + std::to_wstring(GetLastError());
-        CloseHandle(hReady_); hReady_ = nullptr;
-        CloseHandle(hSection_); hSection_ = nullptr;
+        hReady_.Close();
+        hSection_.Close();
         LocalFree(pSecDesc_); pSecDesc_ = nullptr;
         return false;
     }
@@ -127,8 +127,8 @@ void FrameWriter::Close()
 {
     view_.Close();
     pHeader_ = nullptr;
-    if (hReady_) { CloseHandle(hReady_); hReady_ = nullptr; }
-    if (hSection_) { CloseHandle(hSection_); hSection_ = nullptr; }
+    hReady_.Close();
+    hSection_.Close();
     if (pSecDesc_) { LocalFree(pSecDesc_); pSecDesc_ = nullptr; }
     open_ = false;
     hasFrame_ = false;

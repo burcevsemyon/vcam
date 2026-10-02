@@ -231,8 +231,9 @@ void OpenPreview()
 
 bool IsRegistrarRunning()
 {
-    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snap == INVALID_HANDLE_VALUE) return false;
+    HANDLE raw = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (raw == INVALID_HANDLE_VALUE) return false;
+    ATL::CHandle snap(raw);
     bool found = false;
     PROCESSENTRY32W pe = {};
     pe.dwSize = sizeof(pe);
@@ -241,7 +242,6 @@ bool IsRegistrarRunning()
             if (_wcsicmp(pe.szExeFile, L"Registrar.exe") == 0) { found = true; break; }
         } while (Process32NextW(snap, &pe));
     }
-    CloseHandle(snap);
     return found;
 }
 
@@ -295,8 +295,8 @@ void StartCameraHolder()
         Log(L"[host] camera holder start failed: %s (%lu)", p.c_str(), GetLastError());
         return;
     }
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess); // detached: холдер переживает смерть хоста
+    ATL::CHandle th(pi.hThread);
+    ATL::CHandle proc(pi.hProcess); // detached: холдер переживает смерть хоста
     Log(L"[host] camera holder started: %s", p.c_str());
 }
 
@@ -325,11 +325,11 @@ void StopCameraHolder()
         Log(L"[host] taskkill(Registrar) failed: %lu", GetLastError());
         return;
     }
-    CloseHandle(pi.hThread);
-    WaitForSingleObject(pi.hProcess, 10000);
+    ATL::CHandle th(pi.hThread);
+    ATL::CHandle proc(pi.hProcess);
+    WaitForSingleObject(proc, 10000);
     DWORD rc = 1;
-    GetExitCodeProcess(pi.hProcess, &rc);
-    CloseHandle(pi.hProcess);
+    GetExitCodeProcess(proc, &rc);
     // taskkill падает с Access Denied, если холдер элевирован (legacy <=0.0.2
     // поднимал его инсталлер) — не врём в лог; апгрейд-инсталлер убивает
     // legacy-холдера в ssPostInstall, после чего хост поднимает свой.
@@ -399,11 +399,11 @@ int RunSchtasks(const std::wstring& args, bool elevate)
         if (!CreateProcessW(nullptr, buf.data(), nullptr, nullptr, FALSE,
                             CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
             return -1;
-        CloseHandle(pi.hThread);
-        WaitForSingleObject(pi.hProcess, 15000);
+        ATL::CHandle th(pi.hThread);
+        ATL::CHandle proc(pi.hProcess);
+        WaitForSingleObject(proc, 15000);
         DWORD code = (DWORD)-1;
-        GetExitCodeProcess(pi.hProcess, &code);
-        CloseHandle(pi.hProcess);
+        GetExitCodeProcess(proc, &code);
         return (int)code;
     }
     SHELLEXECUTEINFOW sei = {};
@@ -416,10 +416,10 @@ int RunSchtasks(const std::wstring& args, bool elevate)
     if (!ShellExecuteExW(&sei))
         return GetLastError() == ERROR_CANCELLED ? 1223 : -1;
     if (sei.hProcess) {
-        WaitForSingleObject(sei.hProcess, 30000);
+        ATL::CHandle proc(sei.hProcess);
+        WaitForSingleObject(proc, 30000);
         DWORD code = (DWORD)-1;
-        GetExitCodeProcess(sei.hProcess, &code);
-        CloseHandle(sei.hProcess);
+        GetExitCodeProcess(proc, &code);
         return (int)code;
     }
     return 0;
@@ -788,11 +788,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 // ожидается elevated=1 + включённая привилегия.
 void LogTokenState()
 {
-    HANDLE token = nullptr;
-    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+    HANDLE rawToken = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &rawToken)) {
         Log(L"[host] token: OpenProcessToken failed: %lu", GetLastError());
         return;
     }
+    ATL::CHandle token(rawToken);
     int elevated = 0;
     TOKEN_ELEVATION elev = {};
     DWORD sz = 0;
@@ -815,7 +816,6 @@ void LogTokenState()
             }
         }
     }
-    CloseHandle(token);
     Log(L"[host] token: elevated=%d SeCreateGlobalPrivilege=%d", elevated, priv);
 }
 

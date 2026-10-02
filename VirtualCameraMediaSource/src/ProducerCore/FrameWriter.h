@@ -1,6 +1,7 @@
 #pragma once
 
 #include <windows.h>
+#include <atlbase.h>
 
 #include <cstdint>
 #include <string>
@@ -40,8 +41,8 @@ private:
 
     CRITICAL_SECTION cs_ = {};
     bool csInit_ = false;
-    HANDLE hSection_ = nullptr;
-    HANDLE hReady_ = nullptr;
+    ATL::CHandle hSection_;
+    ATL::CHandle hReady_;
     PSECURITY_DESCRIPTOR pSecDesc_ = nullptr;
     vcam::MappedViewOfFilePtr view_;
     vcam::VCamSectionHeader* pHeader_ = nullptr;

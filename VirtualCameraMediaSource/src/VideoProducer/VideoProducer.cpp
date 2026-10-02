@@ -54,15 +54,15 @@ static std::wstring SettingsFilePath()
 
 static bool ReadUtf8File(const std::wstring& path, std::string& out)
 {
-    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ,
+    HANDLE raw = CreateFileW(path.c_str(), GENERIC_READ,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return false;
+    if (raw == INVALID_HANDLE_VALUE) return false;
+    ATL::CHandle h(raw);
     LARGE_INTEGER sz;
-    if (!GetFileSizeEx(h, &sz) || sz.QuadPart <= 0 || sz.QuadPart > 1000000) { CloseHandle(h); return false; }
+    if (!GetFileSizeEx(h, &sz) || sz.QuadPart <= 0 || sz.QuadPart > 1000000) return false;
     out.resize((size_t)sz.QuadPart);
     DWORD read = 0;
     BOOL ok = ReadFile(h, &out[0], (DWORD)out.size(), &read, nullptr);
-    CloseHandle(h);
     return ok && read == out.size();
 }
 
@@ -661,8 +661,8 @@ int wmain(int argc, wchar_t* argv[])
     SECURITY_ATTRIBUTES sa = { sizeof(sa), pSecDesc, FALSE };
 
     SIZE_T totalSize = sizeof(vcam::VCamSectionHeader) + (SIZE_T)vcam::VCamSlotCount * vcam::VCamFrameSize;
-    HANDLE hSection = CreateFileMappingW(INVALID_HANDLE_VALUE, &sa, PAGE_READWRITE,
-        (DWORD)(totalSize >> 32), (DWORD)(totalSize & 0xFFFFFFFF), vcam::VCamSectionName);
+    ATL::CHandle hSection(CreateFileMappingW(INVALID_HANDLE_VALUE, &sa, PAGE_READWRITE,
+        (DWORD)(totalSize >> 32), (DWORD)(totalSize & 0xFFFFFFFF), vcam::VCamSectionName));
 
     if (!hSection) {
         wprintf(L"CreateFileMappingW failed: %lu\n", GetLastError());
@@ -674,7 +674,7 @@ int wmain(int argc, wchar_t* argv[])
         return 1;
     }
 
-    HANDLE hReadyEvent = CreateEventW(&sa, FALSE, FALSE, vcam::VCamReadyEventName);
+    ATL::CHandle hReadyEvent(CreateEventW(&sa, FALSE, FALSE, vcam::VCamReadyEventName));
     vcam::MappedViewOfFilePtr view(MapViewOfFileEx(hSection, FILE_MAP_ALL_ACCESS, 0, 0, totalSize, nullptr));
     BYTE* pBase = (BYTE*)view.Get();
 
@@ -690,8 +690,8 @@ int wmain(int argc, wchar_t* argv[])
     pHeader->frameWriteIndex = 0;
     pHeader->seq = 0;
 
-    HANDLE hDecode = CreateThread(nullptr, 0, DecodeThread, nullptr, 0, nullptr);
-    HANDLE hWatcher = CreateThread(nullptr, 0, SettingsWatcherThread, nullptr, 0, nullptr);
+    ATL::CHandle hDecode(CreateThread(nullptr, 0, DecodeThread, nullptr, 0, nullptr));
+    ATL::CHandle hWatcher(CreateThread(nullptr, 0, SettingsWatcherThread, nullptr, 0, nullptr));
 
     wprintf(L"Video Producer running @ 30 FPS. Press Ctrl+C or Esc to stop.\n");
     fflush(stdout);
@@ -720,12 +720,14 @@ int wmain(int argc, wchar_t* argv[])
     }
 
     SetEvent(g_hStopEvent);
-    if (hDecode) { WaitForSingleObject(hDecode, 3000); CloseHandle(hDecode); }
-    if (hWatcher) { WaitForSingleObject(hWatcher, 2000); CloseHandle(hWatcher); }
+    if (hDecode) WaitForSingleObject(hDecode, 3000);
+    if (hWatcher) WaitForSingleObject(hWatcher, 2000);
+    hDecode.Close();
+    hWatcher.Close();
 
     view.Close();
-    CloseHandle(hReadyEvent);
-    CloseHandle(hSection);
+    hReadyEvent.Close();
+    hSection.Close();
     LocalFree(pSecDesc);
     CloseHandle(g_hStopEvent);
     DeleteCriticalSection(&g_frameCs);

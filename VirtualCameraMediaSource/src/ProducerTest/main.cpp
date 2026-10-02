@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <sddl.h>
+#include <atlbase.h>
 #include <cstdio>
 #include <cstring>
 #include <cwchar>
@@ -29,18 +30,17 @@ int wmain(int argc, wchar_t* argv[])
     sa.bInheritHandle = FALSE;
 
     SIZE_T totalSize = sizeof(vcam::VCamSectionHeader) + (SIZE_T)vcam::VCamSlotCount * vcam::VCamFrameSize;
-    HANDLE hSection = CreateFileMappingW(INVALID_HANDLE_VALUE, &sa, PAGE_READWRITE,
-        (DWORD)(totalSize >> 32), (DWORD)(totalSize & 0xFFFFFFFF), SectionName);
-    if (hSection == nullptr) {
+    ATL::CHandle hSection(CreateFileMappingW(INVALID_HANDLE_VALUE, &sa, PAGE_READWRITE,
+        (DWORD)(totalSize >> 32), (DWORD)(totalSize & 0xFFFFFFFF), SectionName));
+    if (!hSection) {
         wprintf(L"CreateFileMappingW failed: %lu\n", GetLastError());
         LocalFree(pSecDesc);
         return 1;
     }
 
-    HANDLE hReadyEvent = CreateEventW(&sa, FALSE, FALSE, ReadyEventName);
-    if (hReadyEvent == nullptr) {
+    ATL::CHandle hReadyEvent(CreateEventW(&sa, FALSE, FALSE, ReadyEventName));
+    if (!hReadyEvent) {
         wprintf(L"CreateEventW failed: %lu\n", GetLastError());
-        CloseHandle(hSection);
         LocalFree(pSecDesc);
         return 1;
     }
@@ -49,8 +49,6 @@ int wmain(int argc, wchar_t* argv[])
     BYTE* pBase = (BYTE*)view.Get();
     if (pBase == nullptr) {
         wprintf(L"MapViewOfFileEx failed: %lu\n", GetLastError());
-        CloseHandle(hReadyEvent);
-        CloseHandle(hSection);
         LocalFree(pSecDesc);
         return 1;
     }
@@ -138,8 +136,6 @@ int wmain(int argc, wchar_t* argv[])
 
     // Cleanup
     view.Close();
-    CloseHandle(hReadyEvent);
-    CloseHandle(hSection);
     LocalFree(pSecDesc);
     return 0;
 }
