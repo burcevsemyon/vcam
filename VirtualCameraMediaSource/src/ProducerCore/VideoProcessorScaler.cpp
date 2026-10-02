@@ -297,6 +297,9 @@ bool VideoProcessorScaler::Configure(UINT w, UINT h, const GUID& subtype)
     cfgH_ = h;
     cfgSubtype_ = subtype;
     frameIndex_ = 0; // новый стрим — таймстампы с нуля
+    LogMft(L"scaler ready: " + std::to_wstring(w) + L"x" + std::to_wstring(h) +
+           L" -> 1280x720 letterbox " + std::to_wstring(dw) + L"x" + std::to_wstring(dh) +
+           L"@" + std::to_wstring(x0) + L"," + std::to_wstring(y0));
     return true;
 }
 
