@@ -106,7 +106,17 @@ bool Mp4Recorder::Start(const std::wstring& path, std::wstring& err)
         return false;
     }
 
-    // Вход: packed RGB32 1280x720 (stride выводится = w*4, наш буфер packed).
+    // Вход: packed RGB32 1280x720. Конвертер SinkWriter→H.264 ждёт bottom-up
+    // DIB при входном типе без MF_MT_DEFAULT_STRIDE; игры со страйдом не
+    // помогают (отрицательный страйд, 2026-10-03: выход побитово тот же —
+    // rec_orient_after.mp4 остался перевёрнутым, верх синий R=2 B=243).
+    // Поэтому top-down кэш переворачиваем построчно при копии в WriteSample.
+    // Эмпирика 2026-10-03: синтетика top-down верх-красный/низ-синий →
+    // Mp4Recorder → финализация → ffmpeg rawvideo rgb24 (top-down по
+    // определению): верх СИНИЙ R=2 B=243 (rec_orient_before.mp4) — переворот
+    // доказан; после построчного флипа верх КРАСНЫЙ (rec_orient_fixed.mp4).
+    // Судья — %TEMP%\opencode\vcam-orient\orient_check.ps1 (ffmpeg + MF
+    // SourceReader с явным учётом знака выходного страйда +5120).
     ATL::CComPtr<IMFMediaType> inType;
     hr = MFCreateMediaType(&inType);
     if (SUCCEEDED(hr)) hr = inType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
@@ -194,10 +204,15 @@ bool Mp4Recorder::WriteSample(const uint8_t* bgrxTopDown)
         lastErr_ = L"record buffer lock failed: " + HrHex(hr);
         return false;
     }
-    // Эмпирика (rec_orient.mp4, 2026-10-03): входной RGB32 трактуется
-    // трактом SinkWriter→H.264 как top-down — построчный флип давал видео
-    // вверх ногами. Пишем кэш как есть (прямой memcpy всего кадра).
-    memcpy(dst, bgrxTopDown, kFrameSize);
+    // Конвертер ждёт bottom-up (см. комментарий в Start): top-down кэш
+    // переворачиваем построчно (байт в байт тот же объём, +~0.3 мс/кадр).
+    // Прямой memcpy всего кадра давал видео вверх ногами
+    // (доказано rec_orient_before.mp4, 2026-10-03).
+    for (size_t y = 0; y < kH; y++) {
+        memcpy(dst + y * kStride,
+               bgrxTopDown + (size_t)(kH - 1 - (uint32_t)y) * kStride,
+               kStride);
+    }
     buf->Unlock();
     hr = buf->SetCurrentLength((DWORD)kFrameSize);
     if (FAILED(hr)) {
