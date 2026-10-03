@@ -13,6 +13,8 @@
 #include <utility>
 #include <vector>
 
+#include "WinUtil.h"
+
 #pragma comment(lib, "strmiids.lib") // IID_IAMVideoProcAmp/IAMCameraControl
 
 // TEMP DIAGNOSTIC - определён в dllmain.cpp (в Release no-op, как весь файл).
@@ -28,12 +30,7 @@ constexpr DWORD kProxyTimeoutMs = 3000; // один синхронный выз�
 constexpr size_t kMaxLine = 256 * 1024;
 constexpr const wchar_t* kPipeName = L"\\\\.\\pipe\\VCamControl.v1";
 
-std::wstring WinErr(DWORD e)
-{
-    wchar_t buf[64];
-    swprintf(buf, 64, L"win32 %lu", (unsigned long)e);
-    return std::wstring(buf);
-}
+using vcam::WinErr;
 
 // --- Транспорт: та же семантика, что ControlClientRequest (Sub 1) ---
 

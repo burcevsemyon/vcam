@@ -27,9 +27,9 @@ constexpr DWORD kSwitchWindowMs = 5000; // окно hot-switch: FlushLast, по�
 constexpr DWORD kOpenRetryMs = 250;
 constexpr DWORD kFallbackRetryMs = 1000;
 
-HANDLE g_stop = nullptr;
-HANDLE g_dirty = nullptr;
-HANDLE g_worker = nullptr;
+ATL::CHandle g_stop;
+ATL::CHandle g_dirty;
+ATL::CHandle g_worker;
 SettingsWatcher g_watcher;
 std::wstring g_fixType; // --type: фиксирует тип на весь запуск
 std::wstring g_fixPath; // --path/--device: фиксирует путь (для camera — id) на весь запуск
@@ -453,7 +453,7 @@ DWORD WINAPI WorkerProc(LPVOID)
         Log(L"[cli] writer open failed: %s", err.c_str());
     }
 
-    HANDLE waits[2] = { g_stop, g_dirty };
+    HANDLE waits[2] = { static_cast<HANDLE>(g_stop), static_cast<HANDLE>(g_dirty) };
     bool first = true;
     bool settingsMissingLogged = false;
     DWORD timeout = 0;
@@ -483,12 +483,12 @@ DWORD WINAPI WorkerProc(LPVOID)
     return 0;
 }
 
-void OnSettingsChanged(const Settings&) { SetEvent(g_dirty); }
+void OnSettingsChanged(const Settings&) { SetEvent(static_cast<HANDLE>(g_dirty)); }
 
 BOOL WINAPI OnConsoleCtrl(DWORD type)
 {
     Log(L"[cli] stop requested (console ctrl type=%lu)", (unsigned long)type);
-    if (g_stop) SetEvent(g_stop);
+    if (static_cast<HANDLE>(g_stop) != nullptr) SetEvent(static_cast<HANDLE>(g_stop));
     return TRUE; // не умирать мгновенно: даём основному потоку закрыть writer
 }
 
@@ -865,10 +865,13 @@ int CmdRun(const std::wstring& settingsPath)
                L"producers will write the same shared memory (debug mode, continuing)");
     }
 
-    g_stop = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-    g_dirty = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-    if (!g_stop || !g_dirty) {
+    g_stop.Attach(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+    g_dirty.Attach(CreateEventW(nullptr, FALSE, FALSE, nullptr));
+    if (static_cast<HANDLE>(g_stop) == nullptr ||
+        static_cast<HANDLE>(g_dirty) == nullptr) {
         LogErr(L"[cli] CreateEvent failed: %lu", GetLastError());
+        g_dirty.Close();
+        g_stop.Close();
         return 1;
     }
     SetConsoleCtrlHandler(OnConsoleCtrl, TRUE);
@@ -886,21 +889,19 @@ int CmdRun(const std::wstring& settingsPath)
         Log(L"[cli] watching: %s", settingsPath.c_str());
     }
 
-    g_worker = CreateThread(nullptr, 0, WorkerProc, nullptr, 0, nullptr);
-    if (!g_worker) {
+    g_worker.Attach(CreateThread(nullptr, 0, WorkerProc, nullptr, 0, nullptr));
+    if (static_cast<HANDLE>(g_worker) == nullptr) {
         LogErr(L"[cli] CreateThread(worker) failed: %lu", GetLastError());
         g_watcher.Stop();
-        CloseHandle(g_dirty);
-        g_dirty = nullptr;
-        CloseHandle(g_stop);
-        g_stop = nullptr;
+        g_dirty.Close();
+        g_stop.Close();
         return 1;
     }
 
     Log(L"[cli] running @ 30 FPS - stop: Ctrl+C / Ctrl+Break / Esc");
 
     for (;;) {
-        if (WaitForSingleObject(g_stop, 50) == WAIT_OBJECT_0) break;
+        if (WaitForSingleObject(static_cast<HANDLE>(g_stop), 50) == WAIT_OBJECT_0) break;
         if (GetAsyncKeyState(VK_ESCAPE) & 0x8000) {
             Log(L"[cli] stop requested (Esc)");
             SetEvent(g_stop);
@@ -910,18 +911,14 @@ int CmdRun(const std::wstring& settingsPath)
 
     Log(L"[cli] shutting down");
     g_watcher.Stop();
-    // g_dirty/g_stop are shared with the worker: join it before CloseHandle.
-    if (WaitForSingleObject(g_worker, 8000) != WAIT_OBJECT_0) {
+    // g_dirty/g_stop are shared with the worker: join it before close.
+    if (WaitForSingleObject(static_cast<HANDLE>(g_worker), 8000) != WAIT_OBJECT_0) {
         LogErr(L"[cli] worker did not stop in 8000 ms; waiting indefinitely");
-        WaitForSingleObject(g_worker, INFINITE);
+        WaitForSingleObject(static_cast<HANDLE>(g_worker), INFINITE);
     }
-    CloseHandle(g_worker);
-    g_worker = nullptr;
-    CloseHandle(g_dirty);
-    g_dirty = nullptr;
-    HANDLE stop = g_stop;
-    g_stop = nullptr;
-    CloseHandle(stop);
+    g_worker.Close();
+    g_dirty.Close();
+    g_stop.Close();
     Log(L"[cli] exit");
     return 0;
 }

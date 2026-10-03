@@ -3,6 +3,10 @@
 // VirtualCameraMediaSource/vcam_installer.iss.
 #include <winver.h>
 
+// Иконка приложения (окно, таскбар, трей, ярлык установщика): первая иконка
+// с минимальным ID становится иконкой exe.
+1 ICON "vcam.ico"
+
 VS_VERSION_INFO VERSIONINFO
  FILEVERSION 0,0,3,0
  PRODUCTVERSION 0,0,3,0

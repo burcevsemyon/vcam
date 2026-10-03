@@ -101,6 +101,17 @@ public sealed class MainForm : Form
         StartPosition = FormStartPosition.CenterScreen;
         ClientSize = new Size(880, 656);
         Font = new Font("Segoe UI", 9f);
+        try
+        {
+            // Иконка окна = иконка exe (кладётся ApplicationIcon в csproj).
+            var exeIcon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+            if (exeIcon is not null) Icon = exeIcon;
+        }
+        catch (Exception ex)
+        {
+            // Без иконки окно тоже работает; молча не глотаем.
+            Debug.WriteLine($"MainForm: no exe icon: {ex.Message}");
+        }
 
         _preview.Location = new Point(12, 12);
         _preview.Size = new Size(856, 455); // preview box; Zoom letterboxes 16:9 on black

@@ -9,6 +9,7 @@
     <AssemblyName>VCamSettingsUi</AssemblyName>
     <RootNamespace>VCamSettingsUi</RootNamespace>
     <PlatformTarget>x64</PlatformTarget>
+    <ApplicationIcon>vcam.ico</ApplicationIcon>
   </PropertyGroup>
 
 </Project>

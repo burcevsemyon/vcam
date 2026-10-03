@@ -16,6 +16,7 @@
 #include "FrameCopy.h"
 #include "ImageLayout.h"
 #include "SharedMemoryContract.h"
+#include "WinUtil.h"
 
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "mfplat.lib")
@@ -37,12 +38,7 @@ void LogCamera(const std::wstring& msg)
     OutputDebugStringW((L"[ProducerCore:camera] " + msg + L"\n").c_str());
 }
 
-std::wstring HrHex(HRESULT hr)
-{
-    wchar_t buf[16];
-    swprintf(buf, 16, L"0x%08X", (unsigned)hr);
-    return std::wstring(buf);
-}
+using vcam::HrHex;
 
 std::wstring DescribeTarget(const SourceConfig& cfg)
 {

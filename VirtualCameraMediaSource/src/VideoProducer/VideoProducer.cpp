@@ -14,6 +14,9 @@
 #include <new>
 #include "../Common/SharedMemoryContract.h"
 #include "../Common/MappedViewOfFilePtr.h"
+#include "../Common/WinUtil.h"
+
+using vcam::HrHex;
 
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "ole32.lib")
@@ -276,13 +279,6 @@ struct VideoState {
     UINT outH = 0;
     LONG stride = 0;
 };
-
-static std::wstring HrHex(HRESULT hr)
-{
-    wchar_t buf[16];
-    swprintf(buf, 16, L"0x%08X", (unsigned)hr);
-    return std::wstring(buf);
-}
 
 static void CloseVideo(VideoState& v)
 {

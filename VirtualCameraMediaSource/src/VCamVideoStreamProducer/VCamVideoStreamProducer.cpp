@@ -43,13 +43,15 @@ constexpr DWORD kConsumerStaleMs = 3000; // heartbeat читателя стар�
 
 HINSTANCE g_inst = nullptr;
 HWND g_hwnd = nullptr;
-HANDLE g_mutex = nullptr;
-HANDLE g_stop = nullptr;
-HANDLE g_dirty = nullptr;
-HANDLE g_worker = nullptr;
+// Единый стиль: владение хендлами — ATL::CHandle (были raw HANDLE +
+// ручные CloseHandle). Сравнение через static_cast<HANDLE>, закрытие — .Close().
+ATL::CHandle g_mutex;
+ATL::CHandle g_stop;
+ATL::CHandle g_dirty;
+ATL::CHandle g_worker;
 SettingsWatcher g_watcher;
 NOTIFYICONDATAW g_nid = {};
-HANDLE g_logFile = INVALID_HANDLE_VALUE;
+ATL::CHandle g_logFile;
 
 CRITICAL_SECTION g_statusCs;
 std::wstring g_statusText = L"Нет сигнала (старт)";
@@ -96,12 +98,14 @@ void Log(const wchar_t* fmt, ...)
 
     fputws(line, stdout);
     fflush(stdout);
-    if (g_logFile != INVALID_HANDLE_VALUE) {
+    if (static_cast<HANDLE>(g_logFile) != INVALID_HANDLE_VALUE &&
+        static_cast<HANDLE>(g_logFile) != nullptr) {
         char utf8[2200];
         int n = WideCharToMultiByte(CP_UTF8, 0, line, -1, utf8, sizeof(utf8), nullptr, nullptr);
         if (n > 2) {
             DWORD written = 0;
-            WriteFile(g_logFile, utf8, (DWORD)(n - 1), &written, nullptr); // без '\0'
+            WriteFile(static_cast<HANDLE>(g_logFile), utf8, (DWORD)(n - 1), &written,
+                      nullptr); // без '\0'
         }
     }
 }
@@ -118,10 +122,11 @@ void InitLogging()
     std::wstring path = LogFilePath();
     if (!path.empty()) {
         RotateLog(path);
-        g_logFile = CreateFileW(path.c_str(), FILE_APPEND_DATA,
-                                FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
-                                FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (g_logFile == INVALID_HANDLE_VALUE) {
+        g_logFile.Attach(CreateFileW(path.c_str(), FILE_APPEND_DATA,
+                                     FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                     OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr));
+        if (static_cast<HANDLE>(g_logFile) == INVALID_HANDLE_VALUE) {
+            g_logFile.Detach();
             // каталог мог не создаться/нет прав — печать в файл просто выключена
         }
     }
@@ -769,7 +774,7 @@ DWORD WINAPI WorkerProc(LPVOID)
         SetStatus(FallbackStatus(m.writerErr));
     }
 
-    HANDLE waits[2] = { g_stop, g_dirty };
+    HANDLE waits[2] = { static_cast<HANDLE>(g_stop), static_cast<HANDLE>(g_dirty) };
     bool first = true;
     DWORD timeout = 0;
     for (;;) {
@@ -894,8 +899,8 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     LogTokenState();
 
     SetLastError(ERROR_SUCCESS);
-    g_mutex = CreateMutexW(nullptr, FALSE, kMutexName);
-    if (!g_mutex) {
+    g_mutex.Attach(CreateMutexW(nullptr, FALSE, kMutexName));
+    if (static_cast<HANDLE>(g_mutex) == nullptr) {
         Log(L"[host] CreateMutex failed: %lu", GetLastError());
         return 1;
     }
@@ -905,21 +910,20 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                     L"Хост VCam уже запущен (VCamVideoStreamProducer.exe).\n"
                     L"Используйте значок в трее рядом с часами.",
                     L"VCam Video Stream Producer", MB_OK | MB_ICONINFORMATION);
-        CloseHandle(g_mutex);
-        g_mutex = nullptr;
+        g_mutex.Close();
         return 0;
     }
-    WaitForSingleObject(g_mutex, INFINITE); // владение мьютексом = «хост запущен»
+    WaitForSingleObject(static_cast<HANDLE>(g_mutex), INFINITE); // владение мьютексом = «хост запущен»
 
-    g_stop = CreateEventW(nullptr, TRUE, FALSE, kStopEventName);
-    if (!g_stop) {
+    g_stop.Attach(CreateEventW(nullptr, TRUE, FALSE, kStopEventName));
+    if (static_cast<HANDLE>(g_stop) == nullptr) {
         Log(L"[host] CreateEvent(Stop) failed: %lu", GetLastError());
         ReleaseMutex(g_mutex);
-        CloseHandle(g_mutex);
+        g_mutex.Close();
         return 1;
     }
     if (GetLastError() == ERROR_ALREADY_EXISTS) ResetEvent(g_stop);
-    g_dirty = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    g_dirty.Attach(CreateEventW(nullptr, FALSE, FALSE, nullptr));
     InitializeCriticalSection(&g_statusCs);
 
     ApplyAutostartFromSettings();
@@ -928,7 +932,10 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = WndProc;
     wc.hInstance = g_inst;
-    wc.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    // Иконка exe (version.rc: 1 ICON). Нет ресурса — стандартный IDI_APPLICATION.
+    wc.hIcon = LoadIconW(g_inst, MAKEINTRESOURCEW(1));
+    if (!wc.hIcon) wc.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    wc.hIconSm = wc.hIcon;
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     wc.lpszClassName = kTrayClass;
     if (!RegisterClassExW(&wc)) {
@@ -939,10 +946,10 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     if (!g_hwnd) {
         Log(L"[host] CreateWindowEx failed: %lu", GetLastError());
         DeleteCriticalSection(&g_statusCs);
-        CloseHandle(g_dirty);
-        CloseHandle(g_stop);
+        g_dirty.Close();
+        g_stop.Close();
         ReleaseMutex(g_mutex);
-        CloseHandle(g_mutex);
+        g_mutex.Close();
         return 1;
     }
 
@@ -951,7 +958,8 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     g_nid.uID = 1;
     g_nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     g_nid.uCallbackMessage = WM_TRAYICON;
-    g_nid.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    g_nid.hIcon = LoadIconW(g_inst, MAKEINTRESOURCEW(1));
+    if (!g_nid.hIcon) g_nid.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
     wcsncpy_s(g_nid.szTip, kTrayTip, _TRUNCATE);
     if (!Shell_NotifyIconW(NIM_ADD, &g_nid)) Log(L"[host] Shell_NotifyIcon(add) failed");
     Log(L"[host] tray icon added");
@@ -965,8 +973,9 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         Log(L"[host] watching: %s", settingsPath.c_str());
     }
 
-    g_worker = CreateThread(nullptr, 0, WorkerProc, nullptr, 0, nullptr);
-    if (!g_worker) Log(L"[host] CreateThread(worker) failed: %lu", GetLastError());
+    g_worker.Attach(CreateThread(nullptr, 0, WorkerProc, nullptr, 0, nullptr));
+    if (static_cast<HANDLE>(g_worker) == nullptr)
+        Log(L"[host] CreateThread(worker) failed: %lu", GetLastError());
 
     for (;;) {
         MSG msg;
@@ -977,40 +986,34 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
             DispatchMessageW(&msg);
         }
         if (quit) break;
-        DWORD r = MsgWaitForMultipleObjects(1, &g_stop, FALSE, INFINITE, QS_ALLINPUT);
+        HANDLE hStop = static_cast<HANDLE>(g_stop);
+        DWORD r = MsgWaitForMultipleObjects(1, &hStop, FALSE, INFINITE, QS_ALLINPUT);
         if (r == WAIT_OBJECT_0) break;
     }
 
     Log(L"[host] shutting down");
     SetEvent(g_stop);
     g_watcher.Stop();
-    if (g_worker) {
+    if (static_cast<HANDLE>(g_worker) != nullptr) {
         // Handles/critical sections below are shared with the worker: it must
         // be joined before they are destroyed (checked wait, not best-effort).
-        if (WaitForSingleObject(g_worker, 8000) != WAIT_OBJECT_0) {
+        if (WaitForSingleObject(static_cast<HANDLE>(g_worker), 8000) != WAIT_OBJECT_0) {
             Log(L"[host] worker did not stop in 8000 ms; waiting indefinitely");
-            WaitForSingleObject(g_worker, INFINITE);
+            WaitForSingleObject(static_cast<HANDLE>(g_worker), INFINITE);
         }
-        CloseHandle(g_worker);
-        g_worker = nullptr;
+        g_worker.Close();
     }
     Shell_NotifyIconW(NIM_DELETE, &g_nid);
     Log(L"[host] tray icon removed");
     DestroyWindow(g_hwnd);
     g_hwnd = nullptr;
 
-    CloseHandle(g_dirty);
-    g_dirty = nullptr;
-    CloseHandle(g_stop);
-    g_stop = nullptr;
+    g_dirty.Close();
+    g_stop.Close();
     DeleteCriticalSection(&g_statusCs);
     ReleaseMutex(g_mutex);
-    CloseHandle(g_mutex);
-    g_mutex = nullptr;
+    g_mutex.Close();
     Log(L"[host] exit");
-    if (g_logFile != INVALID_HANDLE_VALUE) {
-        CloseHandle(g_logFile);
-        g_logFile = INVALID_HANDLE_VALUE;
-    }
+    g_logFile.Close();
     return 0;
 }
