@@ -206,6 +206,18 @@ bool ParseScaleMode(const std::wstring& m, std::wstring& out)
     return false;
 }
 
+// quality: только source | fixed720p, остальное (включая будущий cap) -> source.
+void ParseQuality(const std::wstring& q, std::wstring& out)
+{
+    out = (q == L"fixed720p") ? L"fixed720p" : L"source";
+}
+
+// camera.capture: только 720p | 1080p, остальное (включая отсутствие) -> max.
+void ParseCapture(const std::wstring& c, std::wstring& out)
+{
+    out = (c == L"720p") ? L"720p" : (c == L"1080p") ? L"1080p" : L"max";
+}
+
 void ParseNewSchema(const std::string& json, Settings& s)
 {
     size_t b = 0, e = 0;
@@ -233,7 +245,11 @@ void ParseNewSchema(const std::string& json, Settings& s)
         std::string sec = json.substr(b, e - b);
         JsonGetString(sec, "id", s.cam.id);
         JsonGetString(sec, "name", s.cam.name);
+        std::wstring cap;
+        if (JsonGetString(sec, "capture", cap)) ParseCapture(cap, s.cam.capture);
     }
+    std::wstring q;
+    if (JsonGetString(json, "quality", q)) ParseQuality(q, s.quality);
     s.autostart = JsonGetBool(json, "autostart", true);
 }
 
@@ -258,6 +274,8 @@ void ParseLegacySchema(const std::string& json, Settings& s)
     s.st.cropKeepAspect = JsonGetBool(json, "cropKeepAspect", false);
 
     s.video.path = mediaPath;
+    s.quality = L"source"; // legacy без ключа quality -> source
+    s.cam.capture = L"max"; // legacy без секции camera -> max
     s.autostart = JsonGetBool(json, "autostart", true);
 }
 
@@ -304,7 +322,9 @@ std::string Settings::Serialize() const
            ", \"cropKeepAspect\": " + (st.cropKeepAspect ? "true" : "false") + " },\n";
     out += "  \"video\": { \"path\": \"" + EscapeJson(video.path) + "\" },\n";
     out += "  \"camera\": { \"id\": \"" + EscapeJson(cam.id) +
-           "\", \"name\": \"" + EscapeJson(cam.name) + "\" },\n";
+           "\", \"name\": \"" + EscapeJson(cam.name) +
+           "\", \"capture\": \"" + EscapeJson(cam.capture) + "\" },\n";
+    out += "  \"quality\": \"" + EscapeJson(quality) + "\",\n";
     out += "  \"autostart\": ";
     out += autostart ? "true" : "false";
     out += "\n";
@@ -331,6 +351,10 @@ SourceConfig ToSourceConfig(const Settings& s, const std::wstring& type)
     } else if (type == L"camera") {
         cfg.path = s.cam.id;
         cfg.camName = s.cam.name; // scaleMode/crop не задаём — для camera не имеют смысла
+        // Нормализация как в ParseCapture: только 720p/1080p проходят, остальное -> max.
+        cfg.capture = (s.cam.capture == L"720p" || s.cam.capture == L"1080p")
+                          ? s.cam.capture
+                          : L"max";
     } else if (type == L"static") {
         cfg.path = s.st.path;
         cfg.scaleMode = s.st.scaleMode;

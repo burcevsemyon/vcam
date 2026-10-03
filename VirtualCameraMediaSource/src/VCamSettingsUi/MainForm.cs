@@ -18,6 +18,10 @@ public sealed class MainForm : Form
     private readonly Label _mediaLabel = new();
     private readonly ComboBox _mediaCombo = new();
 
+    // v2 frame quality (phase vcam-quality-v2): native source size or fixed 720p.
+    private readonly Label _qualityLabel = new();
+    private readonly ComboBox _qualityCombo = new();
+
     // Info panel replacing the picture preview in video mode.
     private readonly Panel _videoPanel = new();
     private readonly Label _videoTitle = new();
@@ -34,8 +38,13 @@ public sealed class MainForm : Form
     private readonly ComboBox _cameraCombo = new();
     private readonly Button _cameraRefresh = new();
     private readonly Label _cameraIdLabel = new();
-    private readonly Label _cameraHint = new();
+    private readonly TextBox _cameraHint = new();
     private readonly Label _cameraStatus = new();
+    // Capture height selector (camera.capture): max (default) | 720p | 1080p.
+    private readonly Label _captureLabel = new();
+    private readonly ComboBox _captureCombo = new();
+    private readonly CameraControlsPanel _controlsPanel = new();
+    private string _cameraListStatus = "";
 
     // One ComboBox row: a device (or the remembered device that is missing now).
     private sealed class CameraItem(string id, string name, bool missing)
@@ -73,6 +82,7 @@ public sealed class MainForm : Form
     private readonly Button _hostButton = new();
     private readonly Label _hostStatusLabel = new();
     private readonly System.Windows.Forms.Timer _hostTimer = new();
+    private readonly Button _helpButton = new();
     private string? _hostExe;
 
     private const string HostMutexName = "VCamVideoStreamProducer.Instance";
@@ -80,6 +90,8 @@ public sealed class MainForm : Form
 
     private static readonly string[] ModeNames = { "fit — вписать с пололосами", "cover — заполнить (обрезка)", "crop — обрезка выбранной области" };
     private static readonly string[] MediaNames = { "статичная картинка", "видеоролик", "физическая камера" };
+    private static readonly string[] QualityNames = { "натив (source)", "720p (fixed)" };
+    private static readonly string[] CaptureNames = { "Максимум", "720p", "1080p" };
 
     public MainForm()
     {
@@ -122,6 +134,19 @@ public sealed class MainForm : Form
         _mediaCombo.Items.AddRange(MediaNames);
         _mediaCombo.SelectedIndex = 0;
         _mediaCombo.Name = "mediaCombo";
+
+        // Same row as the media switch (gap between open/save buttons: x=490..680).
+        _qualityLabel.Location = new Point(494, 502);
+        _qualityLabel.Size = new Size(64, 18);
+        _qualityLabel.Text = "Качество:";
+        _qualityLabel.Name = "qualityLabel";
+
+        _qualityCombo.Location = new Point(562, 498);
+        _qualityCombo.Size = new Size(112, 28);
+        _qualityCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+        _qualityCombo.Items.AddRange(QualityNames);
+        _qualityCombo.SelectedIndex = 0;
+        _qualityCombo.Name = "qualityCombo";
 
         _mode.Location = new Point(12, 532);
         _mode.Size = new Size(250, 28);
@@ -173,12 +198,20 @@ public sealed class MainForm : Form
         _cropKeepAspect.Visible = false;
 
         _hintLabel.Location = new Point(12, 602);
-        _hintLabel.Size = new Size(856, 50);
+        _hintLabel.Size = new Size(660, 50);
         _hintLabel.ForeColor = Color.DimGray;
         _hintLabel.Text = $"Настройки: {Settings.FilePath} — хост VCam подхватит их автоматически (~1 с).";
+        _hintLabel.Name = "hintLabel";
+
+        _helpButton.Location = new Point(688, 604);
+        _helpButton.Size = new Size(180, 40);
+        _helpButton.Text = "Справка…";
+        _helpButton.Name = "helpButton";
+        _helpButton.Click += OnHelpClicked;
 
         Controls.AddRange(new Control[] { _preview, _cropView, _videoPanel, _cameraPanel, _pathLabel, _mediaLabel, _mediaCombo,
-            _mode, _openButton, _fullSizeButton, _saveButton, _hostStatusLabel, _hostButton,
+            _qualityLabel, _qualityCombo,
+            _mode, _openButton, _fullSizeButton, _saveButton, _hostStatusLabel, _hostButton, _helpButton,
             _cropXLabel, _cropX, _cropYLabel, _cropY, _cropWLabel, _cropW, _cropHLabel, _cropH, _cropKeepAspect, _hintLabel });
 
         _previewExe = FindPreviewExe();
@@ -192,6 +225,7 @@ public sealed class MainForm : Form
         _mediaCombo.SelectedIndexChanged += (_, _) => UpdateLayout();
         _cameraCombo.SelectedIndexChanged += (_, _) => UpdateCameraPanel();
         _cameraRefresh.Click += OnCameraRefreshClicked;
+        _controlsPanel.StatusMessage += UpdateCameraStatus;
 
         LoadCurrentSettings();
         UpdateLayout();
@@ -268,14 +302,36 @@ public sealed class MainForm : Form
         _cameraRefresh.Text = "Обновить список";
         _cameraRefresh.Name = "cameraRefresh";
 
-        _cameraIdLabel.Location = new Point(16, 94);
-        _cameraIdLabel.Size = new Size(820, 42);
+        _captureLabel.Location = new Point(16, 94);
+        _captureLabel.Size = new Size(62, 18);
+        _captureLabel.Text = "Захват:";
+        _captureLabel.Name = "captureLabel";
+
+        _captureCombo.Location = new Point(80, 90);
+        _captureCombo.Size = new Size(200, 28);
+        _captureCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+        _captureCombo.Items.AddRange(CaptureNames);
+        _captureCombo.SelectedIndex = 0;
+        _captureCombo.Name = "captureCombo";
+
+        _cameraIdLabel.Location = new Point(16, 124);
+        _cameraIdLabel.Size = new Size(820, 20);
         _cameraIdLabel.AutoEllipsis = true;
         _cameraIdLabel.ForeColor = Color.DimGray;
         _cameraIdLabel.Name = "cameraIdLabel";
 
-        _cameraHint.Location = new Point(16, 146);
-        _cameraHint.Size = new Size(820, 172);
+        // Live camera knobs (left) + hint/status column (right). The hint keeps
+        // its full text — TextBox with scrolling instead of a clipped Label.
+        _controlsPanel.Location = new Point(16, 150);
+        _controlsPanel.Size = new Size(524, 270);
+
+        _cameraHint.Location = new Point(548, 150);
+        _cameraHint.Size = new Size(292, 160);
+        _cameraHint.Multiline = true;
+        _cameraHint.ReadOnly = true;
+        _cameraHint.ScrollBars = ScrollBars.Vertical;
+        _cameraHint.BorderStyle = BorderStyle.None;
+        _cameraHint.BackColor = Color.White;
         _cameraHint.ForeColor = Color.DimGray;
         _cameraHint.Name = "cameraHint";
         _cameraHint.Text =
@@ -287,13 +343,14 @@ public sealed class MainForm : Form
             "Устройство с пометкой «(недоступно)» — сохранённый выбор, которого сейчас нет в системе:\r\n" +
             "его id сохраняется, пока вы не выберете другую камеру.";
 
-        _cameraStatus.Location = new Point(16, 336);
-        _cameraStatus.Size = new Size(820, 60);
+        _cameraStatus.Location = new Point(548, 316);
+        _cameraStatus.Size = new Size(292, 104);
         _cameraStatus.ForeColor = Color.DimGray;
         _cameraStatus.Name = "cameraStatus";
 
         _cameraPanel.Controls.AddRange(new Control[]
-            { _cameraTitle, _cameraDevLabel, _cameraCombo, _cameraRefresh, _cameraIdLabel, _cameraHint, _cameraStatus });
+            { _cameraTitle, _cameraDevLabel, _cameraCombo, _cameraRefresh, _captureLabel, _captureCombo,
+              _cameraIdLabel, _controlsPanel, _cameraHint, _cameraStatus });
     }
 
     private static void PlaceCropField(Label label, NumericUpDown input, int x, int y, string text)
@@ -461,6 +518,13 @@ public sealed class MainForm : Form
         _videoPath = s.VideoPath; // set before the combo: switching fires UpdateLayout
         _cameraWishId = s.CameraId;   // remembered device; applied when the list loads
         _cameraWishName = s.CameraName;
+        _captureCombo.SelectedIndex = s.Capture switch
+        {
+            CaptureMode.P720 => 1,
+            CaptureMode.P1080 => 2,
+            _ => 0,
+        };
+        _qualityCombo.SelectedIndex = s.Quality == Quality.Fixed720p ? 1 : 0;
         _mediaCombo.SelectedIndex = s.SourceType switch
         {
             SourceType.Video => 1,
@@ -488,6 +552,16 @@ public sealed class MainForm : Form
         1 => SourceType.Video,
         2 => SourceType.Camera,
         _ => SourceType.Static,
+    };
+
+    private Quality CurrentQuality => _qualityCombo.SelectedIndex == 1 ? Quality.Fixed720p : Quality.Source;
+
+    // DropDownList => index always 0..2; anything unexpected maps to Max.
+    private CaptureMode CurrentCapture => _captureCombo.SelectedIndex switch
+    {
+        1 => CaptureMode.P720,
+        2 => CaptureMode.P1080,
+        _ => CaptureMode.Max,
     };
 
     // Single source of truth for control visibility (media mode x scale mode).
@@ -621,7 +695,8 @@ public sealed class MainForm : Form
         }
 
         FillCameraCombo();
-        _cameraStatus.Text = status;
+        _cameraListStatus = status;
+        UpdateCameraStatus(null);
         UpdateCameraPanel();
     }
 
@@ -675,6 +750,20 @@ public sealed class MainForm : Form
             : item.Missing
                 ? $"ID: {item.Id}  — устройство сейчас недоступно, выбор сохранён."
                 : $"ID: {item.Id}";
+    }
+
+    // Device list status + quiet knob errors from the controls panel.
+    private void UpdateCameraStatus(string? extra)
+    {
+        _cameraStatus.Text = string.IsNullOrEmpty(extra)
+            ? _cameraListStatus
+            : _cameraListStatus + "\r\n" + extra;
+    }
+
+    private void OnHelpClicked(object? sender, EventArgs e)
+    {
+        using var help = new HelpForm();
+        help.ShowDialog(this);
     }
 
     private void OnCameraRefreshClicked(object? sender, EventArgs e)
@@ -855,6 +944,7 @@ public sealed class MainForm : Form
 
             settings.VideoPath = _videoPath;
             settings.SourceType = SourceType.Video;
+            settings.Quality = CurrentQuality;
             TrySave(settings,
                 $"Сохранено: {Settings.FilePath} — хост подхватит source.type/video.path (~1 с).");
             return;
@@ -865,7 +955,9 @@ public sealed class MainForm : Form
             var cam = _cameraCombo.SelectedItem as CameraItem;
             settings.CameraId = cam?.Id ?? "";
             settings.CameraName = cam?.Name ?? "";
+            settings.Capture = CurrentCapture;
             settings.SourceType = SourceType.Camera;
+            settings.Quality = CurrentQuality;
             if (cam is null)
             {
                 TrySave(settings,
@@ -899,6 +991,7 @@ public sealed class MainForm : Form
             settings.CropKeepAspect = _cropKeepAspect.Checked;
         }
         settings.SourceType = SourceType.Static;
+        settings.Quality = CurrentQuality;
 
         TrySave(settings,
             $"Сохранено: {Settings.FilePath} — хост подхватит source.type/static (~1 с).");

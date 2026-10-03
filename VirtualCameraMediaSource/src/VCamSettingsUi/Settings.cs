@@ -11,7 +11,9 @@ namespace VCamSettingsUi;
 //                 "cropX": int, "cropY": int, "cropW": int, "cropH": int,
 //                 "cropKeepAspect": bool },
 //     "video":  { "path": "..." },
-//     "camera": { "id": "<MF symbolic link>", "name": "<friendly name>" },
+//     "camera": { "id": "<MF symbolic link>", "name": "<friendly name>",
+///                "capture": "max" | "720p" | "1080p" },
+//     "quality": "source" | "fixed720p",
 //     "autostart": bool }
 // Empty camera section (id and name both "") -> host shows NO SIGNAL until a
 // device is chosen. Load also accepts the legacy flat format
@@ -32,6 +34,25 @@ public enum SourceType
     Static,
     Video,
     Camera,
+}
+
+// v2 frame quality (phase vcam-quality-v2): Source = native size of the
+// active source (default; legacy files without the key migrate to this),
+// Fixed720p = v2 mirrors 720p (ladder only downwards).
+public enum Quality
+{
+    Source,
+    Fixed720p,
+}
+
+// Physical capture height (phase vcam-camera-capture-size): Max = best
+// within the native cap (default; legacy files without the key migrate to
+// this), P720/P1080 = prefer a native mode of that height (nearest on miss).
+public enum CaptureMode
+{
+    Max,
+    P720,
+    P1080,
 }
 
 public sealed class Settings
@@ -56,6 +77,14 @@ public sealed class Settings
 
     // Section "source".
     public SourceType SourceType { get; set; } = SourceType.Static;
+
+    // Root "quality" (v2): mirrors Settings::ParseQuality on the C++ side —
+    // only "fixed720p" passes, anything else (incl. missing) is Source.
+    public Quality Quality { get; set; } = Quality.Source;
+
+    // Section "camera" capture: mirrors Settings::ParseCapture on the C++ side —
+    // only "720p"/"1080p" pass, anything else (incl. missing) is Max.
+    public CaptureMode Capture { get; set; } = CaptureMode.Max;
 
     // Root: single source of truth for the HKCU Run entry (host + UI).
     public bool Autostart { get; set; } = true;
@@ -123,7 +152,11 @@ public sealed class Settings
                 {
                     s.CameraId = GetString(cm, "id");
                     s.CameraName = GetString(cm, "name");
+                    s.Capture = ParseCapture(GetString(cm, "capture"));
                 }
+
+                if (root.TryGetProperty("quality", out var q) && q.ValueKind == JsonValueKind.String)
+                    s.Quality = ParseQuality(q.GetString() ?? "");
 
                 if (root.TryGetProperty("autostart", out var au))
                     s.Autostart = au.ValueKind != JsonValueKind.False;
@@ -195,7 +228,14 @@ public sealed class Settings
             {
                 ["id"] = CameraId,
                 ["name"] = CameraName,
+                ["capture"] = Capture switch
+                {
+                    CaptureMode.P720 => "720p",
+                    CaptureMode.P1080 => "1080p",
+                    _ => "max",
+                },
             },
+            ["quality"] = Quality == Quality.Fixed720p ? "fixed720p" : "source",
             ["autostart"] = Autostart,
         };
 
@@ -222,4 +262,17 @@ public sealed class Settings
         string.Equals(mode, "cover", StringComparison.OrdinalIgnoreCase) ? ScaleMode.Cover
         : string.Equals(mode, "crop", StringComparison.OrdinalIgnoreCase) ? ScaleMode.Crop
         : ScaleMode.Fit;
+
+    // Mirrors the C++ ParseQuality exactly: only "fixed720p" passes (ordinal),
+    // everything else (missing/garbage/future tokens) is Source.
+    private static Quality ParseQuality(string quality) =>
+        string.Equals(quality, "fixed720p", StringComparison.Ordinal) ? Quality.Fixed720p
+        : Quality.Source;
+
+    // Mirrors the C++ ParseCapture exactly: only "720p"/"1080p" pass (ordinal),
+    // everything else (missing/garbage/future tokens) is Max.
+    private static CaptureMode ParseCapture(string capture) =>
+        string.Equals(capture, "720p", StringComparison.Ordinal) ? CaptureMode.P720
+        : string.Equals(capture, "1080p", StringComparison.Ordinal) ? CaptureMode.P1080
+        : CaptureMode.Max;
 }

@@ -58,19 +58,29 @@ struct CamNativeType {
     UINT32 h = 0;
 };
 
-// Близость нативного типа к 1280x720: аспект 16:9 -> 0, затем площадь.
-int64_t NativeScore(const CamNativeType& c)
+// Классификация субтипа для NV12-first порядка. Выходной субтип — только
+// NV12 (натив, без конвертера) либо RGB32 (натив или поверх через video
+// processing); MJPG выходом НЕ бывает. ARGB32 — тот же layout, что RGB32.
+vcam::camsource::CamSub ClassifySub(const GUID& sub)
 {
-    int64_t aspectDiff = llabs((int64_t)c.w * 720 - (int64_t)c.h * 1280);
-    int64_t areaDiff = llabs((int64_t)c.w * c.h - 1280LL * 720);
-    return aspectDiff * 4 + areaDiff / 100;
+    if (sub == MFVideoFormat_NV12) return vcam::camsource::CamSub::NV12;
+    if (sub == MFVideoFormat_RGB32 || sub == MFVideoFormat_ARGB32)
+        return vcam::camsource::CamSub::RGB32;
+    if (sub == MFVideoFormat_MJPG) return vcam::camsource::CamSub::Mjpg;
+    return vcam::camsource::CamSub::Other;
 }
 
-// Переговоры о выходе RGB32: сначала 1280x720@30, затем перебор нативных
-// типов (предпочесть RGB32 ближайший к 1280x720), затем RGB32 поверх нативных
-// размеров (NV12/YUY2/MJPG конвертирует video processing).
-bool ConfigureCameraReader(IMFSourceReader* rdr, DWORD& outStream, UINT32& outW,
-                           UINT32& outH, LONG& outStride, std::wstring& err)
+// Переговоры: Phase A — НАТИВ NV12 целевого размера в score-порядке
+// (выходной субтип NV12, без конвертера); Phase B — старый RGB32-путь 1:1
+// (score-порядок, RGB32-натив напрямую, остальное — RGB32 поверх через video
+// processing; размеры MJPG оставлены как в старом пути — выход всё равно
+// RGB32, своего JPEG-декодера у нас нет, конвертер внутри SourceReader);
+// Phase C — запасные штатные 1280x720 (совместимость).
+// MJPG выходным субтипом НЕ бывает (только NV12/RGB32); порядок Phase B
+// без NV12-кандидатов = старому порядку побайтово (та же stable_sort +
+// want-логика). Score/TargetHeight — из vcam::camsource (header).
+bool ConfigureCameraReader(IMFSourceReader* rdr, UINT32 targetH, DWORD& outStream, UINT32& outW,
+                           UINT32& outH, LONG& outStride, GUID& outSub, std::wstring& err)
 {
     DWORD vid = MAXDWORD;
     for (DWORD i = 0; i < 128; i++) {
@@ -109,31 +119,46 @@ bool ConfigureCameraReader(IMFSourceReader* rdr, DWORD& outStream, UINT32& outW,
         return rdr->SetCurrentMediaType(vid, nullptr, p);
     };
 
-    HRESULT hr = trySet(MFVideoFormat_RGB32, vcam::VCamWidth, vcam::VCamHeight, true);
-    if (FAILED(hr)) hr = trySet(MFVideoFormat_RGB32, vcam::VCamWidth, vcam::VCamHeight, false);
-
-    if (FAILED(hr) && !natives.empty()) {
-        std::stable_sort(natives.begin(), natives.end(),
-                         [](const CamNativeType& a, const CamNativeType& b) {
-                             return NativeScore(a) < NativeScore(b);
-                         });
-        // 1) нативные уже в RGB32 — своим размером
-        for (const CamNativeType& n : natives) {
-            if (n.sub != MFVideoFormat_RGB32) continue;
-            hr = trySet(n.sub, n.w, n.h, true);
-            if (FAILED(hr)) hr = trySet(n.sub, n.w, n.h, false);
+    HRESULT hr = E_FAIL;
+    if (!natives.empty()) {
+        // Score-порядок один для обеих фаз (стабильный; равные — входным
+        // порядком драйвера). Делим с .h-тестами через те же helpers.
+        std::vector<vcam::camsource::CamTry> tries;
+        tries.reserve(natives.size());
+        for (const CamNativeType& n : natives)
+            tries.push_back({ ClassifySub(n.sub), n.w, n.h });
+        const std::vector<size_t> sorted =
+            vcam::camsource::SortIndicesByScore(tries, targetH);
+        const std::vector<size_t> nv12 =
+            vcam::camsource::Nv12IndicesInOrder(tries, sorted);
+        // Phase A: NV12-натив (без конвертера). Один размер важнее субтипа
+        // внутри NV12-класса — порядок уже score.
+        for (size_t k : nv12) {
+            const CamNativeType& n = natives[k];
+            hr = trySet(MFVideoFormat_NV12, n.w, n.h, true);
+            if (FAILED(hr)) hr = trySet(MFVideoFormat_NV12, n.w, n.h, false);
             if (SUCCEEDED(hr)) break;
         }
-        // 2) RGB32 поверх нативных размеров (video processing конвертирует)
+        // Phase B: старый RGB32-путь 1:1 (свой размер важнее субтипа).
+        // RGB32-натив — напрямую, остальное (NV12/YUY2/MJPG-размеры) — RGB32
+        // поверх через video processing. Раньше любой RGB32 (хоть 640x480)
+        // побеждал крупный MJPG и конвертер не получал шанса — Brio застревала
+        // на 640x480 (теперь Phase A забирает NV12-1080p раньше).
         if (FAILED(hr)) {
-            for (const CamNativeType& n : natives) {
-                hr = trySet(MFVideoFormat_RGB32, n.w, n.h, true);
-                if (FAILED(hr)) hr = trySet(MFVideoFormat_RGB32, n.w, n.h, false);
+            for (size_t k : sorted) {
+                const CamNativeType& n = natives[k];
+                const GUID& want = (n.sub == MFVideoFormat_RGB32)
+                    ? n.sub : MFVideoFormat_RGB32;
+                hr = trySet(want, n.w, n.h, true);
+                if (FAILED(hr)) hr = trySet(want, n.w, n.h, false);
                 if (SUCCEEDED(hr)) break;
             }
         }
     }
-    if (FAILED(hr)) { err = L"камера не даёт RGB32: " + HrHex(hr); return false; }
+    // 3) запасные штатные 1280x720 (совместимость)
+    if (FAILED(hr)) hr = trySet(MFVideoFormat_RGB32, vcam::VCamWidth, vcam::VCamHeight, true);
+    if (FAILED(hr)) hr = trySet(MFVideoFormat_RGB32, vcam::VCamWidth, vcam::VCamHeight, false);
+    if (FAILED(hr)) { err = L"камера не даёт кадр (NV12/RGB32): " + HrHex(hr); return false; }
 
     ATL::CComPtr<IMFMediaType> cur;
     HRESULT hc = rdr->GetCurrentMediaType(vid, &cur);
@@ -149,16 +174,18 @@ bool ConfigureCameraReader(IMFSourceReader* rdr, DWORD& outStream, UINT32& outW,
     UINT32 w = (UINT32)(fs >> 32);
     UINT32 h = (UINT32)(fs & 0xFFFFFFFFu);
     if (w == 0 || h == 0) { err = L"нулевой размер кадра на выходе"; return false; }
-    if (sub != MFVideoFormat_RGB32 && sub != MFVideoFormat_ARGB32) {
-        err = L"выход не RGB32 (конвертация недоступна)";
+    const bool isNv12 = (sub == MFVideoFormat_NV12);
+    if (!isNv12 && sub != MFVideoFormat_RGB32 && sub != MFVideoFormat_ARGB32) {
+        err = L"выход не NV12/RGB32 (субтип без поддержки)";
         return false;
     }
-    if (stride == 0) stride = (LONG)(w * 4);
+    if (stride == 0) stride = isNv12 ? (LONG)w : (LONG)(w * 4);
 
     outStream = vid;
     outW = w;
     outH = h;
     outStride = stride;
+    outSub = sub;
     return true;
 }
 
@@ -168,10 +195,10 @@ bool ConfigureCameraReader(IMFSourceReader* rdr, DWORD& outStream, UINT32& outW,
 // Путь открытия: IMFActivate::ActivateObject -> MFCreateSourceReaderFromMediaSource.
 // MFCreateSourceReaderFromURL(symlink) на этом стенде даёт 0x80070002
 // (ERROR_FILE_NOT_FOUND) — диагностика, спека неточна.
-bool OpenCameraReader(IMFActivate* act, ATL::CComPtr<IMFSourceReader>& out,
+bool OpenCameraReader(IMFActivate* act, UINT32 targetH, ATL::CComPtr<IMFSourceReader>& out,
                       ATL::CComPtr<IMFMediaSource>& outSrc,
                       DWORD& outStream, UINT32& outW, UINT32& outH, LONG& outStride,
-                      std::wstring& err)
+                      GUID& outSub, std::wstring& err)
 {
     struct Pass { bool adv; bool vp; const wchar_t* name; };
     const Pass passes[] = {
@@ -215,14 +242,16 @@ bool OpenCameraReader(IMFActivate* act, ATL::CComPtr<IMFSourceReader>& out,
         DWORD st = 0;
         UINT32 w = 0, h = 0;
         LONG stride = 0;
+        GUID sub = GUID_NULL;
         std::wstring cerr;
-        if (ConfigureCameraReader(rdr, st, w, h, stride, cerr)) {
+        if (ConfigureCameraReader(rdr, targetH, st, w, h, stride, sub, cerr)) {
             out = std::move(rdr);
             outSrc = std::move(msrc);
             outStream = st;
             outW = w;
             outH = h;
             outStride = stride;
+            outSub = sub;
             LogCamera(std::wstring(L"reader mode: ") + p.name);
             return true;
         }
@@ -309,7 +338,10 @@ bool CameraSource::Open(const SourceConfig& cfg, std::wstring& err)
     DWORD stream = 0;
     UINT32 w = 0, h = 0;
     LONG stride = 0;
-    bool readerOk = OpenCameraReader(act, rdr, msrc, stream, w, h, stride, err);
+    GUID outSub = GUID_NULL;
+    const UINT32 captureH = vcam::camsource::CaptureTargetHeightFor(cfg.capture);
+    bool readerOk = OpenCameraReader(act, captureH, rdr, msrc, stream, w, h, stride,
+                                     outSub, err);
     act = nullptr;
     if (!readerOk) {
         Close(); // парный MFShutdown/CoUninitialize
@@ -321,6 +353,8 @@ bool CameraSource::Open(const SourceConfig& cfg, std::wstring& err)
     capW_ = w;
     capH_ = h;
     capStride_ = stride;
+    capSub_ = outSub;
+    capIsNv12_ = (outSub == MFVideoFormat_NV12);
 
     try {
         // под mutex_: CaptureLoop пишет cache_ под этим же локом
@@ -360,7 +394,9 @@ bool CameraSource::Open(const SourceConfig& cfg, std::wstring& err)
     }
 
     LogCamera(L"opened: " + DescribeTarget(cfg) + L" (" + std::to_wstring(capW_) + L"x" +
-              std::to_wstring(capH_) + L")");
+              std::to_wstring(capH_) + L", capture=" +
+              (captureH == 720 ? L"720p" : captureH == 1080 ? L"1080p" : L"max") +
+              L", out=" + (capIsNv12_ ? L"NV12" : L"RGB32") + L")");
     // Контролы — QI с нашего же источника (без второго ActivateObject);
     // pipe-сервер для виртуалки — best effort: BUSY/ошибка не роняют источник.
     controls_.Attach(mediaSrc_);
@@ -398,6 +434,59 @@ bool CameraSource::Render(uint8_t* bgrx, int stride, std::wstring& err)
                // MFT пишет packed 1280x720 stride 5120; чужой stride — только CPU.
                !mftScaler_.Scale(cache_.data(), capW_, capH_, (LONG)(capW_ * 4), bgrx)) {
         LetterboxBilinear(cache_.data(), capW_, capH_, (LONG)(capW_ * 4), bgrx, stride);
+    }
+    return true;
+}
+
+bool CameraSource::NativeSize(uint32_t& w, uint32_t& h)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!open_ || failed_ || capW_ == 0 || capH_ == 0) {
+        w = vcam::VCamWidth;
+        h = vcam::VCamHeight;
+        return false;
+    }
+    w = capW_;
+    h = capH_;
+    return true;
+}
+
+bool CameraSource::Render(uint8_t* dst, int stride, uint32_t w, uint32_t h,
+                          std::wstring& err)
+{
+    if (!dst || w == 0 || h == 0 || w > vcam::VCamNativeCapW || h > vcam::VCamNativeCapH ||
+        stride < (int)(w * 4)) {
+        err = L"invalid target buffer";
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!open_) {
+        err = L"camera source is not open";
+        return false;
+    }
+    if (failed_) {
+        err = failReason_;
+        return false;
+    }
+    if (!hasFrame_ || cache_.empty()) {
+        err = L"нет первого кадра с камеры";
+        return false;
+    }
+
+    if (w == capW_ && h == capH_) {
+        vcam::CopyFrameRowwise(dst, (size_t)stride, cache_.data(), (size_t)capW_ * 4,
+                               capW_, capH_, vcam::VCamPixelSize);
+    } else if (w == vcam::VCamWidth && h == vcam::VCamHeight) {
+        // Та же логика, что в legacy Render: MFT пишет packed 1280x720 stride
+        // 5120 (уже записал при успехе Scale); чужой stride — только CPU.
+        if (stride != (int)vcam::VCamStride ||
+            !mftScaler_.Scale(cache_.data(), capW_, capH_, (LONG)(capW_ * 4), dst)) {
+            LetterboxBilinear(cache_.data(), capW_, capH_, (LONG)(capW_ * 4), dst, stride);
+        }
+    } else {
+        vcam::LetterboxBilinearEx(cache_.data(), capW_, capH_, (LONG)(capW_ * 4),
+                                  dst, w, h, (LONG)stride);
     }
     return true;
 }
@@ -441,6 +530,8 @@ bool CameraSource::Shutdown(DWORD timeoutMs)
     cache_.shrink_to_fit();
     capW_ = capH_ = 0;
     capStride_ = 0;
+    capSub_ = GUID_NULL;
+    capIsNv12_ = false;
     streamIndex_ = 0;
     cfg_ = SourceConfig();
 
@@ -460,7 +551,105 @@ DWORD WINAPI CameraSource::ThreadProc(LPVOID self)
     return 0;
 }
 
-// Фоновый захват: ReadSample -> свежий RGB32-кэш (только при новом сэмпле).
+// Тик NATIVEMEDIATYPECHANGED (нулевой сэмпл с 0x100): НЕ молчание и НЕ смерть.
+// Перечитываем GetNativeMediaType(0) + GetCurrentMediaType; при расхождении
+// текущего типа с cap — адаптируемся (размеры/субтип/stride + resize кэша,
+// hasFrame_=false до первого кадра нового формата) и логируем. failed_ НЕ
+// выставляется; failed — только по kMaxSilent настоящих пустот/ошибок.
+void CameraSource::OnNativeTypeChangedTick(IMFSourceReader* rdr)
+{
+    if (!rdr) {
+        LogCamera(L"native-type tick: no reader");
+        return;
+    }
+    ATL::CComPtr<IMFMediaType> cur;
+    HRESULT hc = rdr->GetCurrentMediaType(streamIndex_, &cur);
+    GUID curSub = GUID_NULL;
+    UINT32 cw = 0, ch = 0;
+    LONG cstride = 0;
+    if (SUCCEEDED(hc) && cur) {
+        cur->GetGUID(MF_MT_SUBTYPE, &curSub);
+        UINT64 fs = 0;
+        if (SUCCEEDED(cur->GetUINT64(MF_MT_FRAME_SIZE, &fs))) {
+            cw = (UINT32)(fs >> 32);
+            ch = (UINT32)(fs & 0xFFFFFFFFu);
+        }
+        if (FAILED(cur->GetUINT32(MF_MT_DEFAULT_STRIDE, (UINT32*)&cstride)))
+            cstride = 0;
+        if (cstride == 0)
+            cstride = (curSub == MFVideoFormat_NV12) ? (LONG)cw : (LONG)(cw * 4);
+    }
+    cur = nullptr;
+
+    ATL::CComPtr<IMFMediaType> nat;
+    GUID natSub = GUID_NULL;
+    UINT32 nw = 0, nh = 0;
+    if (SUCCEEDED(rdr->GetNativeMediaType(streamIndex_, 0, &nat)) && nat) {
+        nat->GetGUID(MF_MT_SUBTYPE, &natSub);
+        MFGetAttributeSize(nat, MF_MT_FRAME_SIZE, &nw, &nh);
+    }
+    nat = nullptr;
+
+    UINT32 capW = 0, capH = 0;
+    GUID capS = GUID_NULL;
+    bool capNv = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        capW = capW_;
+        capH = capH_;
+        capS = capSub_;
+        capNv = capIsNv12_;
+    }
+    auto subId = [](const GUID& s) -> int {
+        if (s == MFVideoFormat_NV12) return 0;
+        if (s == MFVideoFormat_RGB32 || s == MFVideoFormat_ARGB32) return 1;
+        return 2;
+    };
+    const bool curSupported = (curSub == MFVideoFormat_NV12) ||
+                              (curSub == MFVideoFormat_RGB32) ||
+                              (curSub == MFVideoFormat_ARGB32);
+    if (FAILED(hc) || cw == 0 || ch == 0 || !curSupported) {
+        LogCamera(L"native-type tick: current unreadable/unsupported, keep " +
+                  std::to_wstring(capW) + L"x" + std::to_wstring(capH));
+        return;
+    }
+    if (!vcam::camsource::ShouldAdaptToCurrent(capW, capH, subId(capS),
+                                               cw, ch, subId(curSub))) {
+        LogCamera(L"native-type tick: type unchanged (" + std::to_wstring(cw) +
+                  L"x" + std::to_wstring(ch) + L")");
+        return;
+    }
+    // Адаптация: сначала аллоцируем новый кэш вне лока (8 МБ), затем коммитим
+    // размеры + swap под мьютексом. OOM — dims не трогаем, продолжаем со старым.
+    std::vector<uint8_t> fresh;
+    try {
+        fresh.resize((size_t)cw * ch * 4);
+    } catch (...) {
+        LogCamera(L"native-type tick: out of memory for " + std::to_wstring(cw) +
+                  L"x" + std::to_wstring(ch) + L", keep previous");
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!open_) return;
+        capW_ = cw;
+        capH_ = ch;
+        capStride_ = cstride;
+        capSub_ = curSub;
+        capIsNv12_ = (curSub == MFVideoFormat_NV12);
+        cache_.swap(fresh);
+        hasFrame_ = false;
+    }
+    LogCamera(L"native-type tick: adapted to " + std::to_wstring(cw) + L"x" +
+              std::to_wstring(ch) + L", out=" +
+              ((curSub == MFVideoFormat_NV12) ? L"NV12" : L"RGB32"));
+    (void)natSub; (void)nw; (void)nh; (void)capNv;
+}
+
+// Фоновый захват: ReadSample -> свежий RGB32-кэш (только при новом сэмпле;
+// NV12-натив конвертируется CPU BT.601 в точке копирования — кэш/даунстрим
+// остаются RGB32). Нулевой сэмпл с NATIVEMEDIATYPECHANGED (0x100) — тик смены
+// натива: silent сбрасывается, перечитываем типы (адаптация без failed).
 // Счётчик молчания: N подряд ошибок/пустых чтений (в т.ч. MF_E_SHUTDOWN) ->
 // failed_ -> выход (Render дальше отдаёт false с причиной).
 void CameraSource::CaptureLoop()
@@ -501,6 +690,13 @@ void CameraSource::CaptureLoop()
         }
 
         if (!sample) {
+            // Тик смены натива — НЕ молчание и НЕ смерть: сбросить счётчик,
+            // перечитать типы (адаптация/лог внутри) и читать дальше.
+            if (vcam::camsource::IsNativeTypeChangedTick(false, flags)) {
+                silent = 0;
+                OnNativeTypeChangedTick(rdr);
+                continue;
+            }
             silent++;
             if (silent >= kMaxSilent) {
                 SetFailed(L"камера не отдаёт кадры ~" +
@@ -509,7 +705,28 @@ void CameraSource::CaptureLoop()
             }
             continue;
         }
-        silent = 0;
+        // Сэмпл с флагом смены типа (редкий кейс): сначала requery, затем
+        // обрабатываем этот же сэмпл уже новыми dims.
+        if ((flags & 0x100u) != 0u) {
+            silent = 0;
+            OnNativeTypeChangedTick(rdr);
+        } else {
+            silent = 0;
+        }
+
+        // Снапшот dims под мьютексом (тик в этом же потоке мог их поменять).
+        UINT32 w = 0, h = 0;
+        LONG sstride = 0;
+        bool isNv12 = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!open_) continue;
+            w = capW_;
+            h = capH_;
+            sstride = capStride_;
+            isNv12 = capIsNv12_;
+            if (w == 0 || h == 0 || cache_.size() < (size_t)w * h * 4) continue;
+        }
 
         ATL::CComPtr<IMFMediaBuffer> buf;
         if (SUCCEEDED(sample->ConvertToContiguousBuffer(&buf)) && buf) {
@@ -517,14 +734,32 @@ void CameraSource::CaptureLoop()
             DWORD maxLen = 0;
             DWORD curLen = 0;
             if (SUCCEEDED(buf->Lock(&data, &maxLen, &curLen)) && data) {
-                const size_t rowBytes = (size_t)capW_ * 4;
-                if (curLen >= rowBytes * capH_) {
-                    std::lock_guard<std::mutex> lock(mutex_);
-                    if (!cache_.empty() && open_) {
-                        for (UINT32 y = 0; y < capH_; y++)
-                            memcpy(cache_.data() + (size_t)y * rowBytes,
-                                   RowPtr(data, capStride_, capH_, y), rowBytes);
-                        hasFrame_ = true;
+                if (isNv12) {
+                    const size_t sAbs =
+                        (size_t)(sstride >= 0 ? sstride : -sstride);
+                    const size_t need =
+                        sAbs * (size_t)h + sAbs * (size_t)((h + 1u) / 2u);
+                    if (curLen >= need && sAbs >= (size_t)w) {
+                        std::lock_guard<std::mutex> lock(mutex_);
+                        if (!cache_.empty() && open_ && capW_ == w &&
+                            capH_ == h && cache_.size() >= (size_t)w * h * 4) {
+                            vcam::camsource::Nv12ToRgb32(
+                                data, w, h, sstride, cache_.data(),
+                                (LONG)(w * 4));
+                            hasFrame_ = true;
+                        }
+                    }
+                } else {
+                    const size_t rowBytes = (size_t)w * 4;
+                    if (curLen >= rowBytes * h) {
+                        std::lock_guard<std::mutex> lock(mutex_);
+                        if (!cache_.empty() && open_ && capW_ == w &&
+                            capH_ == h) {
+                            for (UINT32 y = 0; y < h; y++)
+                                memcpy(cache_.data() + (size_t)y * rowBytes,
+                                       RowPtr(data, sstride, h, y), rowBytes);
+                            hasFrame_ = true;
+                        }
                     }
                 }
                 buf->Unlock();

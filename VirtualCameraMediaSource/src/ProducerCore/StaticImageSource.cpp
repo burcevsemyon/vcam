@@ -7,6 +7,7 @@
 #include <cstring>
 
 #include "FrameCopy.h"
+#include "ImageLayout.h"
 #include "SharedMemoryContract.h"
 
 #pragma comment(lib, "windowscodecs.lib")
@@ -162,6 +163,82 @@ bool LoadAndScaleImage(const wchar_t* filePath, ScaleMode mode, CropRect crop, b
 
 } // namespace
 
+// Нативный декод (WIC, 1:1; больше cap — fit-даунскейл HighQualityCubic).
+// cropScale отдают отношение натив/исходник (crop-rect задан в исх. пикселях).
+bool DecodeNativeImage(const wchar_t* filePath, std::vector<uint8_t>& pixels,
+                       UINT& w, UINT& h, double& scaleX, double& scaleY)
+{
+    pixels.clear();
+    w = h = 0;
+    scaleX = scaleY = 1.0;
+    CoInitialize(nullptr);
+
+    ATL::CComPtr<IWICImagingFactory> pFactory;
+    HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+                                  IID_PPV_ARGS(&pFactory));
+    bool ok = false;
+    if (SUCCEEDED(hr) && pFactory) {
+        ATL::CComPtr<IWICBitmapDecoder> pDecoder;
+        hr = pFactory->CreateDecoderFromFilename(filePath, nullptr, GENERIC_READ,
+                                                 WICDecodeMetadataCacheOnLoad, &pDecoder);
+        if (SUCCEEDED(hr) && pDecoder) {
+            ATL::CComPtr<IWICBitmapFrameDecode> pFrame;
+            hr = pDecoder->GetFrame(0, &pFrame);
+            UINT sw = 0, sh = 0;
+            if (SUCCEEDED(hr) && pFrame) pFrame->GetSize(&sw, &sh);
+            if (sw != 0 && sh != 0) {
+                ATL::CComPtr<IWICFormatConverter> pConverter;
+                hr = pFactory->CreateFormatConverter(&pConverter);
+                if (SUCCEEDED(hr)) {
+                    hr = pConverter->Initialize(pFrame, GUID_WICPixelFormat32bppBGRA,
+                                                WICBitmapDitherTypeNone, nullptr, 0.0,
+                                                WICBitmapPaletteTypeCustom);
+                }
+                IWICBitmapSource* pSource = pConverter;
+                ATL::CComPtr<IWICBitmapScaler> pScaler;
+                UINT nw = sw, nh = sh;
+                if (SUCCEEDED(hr) && pSource &&
+                    (sw > vcam::VCamNativeCapW || sh > vcam::VCamNativeCapH)) {
+                    double s = (double)vcam::VCamNativeCapW / sw;
+                    double s2 = (double)vcam::VCamNativeCapH / sh;
+                    if (s2 < s) s = s2;
+                    nw = (UINT)llround(sw * s);
+                    nh = (UINT)llround(sh * s);
+                    if (nw < 1) nw = 1;
+                    if (nh < 1) nh = 1;
+                    if (nw > vcam::VCamNativeCapW) nw = vcam::VCamNativeCapW;
+                    if (nh > vcam::VCamNativeCapH) nh = vcam::VCamNativeCapH;
+                    hr = pFactory->CreateBitmapScaler(&pScaler);
+                    if (SUCCEEDED(hr)) {
+                        hr = pScaler->Initialize(pSource, nw, nh,
+                                                 WICBitmapInterpolationModeHighQualityCubic);
+                        if (SUCCEEDED(hr)) pSource = pScaler;
+                    }
+                }
+                if (SUCCEEDED(hr) && pSource) {
+                    std::vector<uint8_t> tmp((size_t)nw * nh * 4);
+                    if (SUCCEEDED(pSource->CopyPixels(nullptr, nw * 4, (UINT)tmp.size(),
+                                                     tmp.data()))) {
+                        pixels = std::move(tmp);
+                        w = nw;
+                        h = nh;
+                        scaleX = (double)nw / sw;
+                        scaleY = (double)nh / sh;
+                        ok = true;
+                    }
+                }
+                pScaler = nullptr;
+                pConverter = nullptr;
+            }
+            pFrame = nullptr;
+        }
+        pDecoder = nullptr;
+        pFactory = nullptr;
+    }
+    CoUninitialize();
+    return ok;
+}
+
 bool StaticImageSource::Open(const SourceConfig& cfg, std::wstring& err)
 {
     if (open_ && cfg == cfg_) return true;
@@ -185,6 +262,19 @@ bool StaticImageSource::Open(const SourceConfig& cfg, std::wstring& err)
     }
 
     frame_ = std::move(buf);
+    // Натив — best effort: не взлетел — NativeSize=false, sized-рендер
+    // фолбэчит с 720p-кэша (v1-путь выше при этом цел).
+    native_.clear();
+    nativeW_ = nativeH_ = 0;
+    cropScaleX_ = cropScaleY_ = 1.0;
+    UINT nw = 0, nh = 0;
+    double sx = 1.0, sy = 1.0;
+    if (DecodeNativeImage(cfg.path.c_str(), native_, nw, nh, sx, sy) && !native_.empty()) {
+        nativeW_ = nw;
+        nativeH_ = nh;
+        cropScaleX_ = sx;
+        cropScaleY_ = sy;
+    }
     cfg_ = cfg;
     open_ = true;
     return true;
@@ -200,10 +290,80 @@ bool StaticImageSource::Render(uint8_t* bgrx, int stride, std::wstring& err)
     return true;
 }
 
+bool StaticImageSource::NativeSize(uint32_t& w, uint32_t& h)
+{
+    if (!open_ || native_.empty() || nativeW_ == 0 || nativeH_ == 0) {
+        w = vcam::VCamWidth;
+        h = vcam::VCamHeight;
+        return false;
+    }
+    w = nativeW_;
+    h = nativeH_;
+    return true;
+}
+
+bool StaticImageSource::Render(uint8_t* dst, int stride, uint32_t w, uint32_t h,
+                               std::wstring& err)
+{
+    if (!open_) { err = L"static source is not open"; return false; }
+    if (!dst || w == 0 || h == 0 || w > vcam::VCamNativeCapW || h > vcam::VCamNativeCapH ||
+        stride < (int)(w * 4)) {
+        err = L"invalid target buffer";
+        return false;
+    }
+
+    // Деградация (натив не декодировался): fit с 720p-кэша.
+    const uint8_t* base = native_.empty() ? frame_.data() : native_.data();
+    UINT sw = native_.empty() ? vcam::VCamWidth : nativeW_;
+    UINT sh = native_.empty() ? vcam::VCamHeight : nativeH_;
+    LONG sstride = (LONG)(sw * 4);
+
+    if (!native_.empty() && w == nativeW_ && h == nativeH_) {
+        vcam::CopyFrameRowwise(dst, (size_t)stride, native_.data(), (size_t)sstride,
+                               nativeW_, nativeH_, vcam::VCamPixelSize);
+        return true;
+    }
+
+    ScaleMode mode = ParseMode(cfg_.scaleMode);
+    if (native_.empty() || mode == ScaleMode::Fit) {
+        vcam::LetterboxBilinearEx(base, sw, sh, sstride, dst, w, h, (LONG)stride);
+        return true;
+    }
+    if (mode == ScaleMode::Cover) {
+        vcam::CoverBilinearEx(base, sw, sh, sstride, dst, w, h, (LONG)stride);
+        return true;
+    }
+    // Crop: rect из конфига (исходные пиксели) -> в нативные координаты.
+    int rx = (int)llround(cfg_.cropX * cropScaleX_);
+    int ry = (int)llround(cfg_.cropY * cropScaleY_);
+    int rw = (int)llround(cfg_.cropW * cropScaleX_);
+    int rh = (int)llround(cfg_.cropH * cropScaleY_);
+    if (rx < 0) rx = 0;
+    if (ry < 0) ry = 0;
+    if (rx >= (int)sw) rx = 0;
+    if (ry >= (int)sh) ry = 0;
+    if (rw <= 0 || rw > (int)sw - rx) rw = (int)sw - rx;
+    if (rh <= 0 || rh > (int)sh - ry) rh = (int)sh - ry;
+    if (rw <= 0 || rh <= 0) { // пустой rect после клампа — как fit
+        vcam::LetterboxBilinearEx(base, sw, sh, sstride, dst, w, h, (LONG)stride);
+        return true;
+    }
+    const BYTE* rect = base + (size_t)ry * sstride + (size_t)rx * 4;
+    if (cfg_.cropKeepAspect)
+        vcam::LetterboxBilinearEx(rect, (UINT)rw, (UINT)rh, sstride, dst, w, h, (LONG)stride);
+    else
+        vcam::StretchBilinearEx(rect, (UINT)rw, (UINT)rh, sstride, dst, w, h, (LONG)stride);
+    return true;
+}
+
 void StaticImageSource::Close()
 {
     frame_.clear();
     frame_.shrink_to_fit();
+    native_.clear();
+    native_.shrink_to_fit();
+    nativeW_ = nativeH_ = 0;
+    cropScaleX_ = cropScaleY_ = 1.0;
     cfg_ = SourceConfig();
     open_ = false;
 }

@@ -172,6 +172,51 @@ void PrintSectionState()
     }
 }
 
+void PrintV2SectionState()
+{
+    // v2-зеркало писателя (dual-write фазы vcam-quality-v2): перебор префиксов
+    // Global -> Local, как у читателей. Показывает версию/размер/seq.
+    const wchar_t* pSep = wcschr(vcam::VCamSectionNameV2, L'\\');
+    const wchar_t* baseName = (pSep != nullptr) ? pSep + 1 : vcam::VCamSectionNameV2;
+    const wchar_t* prefixes[2] = { L"Global\\", L"Local\\" };
+    wchar_t sectionName[128] = {};
+    ATL::CHandle h;
+    for (int i = 0; i < 2 && !h; i++) {
+        swprintf_s(sectionName, L"%s%s", prefixes[i], baseName);
+        h.Attach(OpenFileMappingW(FILE_MAP_READ, FALSE, sectionName));
+    }
+    if (!h) {
+        Log(L"v2 section %s: not open (v1-only mode - no producer holds it)",
+            vcam::VCamSectionNameV2);
+        return;
+    }
+    void* raw = MapViewOfFile(h, FILE_MAP_READ, 0, 0, sizeof(vcam::VCamSectionHeader));
+    vcam::MappedViewOfFilePtr view(raw);
+    if (!view) {
+        Log(L"v2 section %s: open (MapView failed: %lu)", vcam::VCamSectionNameV2,
+            GetLastError());
+        return;
+    }
+    auto* hdr = view.GetAs<vcam::VCamSectionHeader>();
+    if (hdr->magic != vcam::VCamMagic) {
+        Log(L"v2 section %s: open, BAD magic 0x%08X (version=%u)", sectionName,
+            hdr->magic, hdr->version);
+        return;
+    }
+    LONGLONG seq1 = hdr->seq;
+    Sleep(300);
+    LONGLONG seq2 = hdr->seq;
+    if (seq2 != seq1) {
+        Log(L"v2 section %s: open, ver=%u %ux%u stride=%u slots=%u, frames are being written (seq %lld -> %lld)",
+            sectionName, hdr->version, hdr->width, hdr->height, hdr->stride,
+            hdr->slotCount, seq1, seq2);
+    } else {
+        Log(L"v2 section %s: open, ver=%u %ux%u stride=%u slots=%u, no new frames in the last 300 ms (seq %lld)",
+            sectionName, hdr->version, hdr->width, hdr->height, hdr->stride,
+            hdr->slotCount, seq1);
+    }
+}
+
 enum class Phase { Switch, Active, Fallback };
 
 void FlushOrSleep(FrameWriter& w)
@@ -186,10 +231,14 @@ struct Machine {
     std::unique_ptr<IFrameSource> src;
     SourceConfig target;
     bool hasTarget = false;
+    std::wstring quality = L"source"; // Settings.quality; смена -> переоткрытие
     Phase phase = Phase::Switch;
     ULONGLONG switchStart = 0;
     ULONGLONG nextAttempt = 0;
-    std::vector<uint8_t> buf;
+    std::vector<uint8_t> buf; // кадр frameW x frameH BGRX (stride frameW*4)
+    uint32_t frameW = vcam::VCamWidth;
+    uint32_t frameH = vcam::VCamHeight;
+    bool nativeKnown = false; // NativeSize отдавал размер (иначе 720p-путь)
 };
 
 void CloseSource(Machine& m)
@@ -200,6 +249,56 @@ void CloseSource(Machine& m)
     }
 }
 
+// Буфер под WxH BGRX (stride W*4). false = мусор размера / сверх cap / OOM.
+bool EnsureFrameBuf(Machine& m, uint32_t w, uint32_t h)
+{
+    if (w == 0 || h == 0 || w > vcam::VCamNativeCapW || h > vcam::VCamNativeCapH)
+        return false;
+    uint64_t need = (uint64_t)h * w * 4;
+    if (need == 0 || need > vcam::VCamV2MaxFrameSize) return false;
+    if (m.frameW != w || m.frameH != h || m.buf.size() < need) {
+        try {
+            m.buf.resize((size_t)need);
+        } catch (...) {
+            return false;
+        }
+        m.frameW = w;
+        m.frameH = h;
+    }
+    return true;
+}
+
+bool WriteOne(Machine& m)
+{
+    if (!m.writerOpen) return false;
+    if (m.nativeKnown)
+        return m.writer.WriteFrameNative(m.buf.data(), (int)(m.frameW * 4),
+                                         m.frameW, m.frameH);
+    return m.writer.WriteFrame(m.buf.data(), (int)vcam::VCamStride);
+}
+
+// Один кадр из src: натив при известном NativeSize, иначе legacy 720p-путь
+// (старт 720p, пока размер неизвестен — video до первого кадра; v2 при этом
+// зеркалит 720p). false = кадра сейчас нет (caller ждёт/уходит в fallback).
+bool RenderOne(IFrameSource* src, Machine& m, std::wstring& rerr)
+{
+    uint32_t nw = 0, nh = 0;
+    if (src->NativeSize(nw, nh) && nw != 0 && nh != 0 &&
+        nw <= vcam::VCamNativeCapW && nh <= vcam::VCamNativeCapH &&
+        EnsureFrameBuf(m, nw, nh)) {
+        if (!src->Render(m.buf.data(), (int)(nw * 4), nw, nh, rerr)) return false;
+        m.nativeKnown = true;
+        return true;
+    }
+    if (!EnsureFrameBuf(m, vcam::VCamWidth, vcam::VCamHeight)) {
+        rerr = L"frame buffer alloc failed";
+        return false;
+    }
+    if (!src->Render(m.buf.data(), (int)vcam::VCamStride, rerr)) return false;
+    m.nativeKnown = false;
+    return true;
+}
+
 void EnterFallback(Machine& m, const std::wstring& reason)
 {
     CloseSource(m);
@@ -208,15 +307,21 @@ void EnterFallback(Machine& m, const std::wstring& reason)
     Log(L"[cli] no signal: %s (frame is not written - camera fallback)", reason.c_str());
 }
 
-void BeginSwitch(Machine& m, const SourceConfig& want)
+void BeginSwitch(Machine& m, const SourceConfig& want, const std::wstring& quality)
 {
     const std::wstring wantLabel = TargetLabel(want);
     const std::wstring wasLabel = m.hasTarget ? TargetLabel(m.target) : L"-";
-    Log(L"[cli] switch: type=%s path=%s (was type=%s path=%s)",
-        want.type.c_str(), wantLabel.c_str(),
-        m.hasTarget ? m.target.type.c_str() : L"-", wasLabel.c_str());
+    Log(L"[cli] switch: type=%s path=%s quality=%s (was type=%s path=%s quality=%s)",
+        want.type.c_str(), wantLabel.c_str(), quality.c_str(),
+        m.hasTarget ? m.target.type.c_str() : L"-", wasLabel.c_str(),
+        m.hasTarget ? m.quality.c_str() : L"-");
     CloseSource(m);
     m.target = want;
+    // Нормализация как в FrameWriter::SetQuality/Settings::ParseQuality:
+    // только fixed720p проходит, остальное -> source.
+    m.quality = (quality == L"fixed720p") ? L"fixed720p" : L"source";
+    m.writer.SetQuality(m.quality);
+    m.nativeKnown = false; // размер нового источника неизвестен -> старт 720p
     m.hasTarget = true;
     m.phase = Phase::Switch;
     m.switchStart = GetTickCount64();
@@ -258,13 +363,14 @@ DWORD Step(Machine& m)
         }
 
         std::wstring rerr;
-        if (m.src->Render(m.buf.data(), (int)vcam::VCamStride, rerr)) {
-            bool written = m.writerOpen &&
-                           m.writer.WriteFrame(m.buf.data(), (int)vcam::VCamStride);
+        if (RenderOne(m.src.get(), m, rerr)) {
+            bool written = WriteOne(m);
             m.phase = Phase::Active;
-            Log(L"[cli] active: type=%s path=%s%s",
+            Log(L"[cli] active: type=%s path=%s%s [%s %ux%u quality=%s]",
                 m.target.type.c_str(), TargetLabel(m.target).c_str(),
-                written ? L"" : L" (write failed)");
+                written ? L"" : L" (write failed)",
+                m.nativeKnown ? L"native" : L"720p",
+                m.frameW, m.frameH, m.quality.c_str());
             return 0;
         }
         if (now - m.switchStart >= kSwitchWindowMs) {
@@ -277,8 +383,8 @@ DWORD Step(Machine& m)
 
     case Phase::Active: {
         std::wstring rerr;
-        if (m.src && m.src->Render(m.buf.data(), (int)vcam::VCamStride, rerr)) {
-            if (m.writerOpen && m.writer.WriteFrame(m.buf.data(), (int)vcam::VCamStride))
+        if (m.src && RenderOne(m.src.get(), m, rerr)) {
+            if (WriteOne(m))
                 return 0;
             Sleep(kFrameMs);
             return 0;
@@ -295,13 +401,14 @@ DWORD Step(Machine& m)
                 std::wstring err;
                 if (cand->Open(m.target, err)) {
                     std::wstring rerr;
-                    if (cand->Render(m.buf.data(), (int)vcam::VCamStride, rerr)) {
+                    if (RenderOne(cand.get(), m, rerr)) {
                         m.src = std::move(cand);
-                        if (m.writerOpen)
-                            m.writer.WriteFrame(m.buf.data(), (int)vcam::VCamStride);
+                        WriteOne(m);
                         m.phase = Phase::Active;
-                        Log(L"[cli] signal restored: type=%s path=%s",
-                            m.target.type.c_str(), TargetLabel(m.target).c_str());
+                        Log(L"[cli] signal restored: type=%s path=%s [%s %ux%u quality=%s]",
+                            m.target.type.c_str(), TargetLabel(m.target).c_str(),
+                            m.nativeKnown ? L"native" : L"720p",
+                            m.frameW, m.frameH, m.quality.c_str());
                         return 0;
                     }
                 } else {
@@ -336,7 +443,11 @@ DWORD WINAPI WorkerProc(LPVOID)
     std::wstring err;
     m.writerOpen = m.writer.Open(err);
     if (m.writerOpen) {
-        Log(L"[cli] shared memory writer ready (Global\\VCam.FrameBuffer.v1)");
+        Log(L"[cli] shared memory writer ready (%s)", m.writer.SectionOpenedAs().c_str());
+        if (m.writer.IsV2Open())
+            Log(L"[cli] v2 writer ready (%s)", m.writer.V2SectionOpenedAs().c_str());
+        else
+            Log(L"[cli] v2 writer unavailable (v1-only mode)");
     } else {
         m.writerErr = err.empty() ? L"writer open failed" : err;
         Log(L"[cli] writer open failed: %s", err.c_str());
@@ -360,7 +471,8 @@ DWORD WINAPI WorkerProc(LPVOID)
                 }
             }
             SourceConfig want = ResolveTarget(s);
-            if (!m.hasTarget || want != m.target) BeginSwitch(m, want);
+            if (!m.hasTarget || want != m.target || s.quality != m.quality)
+                BeginSwitch(m, want, s.quality);
         }
         timeout = Step(m);
     }
@@ -401,6 +513,10 @@ void PrintHelp()
     Log(L"        settings.json is watched (500 ms + debounce) and source.type changes");
     Log(L"        hot-switch without restart (last good frame is flushed during the");
     Log(L"        switch); on source errors nothing is written -> camera fallback frame.");
+    Log(L"        Frames are rendered at the source native size (WriteFrameNative;");
+    Log(L"        video starts at 720p until its first frame reports NativeSize).");
+    Log(L"        settings \"quality\" (source|fixed720p) hot-switches via reopen.");
+    Log(L"        camera.capture (max|720p|1080p) hot-switches via reopen (physical capture height).");
     Log(L"        Logs go to stdout at 30 FPS pacing. Stop with Ctrl+C, Ctrl+Break or Esc.");
     Log(L"  --type <static|video|camera>  Fixes the source type for this run: source.type");
     Log(L"                         changes in settings.json are ignored while running.");
@@ -439,9 +555,10 @@ void PrintHelp()
     Log(L"        mode resets the mode to manual first, or the driver ignores it).");
     Log(L"        stdout: \"<applied>\\t<flags>\" re-read from the device (UTF-8).");
     Log(L"");
-    Log(L"status  Print settings (path, schema, source.type, static/video/camera");
-    Log(L"        sections, autostart), host state (VCamVideoStreamProducer.Instance");
-    Log(L"        mutex) and the shared memory writer section state.");
+    Log(L"status  Print settings (path, schema, source.type, quality, camera.capture,");
+    Log(L"        static/video/camera sections, autostart), host state (VCamVideoStreamProducer.Instance");
+    Log(L"        mutex) and the shared memory writer sections (v1 + v2: version,");
+    Log(L"        size, seq growth).");
     Log(L"");
     Log(L"If VCamVideoStreamProducer.exe (tray host) is already running, `run` warns on");
     Log(L"stderr and continues - two producers writing the same shared memory is");
@@ -527,6 +644,7 @@ int CmdStatus(const std::wstring& settingsPath)
                                 : L"legacy schema (migrated on read, file untouched)");
     }
     Log(L"source.type: %s", s.sourceType.c_str());
+    Log(L"quality: %s", s.quality.c_str());
     Log(L"static.path: %s", s.st.path.empty() ? L"(empty)" : s.st.path.c_str());
     Log(L"static.scaleMode: %s", s.st.scaleMode.c_str());
     Log(L"static.crop: X=%d Y=%d W=%d H=%d keepAspect=%s", s.st.cropX, s.st.cropY,
@@ -534,6 +652,7 @@ int CmdStatus(const std::wstring& settingsPath)
     Log(L"video.path: %s", s.video.path.empty() ? L"(empty)" : s.video.path.c_str());
     Log(L"camera.id: %s", s.cam.id.empty() ? L"(empty)" : s.cam.id.c_str());
     Log(L"camera.name: %s", s.cam.name.empty() ? L"(empty)" : s.cam.name.c_str());
+    Log(L"camera.capture: %s", s.cam.capture.c_str());
     if (s.sourceType == L"camera") {
         // Человекочитаемая метка активного источника: имя, иначе id (см. TargetLabel).
         Log(L"camera.source: %s",
@@ -544,6 +663,7 @@ int CmdStatus(const std::wstring& settingsPath)
     Log(L"host VCamVideoStreamProducer: %s",
         HostRunning() ? L"running" : L"not running");
     PrintSectionState();
+    PrintV2SectionState();
     return 0;
 }
 

@@ -5,6 +5,7 @@
 #include "MediaSource.h"
 #include "SharedMemoryContract.h"
 #include "SharedMemoryFrameSource.h"
+#include "FrameCopy.h"
 #include <mfapi.h>
 #include <Mferror.h>
 
@@ -34,6 +35,10 @@ CMediaStream::~CMediaStream()
     m_pMediaType = nullptr;
     m_pMediaTypeNv12 = nullptr;
     m_pMediaType640 = nullptr;
+    m_pMediaTypeNative = nullptr;
+    m_nativeW = m_nativeH = 0;
+    m_pV2Staging.reset();
+    m_cbV2Staging = 0;
     m_pNv12Scratch.reset(); // порядок освобождений как с raw delete[] (до attrs/allocator)
     m_pStreamAttrsProxy = nullptr;
     m_pStreamAttributes = nullptr;
@@ -270,7 +275,15 @@ HRESULT CMediaStream::SetMediaType(IMFMediaType* pMediaType)
     UINT32 w = 0, h = 0;
     hr = MFGetAttributeSize(pMediaType, MF_MT_FRAME_SIZE, &w, &h);
     if (FAILED(hr)) return MF_E_INVALIDMEDIATYPE;
-    if (!((w == 1280 && h == 720) || (w == 640 && h == 480))) return MF_E_INVALIDMEDIATYPE;
+    // Лесенка: 1280x720 (RGB32/NV12) + 640x480 как раньше (включая исторически
+    // принимаемый NV12-640 — приёмку не меняем); плюс натив v2 (RGB32 w×h из
+    // заголовка, != 720p). NV12-натив НЕ принимаем.
+    const bool isStandard = ((w == 1280 && h == 720) || (w == 640 && h == 480));
+    if (!isStandard) {
+        if (subtype != MFVideoFormat_RGB32) return MF_E_INVALIDMEDIATYPE;
+        if (m_nativeW == 0 || m_nativeH == 0 || w != m_nativeW || h != m_nativeH)
+            return MF_E_INVALIDMEDIATYPE;
+    }
 
     UINT32 num = 0, den = 0;
     hr = MFGetAttributeRatio(pMediaType, MF_MT_FRAME_RATE, &num, &den);
@@ -391,8 +404,47 @@ HRESULT CMediaStream::FinalConstruct(CMediaSource* pSource)
     // портит именно эту комбинацию (UV-плоскость обнуляется у клиента),
     // тогда как RGB32 640x480 и NV12 1280x720 через прокси идут чисто.
 
-    IMFMediaType* types[3] = { m_pMediaType, m_pMediaTypeNv12, m_pMediaType640 };
-    hr = MFCreateStreamDescriptor(0, 3, types, &m_pStreamDescriptor);
+    // Натив v2: RGB32 w×h@30 из живого заголовка v2 (read-only проба). Нет v2
+    // или натив == 720p — дубликат НЕ рекламируем, лесенка = старые 3 типа.
+    // NV12-натив НЕ добавляем.
+    {
+        UINT32 v2w = 0, v2h = 0, v2stride = 0, v2fs = 0;
+        if (m_v2.Probe(&v2w, &v2h, &v2stride, &v2fs) &&
+            vcam_v2::ShouldAdvertiseNative(v2w, v2h)) {
+            ATL::CComPtr<IMFMediaType> pNative;
+            hr = MFCreateMediaType(&pNative);
+            if (SUCCEEDED(hr)) hr = pNative->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
+            if (SUCCEEDED(hr)) hr = pNative->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
+            if (SUCCEEDED(hr)) hr = MFSetAttributeSize(pNative, MF_MT_FRAME_SIZE, v2w, v2h);
+            if (SUCCEEDED(hr)) hr = MFSetAttributeRatio(pNative, MF_MT_FRAME_RATE, 30, 1);
+            if (SUCCEEDED(hr)) hr = pNative->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
+            if (SUCCEEDED(hr)) hr = pNative->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
+            if (SUCCEEDED(hr)) hr = pNative->SetUINT32(MF_MT_FIXED_SIZE_SAMPLES, TRUE);
+            if (SUCCEEDED(hr)) hr = pNative->SetUINT32(MF_MT_DEFAULT_STRIDE, v2w * 4);
+            if (SUCCEEDED(hr)) hr = pNative->SetUINT32(MF_MT_SAMPLE_SIZE, v2fs);
+            if (SUCCEEDED(hr)) {
+                const UINT64 bps = (UINT64)v2fs * 8 * 30;
+                hr = pNative->SetUINT32(MF_MT_AVG_BITRATE,
+                                        bps > 0xFFFFFFFFull ? 0xFFFFFFFFu : (UINT32)bps);
+            }
+            if (SUCCEEDED(hr)) hr = MFSetAttributeRatio(pNative, MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
+            if (SUCCEEDED(hr)) {
+                m_pMediaTypeNative = pNative;
+                m_nativeW = v2w;
+                m_nativeH = v2h;
+                VCamDiagLog(L"Stream.FinalConstruct native v2 %ux%u advertised", v2w, v2h);
+            }
+            else {
+                VCamDiagLog(L"Stream.FinalConstruct native v2 %ux%u NOT advertised hr=0x%08X", v2w, v2h, (unsigned)hr);
+                m_pMediaTypeNative = nullptr;
+                hr = S_OK; // натив — best effort, лесенка остаётся из 3 типов
+            }
+        }
+    }
+
+    IMFMediaType* types[4] = { m_pMediaType, m_pMediaTypeNv12, m_pMediaType640, m_pMediaTypeNative };
+    const DWORD typeCount = (m_pMediaTypeNative != nullptr) ? 4 : 3;
+    hr = MFCreateStreamDescriptor(0, typeCount, types, &m_pStreamDescriptor);
     if (FAILED(hr)) return hr;
 
     // The frameserver's Start validation calls GetCurrentMediaType on the
@@ -448,12 +500,15 @@ HRESULT CMediaStream::StartForSession()
     else if (!selNv12 && m_pMediaType640 != nullptr && selW == 640 && selH == 480) {
         pInitType = m_pMediaType640;
     }
+    else if (!selNv12 && m_pMediaTypeNative != nullptr && selW == m_nativeW && selH == m_nativeH) {
+        pInitType = m_pMediaTypeNative;
+    }
     else {
         pInitType = m_pMediaType;
     }
     VCamDiagEvent(L"Stream.StartForSession negotiated %ux%u %s -> allocator type %s", selW, selH,
                 selNv12 ? L"NV12" : L"RGB32",
-                pInitType == m_pMediaTypeNv12 ? L"NV12720" : (pInitType == m_pMediaType640 ? L"RGB640" : L"RGB720"));
+                pInitType == m_pMediaTypeNv12 ? L"NV12720" : (pInitType == m_pMediaType640 ? L"RGB640" : (pInitType == m_pMediaTypeNative ? L"RGBnative" : L"RGB720")));
     // Log the delivered type once per session as well.
     m_lastDeliverW = 0;
     m_lastDeliverH = 0;
@@ -692,16 +747,80 @@ void CMediaStream::ResolveNegotiatedType(UINT32* pW, UINT32* pH, bool* pNv12) co
         }
     }
 
-    // Defensive: never deliver a size we cannot produce.
+    // Defensive: never deliver a size we cannot produce. Стандарт — 720p
+    // (RGB32/NV12) и 640x480; плюс живой натив v2 (RGB32 == текущим диметрам
+    // заголовка — покрывает и рекламируемый, и сменившийся hot-switch'ем).
+    // NV12-натив не производим.
     if (!((w == vcam::VCamWidth && h == vcam::VCamHeight) || (w == 640 && h == 480))) {
-        w = m_selectedWidth;
-        h = m_selectedHeight;
-        nv12 = m_selectedNv12;
+        bool liveNative = false;
+        if (!nv12) {
+            UINT32 vw = 0, vh = 0, vs = 0, vfs = 0;
+            if (m_v2.Probe(&vw, &vh, &vs, &vfs) && vw == w && vh == h)
+                liveNative = true;
+        }
+        if (!liveNative) {
+            w = m_selectedWidth;
+            h = m_selectedHeight;
+            nv12 = m_selectedNv12;
+        }
     }
 
     if (pW != nullptr) *pW = w;
     if (pH != nullptr) *pH = h;
     if (pNv12 != nullptr) *pNv12 = nv12;
+}
+
+bool CMediaStream::AcquireV2Frame(UINT32* pW, UINT32* pH, UINT32* pStride)
+{
+    // Стейджинг — фиксированный max-размер один раз (как m_pNv12Scratch):
+    // указатель после первой аллокации не меняется, поэтому конкурентные
+    // доставщики не получают UAF (realloc по диметрам запрещён).
+    EnterCriticalSection(&m_cs);
+    if (m_pV2Staging == nullptr) {
+        m_pV2Staging.reset(new (std::nothrow) BYTE[vcam::VCamV2MaxFrameSize]);
+        m_cbV2Staging = (m_pV2Staging != nullptr) ? (SIZE_T)vcam::VCamV2MaxFrameSize : 0;
+    }
+    BYTE* pStaging = m_pV2Staging.get();
+    const SIZE_T cbStaging = m_cbV2Staging;
+    LeaveCriticalSection(&m_cs);
+    if (pStaging == nullptr) return false;
+    UINT32 aw = 0, ah = 0, as = 0;
+    if (!m_v2.Acquire(pStaging, cbStaging, &aw, &ah, &as, vcam::VCamReadyTimeoutMs))
+        return false;
+    if (pW) *pW = aw;
+    if (pH) *pH = ah;
+    if (pStride) *pStride = as;
+    return true;
+}
+
+bool CMediaStream::DeliverFromV2(BYTE* pBits, UINT32 w, UINT32 h, bool useNv12,
+                                 UINT32 vw, UINT32 vh, UINT32 vstride)
+{
+    const BYTE* pSrc = m_pV2Staging.get();
+    if (pBits == nullptr || pSrc == nullptr) return false;
+    if (!useNv12) {
+        if (w == vw && h == vh) {
+            // Натив 1:1 (memcpy в sample, alpha — как старые пути).
+            vcam::CopyFrameRowwise(pBits, (SIZE_T)w * 4, pSrc, vstride, w, h, 4);
+            return true;
+        }
+        // 720p/640p/протухший-натив: letterbox-fit из живого v2
+        // (16:9 fill, иное — letterbox). Безопасно для любого w/h: пишется
+        // ровно w*h*4 под размер буфера цели.
+        vcam_v2::DownscaleRgb32Letterbox(pSrc, vstride, vw, vh,
+                                         pBits, (SIZE_T)w * 4, w, h);
+        return true;
+    }
+    if (w == vcam::VCamWidth && h == vcam::VCamHeight && m_pNv12Scratch != nullptr) {
+        // NV12-720: даунскейл v2 в скретч + та же конверсия, что раньше.
+        vcam_v2::DownscaleRgb32Letterbox(pSrc, vstride, vw, vh,
+                                         m_pNv12Scratch.get(), vcam::VCamStride,
+                                         vcam::VCamWidth, vcam::VCamHeight);
+        ConvertRgb32ToNv12(m_pNv12Scratch.get(), pBits,
+                           vcam::VCamWidth, vcam::VCamHeight, vcam::VCamStride);
+        return true;
+    }
+    return false; // NV12 не-720 — старый v1-путь (NV12-640 бит-в-бит)
 }
 
 HRESULT CMediaStream::DeliverNextSample(IUnknown* pToken)
@@ -735,6 +854,11 @@ HRESULT CMediaStream::DeliverNextSample(IUnknown* pToken)
     if (m_pNv12Scratch == nullptr) m_pNv12Scratch.reset(new (std::nothrow) BYTE[vcam::VCamFrameSize]);
     LeaveCriticalSection(&m_cs);
 
+    // v2 первым: свежий валидный натив-кадр. Нет/мусор/таймаут — СТАРЫЙ
+    // v1-путь ниже бит-в-бит (регресс D/E-логики).
+    UINT32 v2w = 0, v2h = 0, v2stride = 0;
+    const bool haveV2 = AcquireV2Frame(&v2w, &v2h, &v2stride);
+
     if (m_pAllocator != nullptr) {
         VCamDiagLog(L"Stream.DeliverNextSample before AllocateSample");
         hr = m_pAllocator->AllocateSample(&pSample);
@@ -748,7 +872,11 @@ HRESULT CMediaStream::DeliverNextSample(IUnknown* pToken)
         if (FAILED(hr)) return hr;
         hr = pBuffer->Lock(&pBits, nullptr, nullptr);
         if (SUCCEEDED(hr)) {
-            if (m_pNv12Scratch != nullptr) {
+            if (haveV2 && DeliverFromV2(pBits, w, h, useNv12, v2w, v2h, v2stride)) {
+                // Кадр из v2 (натив 1:1 / letterbox-fit / NV12-720).
+            }
+            else if (!haveV2 && m_pNv12Scratch != nullptr &&
+                     ((w == vcam::VCamWidth && h == vcam::VCamHeight) || (w == 640 && h == 480))) {
                 if (!useNv12 && w == vcam::VCamWidth && h == vcam::VCamHeight) {
                     // RGB32 1280x720: буфер создан ровно под rgbBytes ==
                     // VCamFrameSize — пишем кадр сразу в sample (без копии
@@ -758,6 +886,15 @@ HRESULT CMediaStream::DeliverNextSample(IUnknown* pToken)
                     SharedMemoryFrameSource::Instance().AcquireFrame(m_pNv12Scratch.get(), vcam::VCamReadyTimeoutMs);
                     WriteFrameData(m_pNv12Scratch.get(), pBits, w, h, useNv12);
                 }
+            } else if (!haveV2 && m_pNv12Scratch != nullptr) {
+                // Протухший натив без живого v2 из v1 не произвести (там
+                // только 720p): нулевой кадр вместо переполнения WriteFrameData.
+                VCamDiagEvent(L"Stream.DeliverNextSample no v2 for %ux%u -> zero fill", w, h);
+                RtlZeroMemory(pBits, (DWORD)(useNv12 ? nv12Bytes : rgbBytes));
+            } else if (haveV2 && m_pNv12Scratch != nullptr) {
+                // v2 жив, но цель — NV12 не-720: старый путь (NV12-640 бит-в-бит).
+                SharedMemoryFrameSource::Instance().AcquireFrame(m_pNv12Scratch.get(), vcam::VCamReadyTimeoutMs);
+                WriteFrameData(m_pNv12Scratch.get(), pBits, w, h, useNv12);
             } else {
                 RtlZeroMemory(pBits, (DWORD)(useNv12 ? nv12Bytes : rgbBytes));
             }
@@ -786,7 +923,13 @@ HRESULT CMediaStream::DeliverNextSample(IUnknown* pToken)
         if (SUCCEEDED(hr)) {
             const DWORD needed = useNv12 ? nv12Bytes : rgbBytes;
             VCamDiagLog(L"Stream.DeliverNextSample before AcquireFrame");
-            if (m_pNv12Scratch != nullptr && maxLen >= needed) {
+            if (haveV2 && maxLen >= needed &&
+                DeliverFromV2(pBits, w, h, useNv12, v2w, v2h, v2stride)) {
+                // Кадр из v2 (натив 1:1 / letterbox-fit / NV12-720).
+                hr = pBuffer->SetCurrentLength(needed);
+            }
+            else if (!haveV2 && m_pNv12Scratch != nullptr && maxLen >= needed &&
+                     ((w == vcam::VCamWidth && h == vcam::VCamHeight) || (w == 640 && h == 480))) {
                 if (!useNv12 && w == vcam::VCamWidth && h == vcam::VCamHeight) {
                     // RGB32 1280x720: maxLen >= needed == VCamFrameSize — прямая
                     // запись кадра в буфер sample (без копии scratch→sample);
@@ -796,6 +939,19 @@ HRESULT CMediaStream::DeliverNextSample(IUnknown* pToken)
                     SharedMemoryFrameSource::Instance().AcquireFrame(m_pNv12Scratch.get(), vcam::VCamReadyTimeoutMs);
                     WriteFrameData(m_pNv12Scratch.get(), pBits, w, h, useNv12);
                 }
+                hr = pBuffer->SetCurrentLength(needed);
+            }
+            else if (!haveV2 && maxLen >= needed) {
+                // Протухший натив (или нет скретча): нулевой кадр вместо
+                // переполнения WriteFrameData — v1 знает только 720p/640p.
+                VCamDiagEvent(L"Stream.DeliverNextSample no v2 for %ux%u -> empty sample", w, h);
+                RtlZeroMemory(pBits, maxLen);
+                hr = pBuffer->SetCurrentLength(0);
+            }
+            else if (haveV2 && m_pNv12Scratch != nullptr && maxLen >= needed) {
+                // v2 жив, но цель — NV12 не-720: старый путь (NV12-640 бит-в-бит).
+                SharedMemoryFrameSource::Instance().AcquireFrame(m_pNv12Scratch.get(), vcam::VCamReadyTimeoutMs);
+                WriteFrameData(m_pNv12Scratch.get(), pBits, w, h, useNv12);
                 hr = pBuffer->SetCurrentLength(needed);
             }
             else {

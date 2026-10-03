@@ -48,6 +48,7 @@
     <ClInclude Include="ControlProxyClient.h" />
     <ClInclude Include="Activator.h" />
     <ClInclude Include="MediaStream.h" />
+    <ClInclude Include="V2FrameReader.h" />
     <ClInclude Include="ModuleLifetime.h" />
     <ClInclude Include="AttrLogProxy.h" />
     <ClInclude Include="..\Common\GUIDs.h" />
@@ -59,6 +60,7 @@
     <ClCompile Include="ControlProxyClient.cpp" />
     <ClCompile Include="Activator.cpp" />
     <ClCompile Include="MediaStream.cpp" />
+    <ClCompile Include="V2FrameReader.cpp" />
     <ClCompile Include="MfGuids.cpp" />
     <ClCompile Include="dllmain.cpp" />
     <ClCompile Include="..\Common\SharedMemoryFrameSource.cpp" />

@@ -230,9 +230,35 @@ static int RunDirectMode(int numFrames, const wchar_t* outputPrefix)
     }
 
     // Start the source
+    // Текущий тип стрима 0 (после Src2-переговоров выше) — авторитетный размер
+    // BMP: натив v2 (не 720p) тоже понимается, хардкода 1280x720 больше нет.
+    GUID dirSub = {};
+    UINT32 dirW = 0, dirH = 0;
+    bool dirKnown = false;
+    {
+        BOOL bSel = FALSE;
+        ATL::CComPtr<IMFStreamDescriptor> pSD;
+        if (SUCCEEDED(pPD->GetStreamDescriptorByIndex(0, &bSel, &pSD)) && pSD) {
+            ATL::CComPtr<IMFMediaTypeHandler> pMTH;
+            if (SUCCEEDED(pSD->GetMediaTypeHandler(&pMTH)) && pMTH) {
+                ATL::CComPtr<IMFMediaType> pCur;
+                if (SUCCEEDED(pMTH->GetCurrentMediaType(&pCur)) && pCur) {
+                    GUID major = {}, sub = {};
+                    UINT32 w = 0, h = 0;
+                    if (SUCCEEDED(pCur->GetGUID(MF_MT_MAJOR_TYPE, &major)) &&
+                        SUCCEEDED(pCur->GetGUID(MF_MT_SUBTYPE, &sub)) &&
+                        SUCCEEDED(MFGetAttributeSize(pCur, MF_MT_FRAME_SIZE, &w, &h)) &&
+                        major == MFMediaType_Video && w > 0 && h > 0) {
+                        dirSub = sub; dirW = w; dirH = h; dirKnown = true;
+                        LogW(L"direct stream0 currentType: size=%ux%u %s", w, h,
+                             (sub == MFVideoFormat_NV12) ? L"NV12" : L"RGB32");
+                    }
+                }
+            }
+        }
+    }
     PROPVARIANT vtStart;
-    vtStart.vt = VT_EMPTY;
-    hr = pSource->Start(pPD, nullptr, &vtStart);
+    vtStart.vt = VT_EMPTY;    hr = pSource->Start(pPD, nullptr, &vtStart);
     if (FAILED(hr)) {
         LogW(L"Start failed: 0x%08X", hr);
         pPD = nullptr;
@@ -320,10 +346,25 @@ static int RunDirectMode(int numFrames, const wchar_t* outputPrefix)
                         wchar_t bmpName[MAX_PATH];
                         swprintf_s(bmpName, L"%s_%03d.bmp", outputPrefix, framesReceived);
                         LogW(L"direct frame %d: curLen=%u maxLen=%u", framesReceived, curLen, maxLen);
-                        if (curLen == 640 * 480 * 3 / 2) {
+                        const bool rgb32 = dirKnown
+                            && dirSub == MFVideoFormat_RGB32
+                            && dirW > 0 && dirH > 0
+                            && (UINT64)curLen >= (UINT64)dirW * dirH * 4;
+                        const bool nv12 = dirKnown
+                            && dirSub == MFVideoFormat_NV12
+                            && dirW > 0 && dirH > 0
+                            && (UINT64)curLen >= (UINT64)dirW * dirH * 3 / 2;
+                        if (rgb32) {
+                            SaveBMP(bmpName, pBits, (int)dirW, (int)dirH, (int)(dirW * 4));
+                        } else if (nv12) {
+                            SaveNv12AsBmp(bmpName, pBits, (int)dirW, (int)dirH);
+                        } else if (!dirKnown && curLen == 640 * 480 * 3 / 2) {
                             SaveNv12AsBmp(bmpName, pBits, 640, 480);
-                        } else {
+                        } else if (!dirKnown) {
                             SaveBMP(bmpName, pBits, 1280, 720, 5120);
+                        } else {
+                            LogW(L"direct frame %d: buffer does not match negotiated %ux%u (%u bytes) — skipped",
+                                 framesReceived, dirW, dirH, curLen);
                         }
                     }
                     pBuffer->Unlock();
