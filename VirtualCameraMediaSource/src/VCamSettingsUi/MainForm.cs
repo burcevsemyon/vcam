@@ -363,6 +363,28 @@ public sealed class MainForm : Form
             _mode, _openButton, _fullSizeButton, _saveButton, _reloadButton, _hostStatusLabel, _hostButton, _helpButton,
             _cropXLabel, _cropX, _cropYLabel, _cropY, _cropWLabel, _cropW, _cropHLabel, _cropH, _cropKeepAspect, _hintLabel });
 
+        // М1: таб-порядок = визуальному (сверху вниз). AddRange выше идёт не
+        // по визуали — выставляем TabIndex явно (только TabStop-контролы
+        // реально участвуют в Tab, остальным индекс безвреден).
+        var tabVisual = new Control[]
+        {
+            _preview, _cropView, _videoPanel, _cameraPanel,
+            _mediaCombo, _openButton, _qualityCombo, _saveButton,
+            _mode, _fullSizeButton, _hostButton,
+            _cropX, _cropY, _cropW, _cropH, _cropKeepAspect,
+            _fxGroup, _recGroup, _reloadButton, _helpButton,
+        };
+        for (var ti = 0; ti < tabVisual.Length; ti++) tabVisual[ti].TabIndex = ti;
+        _videoPanel.TabIndex = 2;
+        _cameraPanel.TabIndex = 3;
+        _previewButton.TabIndex = 0;
+        _cameraCombo.TabIndex = 0;
+        _cameraRefresh.TabIndex = 1;
+        _captureCombo.TabIndex = 2;
+        _recPathText.TabIndex = 0;
+        _recBrowse.TabIndex = 1;
+        _recButton.TabIndex = 2;
+
         _previewExe = FindPreviewExe();
         _hostExe = FindHostExe();
         _hostTimer.Interval = 1000;
@@ -408,16 +430,17 @@ public sealed class MainForm : Form
         _videoPathLabel.Name = "videoPathLabel";
 
         _videoInfoLabel.Location = new Point(16, 84);
-        _videoInfoLabel.Size = new Size(820, 78);
+        _videoInfoLabel.Size = new Size(820, 94);
         _videoInfoLabel.ForeColor = Color.DimGray;
         _videoInfoLabel.Text =
             "Ролик декодируется хостом VCamVideoStreamProducer.exe и всегда масштабируется letterbox в 1280×720.\r\n" +
             "Настройки scaleMode и crop для видео не применяются (см. секцию static).\r\n" +
             "Смена файла подхватывается автоматически (~1 с), без перезапуска.\r\n" +
             "Обычное видео крутится по кругу; ролик, вызванный горячей клавишей, " +
-            "играет один раз и возвращает предыдущий источник.";
+            "играет один раз и возвращает предыдущий источник.\r\n" +
+            "Встроенное превью картинки — без эффектов, эффекты смотри в VCamPreview.";
 
-        _previewButton.Location = new Point(16, 176);
+        _previewButton.Location = new Point(16, 184);
         _previewButton.Size = new Size(380, 40);
         _previewButton.Text = "Открыть окно предпросмотра (VCamPreview)";
         _previewButton.Name = "previewButton";
@@ -572,29 +595,41 @@ public sealed class MainForm : Form
         _profileDelete.Anchor = AnchorStyles.Top | AnchorStyles.Right;
         _profileDelete.Click += OnProfileDeleteClicked;
 
-        // Row 2: master switch + backend. Everything below grays out while
-        // the master is off (see UpdateFxEnabledState).
+        // Row 2: master switch + backend in a FlowLayoutPanel. Everything
+        // below grays out while the master is off (see UpdateFxEnabledState).
+        // М2: было фикс X=220 для "Backend:" — при >150% DPI текст
+        // "Эффекты включены" реально шире и наезжал на Backend. Flow
+        // сдвигает Backend вправо по фактической ширине чекбокса.
+        var fxRow2 = new FlowLayoutPanel
+        {
+            Location = new Point(6, 37),
+            Size = new Size(840, 30),
+            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+            Name = "fxHeaderRow2",
+        };
         _fxEnabled.AutoSize = true;
-        _fxEnabled.Location = new Point(10, 41);
         _fxEnabled.Text = "Эффекты включены";
         _fxEnabled.Checked = true;
         _fxEnabled.Name = "fxEnabled";
+        _fxEnabled.Margin = new Padding(4, 4, 12, 4);
 
         _fxBackendLabel.AutoSize = true;
-        _fxBackendLabel.Location = new Point(220, 43);
         _fxBackendLabel.Text = "Backend:";
         _fxBackendLabel.Name = "fxBackendLabel";
+        _fxBackendLabel.Margin = new Padding(0, 6, 4, 4);
 
-        _fxBackend.Location = new Point(290, 39);
         _fxBackend.Size = new Size(110, 28);
         _fxBackend.DropDownStyle = ComboBoxStyle.DropDownList;
         _fxBackend.Items.AddRange(FxBackendNames);
         _fxBackend.SelectedIndex = 0;
         _fxBackend.Name = "fxBackend";
-        _fxBackend.Anchor = AnchorStyles.Top | AnchorStyles.Left;
+        _fxBackend.Margin = new Padding(0, 2, 4, 4);
+        fxRow2.Controls.AddRange(new Control[] { _fxEnabled, _fxBackendLabel, _fxBackend });
         _fxHeader.Controls.AddRange(new Control[] { _profileLabel, _profileCombo,
-            _profileApply, _profileSave, _profileDelete,
-            _fxEnabled, _fxBackendLabel, _fxBackend });
+            _profileApply, _profileSave, _profileDelete });
+        _fxHeader.Controls.Add(fxRow2);
 
         _fxTable.Dock = DockStyle.Fill;
         _fxTable.Name = "fxTable";
@@ -627,6 +662,22 @@ public sealed class MainForm : Form
         AddFxRow(4, _fxRgbSplit, _fxRgbSplitLevel, _fxRgbSplitLevelVal);
         AddFxRow(5, _fxTracking, _fxTrackingLevel, _fxTrackingLevelVal);
         AddFxRow(6, _fxVhs, null, null);
+
+        // М1 (продолжение): таб-порядок внутри шапки и таблицы — по визуали:
+        // профиль → мастер → backend → строки сверху вниз (чекбокс → слайдер).
+        _profileCombo.TabIndex = 0;
+        _profileApply.TabIndex = 1;
+        _profileSave.TabIndex = 2;
+        _profileDelete.TabIndex = 3;
+        _fxEnabled.TabIndex = 0;
+        _fxBackend.TabIndex = 1;
+        var fxTab = new Control[]
+        {
+            _fxMirror, _fxGrayscale,
+            _fxNoise, _fxNoiseLevel, _fxScanlines, _fxScanlinesLevel,
+            _fxRgbSplit, _fxRgbSplitLevel, _fxTracking, _fxTrackingLevel, _fxVhs,
+        };
+        for (var fi = 0; fi < fxTab.Length; fi++) fxTab[fi].TabIndex = fi;
 
         _fxGroup.Controls.Add(_fxTable);
         _fxGroup.Controls.Add(_fxHeader);
@@ -689,6 +740,10 @@ public sealed class MainForm : Form
         _recStatus.Text = "Не записывается";
         _recStatus.ForeColor = Color.DimGray;
         _recStatus.Name = "recStatus";
+        // М3: длинный путь записи обрезается с "…" как у соседних
+        // _videoPathLabel/_pathLabel/_cameraIdLabel (без этого хвост просто
+        // клиппился без индикации).
+        _recStatus.AutoEllipsis = true;
         _recStatus.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
 
         _recHint.Location = new Point(16, 79);
@@ -1962,6 +2017,11 @@ public sealed class MainForm : Form
         }
     }
 
+    // М6: встроенное превью — исходник БЕЗ эффектов (только Fit/Cover).
+    // Полноценный ApplyFx сюда не тянем сознательно: эффекты живут в
+    // нативном ProducerCore (C++ GpuEffects/frei0r), тянуть их в UI-процесс
+    // ради превью — дорого и рискованно для perf/стабильности; вместо этого
+    // одна строка в хинтах (см. _videoInfoLabel + HelpTexts «Эффекты»).
     private void UpdatePreview()
     {
         if (_sourceImage is null) return;
@@ -2292,6 +2352,11 @@ public sealed class MainForm : Form
 
         try
         {
+            // М4: пишем валидированный объект одной записью (prof.Save —
+            // атомарный tmp+move, см. В6). Старого File.Copy валидированного
+            // текста здесь больше нет — TOCTOU «проверил одно, записал
+            // другое» закрыт ещё в К5; живые hotkey/record/autostart
+            // смержены выше и сохраняются этой же записью.
             prof.Save(Settings.FilePath);
         }
         catch (Exception ex)

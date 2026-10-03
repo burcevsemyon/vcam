@@ -604,13 +604,16 @@ void CpuTracking(uint8_t* px, uint32_t w, uint32_t h, uint64_t frame,
                 d[0] = p[0];
                 d[1] = p[1];
                 d[2] = p[2];
+                d[3] = 255; // М7: BGRX X=255 как GPU-путь (CopyRgbaToBgrx)
+                            // и frei-путь (FromPluginLayout); иначе alpha
+                            // остаётся от старого пикселя назначения
             }
         }
         // Белая строка head-switching поверх полосы (до 2px, если влезли).
         for (uint32_t y = y0; y < y0 + 2 && y < y1; ++y) {
             uint8_t* dst = px + (size_t)y * rowBytes;
             for (size_t i = 0; i < rowBytes; i += 4) {
-                dst[i] = dst[i + 1] = dst[i + 2] = 255;
+                dst[i] = dst[i + 1] = dst[i + 2] = dst[i + 3] = 255; // М7: и X тоже
             }
         }
     }
@@ -765,6 +768,10 @@ bool ApplyEffects(uint8_t* bgrx, int stride, uint32_t w, uint32_t h,
     // для one-shot лога хоста). VHS на обоих — связка тех же четырёх.
     // Единственный сбой CPU-пути — OOM temp-буфера (кадр не тронут —
     // аллокации все ДО модификации); сами циклы не бросают.
+    // М8 (designed, не менять функционально): g_analogFrame стоит при
+    // выключенном аналоге — счётчик крутится только внутри if (wantCpu),
+    // т.е. анимация шума/трекинга ставится на паузу вместо дрейфа фазы.
+    // При повторном включении помехи продолжаются с того же кадра.
     if (wantCpu) {
         const uint64_t frame =
             g_analogFrame.fetch_add(1, std::memory_order_relaxed);

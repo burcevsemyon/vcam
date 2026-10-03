@@ -1150,6 +1150,10 @@ struct Machine {
     // Эффекты (Settings.fx): применяются после RenderOne перед WriteOne;
     // смена только эффектов — без переоткрытия источника.
     EffectsSection fx;
+    // М5: оба one-shot флага сбрасываются при смене fx (см. ниже
+    // s.fx != m.fx): раньше fxGpuLogged был липким навсегда, а у
+    // fxFreiLogged сброс был только по backend — повторный сбой новой
+    // конфигурации молчал.
     bool fxGpuLogged = false;  // one-shot лог fail-open эффектов
     bool fxFreiLogged = false; // one-shot лог CPU-fallback backend frei0r
     Phase phase = Phase::Switch;
@@ -1310,7 +1314,7 @@ void ApplyFx(Machine& m)
         Log(L"[host] effects: сбой эффектов, кадры идут без них (fail-open)");
     }
     // frei0r недоступен (нет DLL/init fail) — помехи посчитаны CPU, кадр
-    // в эфире; логируем один раз (флаг сбрасывается при смене backend).
+    // в эфире; логируем один раз (флаг сбрасывается при смене fx/backend).
     if (ok && vcam::effects::TakeFreiFallbackFlag() && !m.fxFreiLogged) {
         m.fxFreiLogged = true;
         Log(L"[host] effects: backend frei0r недоступен, помехи на CPU (fail-open)");
@@ -1576,6 +1580,9 @@ DWORD WINAPI WorkerProc(LPVOID)
             // подхватываются на лету (вотчер шлёт dirty через operator== с fx).
             if (s.fx != m.fx) {
                 if (s.fx.backend != m.fx.backend) m.fxFreiLogged = false;
+                // М5: новый набор эффектов — новый one-shot шанс залогировать
+                // сбой (иначе флаг липкий навсегда с первой неудачи).
+                m.fxGpuLogged = false;
                 m.fx = s.fx;
                 Log(L"[host] effects: enabled=%d mirror=%d grayscale=%d noise=%d(%d) scanlines=%d(%d) rgbsplit=%d(%d) tracking=%d(%d) vhs=%d backend=%s",
                     (int)m.fx.enabled, (int)m.fx.mirror, (int)m.fx.grayscale, (int)m.fx.noise,
