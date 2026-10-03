@@ -23,6 +23,11 @@
 //   gateweave[0] interval def 0.6 (больше = медленнее drift),
 //     [1] max_move_x def 0.2, [2] max_move_y def 0.2; max сдвиг ±10*range px,
 //     0.0 → steady-state no-op (после construct prev=0).
+//     Параметров мало (±10px тонут на 720p) → поверх плагина обёртка делает
+//     явный целочисленный сдвиг кадра с wrap краёв (см. GateweavePostShift
+//     ниже): пост-амплитуда ±32px@720p на 100 (пик с плагином ±42px),
+//     рывок каждый кадр (хеш номера кадра из timeSec — детерминировано,
+//     без общего rand()); interval падает с уровнем 0.6→0.1 (рывки чаще).
 //   glow[0] blur: kernel = v/20*max(w,h)/2 (100 → ~32px@1280); update —
 //     screen-blend кадра с его блюром. v=0 НЕ no-op (подсветка остаётся!) →
 //     level 0 пропускаем в обёртке; сила — кроссфейдом входа/выхода
@@ -47,6 +52,13 @@
 //   tracking:  freq 0.15+0.85*L (100 → 100% строк), block 0.05+0.30*L
 //     (100 → 0.35 ≈ 252px@720 — крупные блоки), shift 0.05+0.25*L
 //     (100 → 0.30 ≈ 384px@1280), color 0.2+0.8*L (100 → 5/5 безумия).
+//   gateweave: interval 0.6−0.5*L (100 → 0.1: резкие рывки вместо вальяжного
+//     drift), max_move_x=max_move_y=L (плагин даёт ±10px) ПЛЮС пост-сдвиг
+//     обёртки: dxMax=32*L*w/1280, dyMax=32*L*h/720 (100@720p → ±32px, пик
+//     с плагином ±42px — явно; 25 → ±8px — заметнее старых ±2.5px).
+//     Wrap краёв (без чёрных полос, средняя яркость цела). Зум-дыхание/
+//     ролл НЕ делаем: ресемпл мылит и дорог, ролл без сдвига не виден.
+//     Монотонность — амплитудой пост-сдвига (средний ход ~max/2 ∝ L).
 // Порядок цепочки: denoise → gateweave → rgbsplit → tracking(glitch0r) →
 // glow → noise → scanlines. Обоснование: denoise первым — чистит сенсорный
 // шум до стилизации (после noise-зёрна съедал бы его); gateweave —
@@ -548,6 +560,65 @@ void SetDouble(LoadedPlugin& lp, F0rInstance inst, int idx, double v) {
     GuardedCall(SetParamThunk, &c);
 }
 
+// Детерминированный хеш → псевдослучайное (для пост-сдвига gate-weave).
+// Свой хеш, а не rand(): rand() общий с rgbnoise/glitch0r и зависит от
+// набора активных эффектов; здесь нужен стабильный рывок на номер кадра.
+uint32_t GateHash(uint32_t x) {
+    x ^= x >> 16;
+    x *= 0x21f0aaadu;
+    x ^= x >> 15;
+    x *= 0xd35a2d97u;
+    x ^= x >> 15;
+    return x;
+}
+
+// Явное дрожание плёнки поверх плагина gateweave (прецедент — scanlines:
+// снапшот в stageC + пост-обработка в обёртке). Целочисленный сдвиг всего
+// кадра на (dx,dy) с wrap краёв (swap сторон — без чёрных полос, средняя
+// яркость цела, X=255 untouched — только memcpy). Амплитуда ∝ L
+// (монотонность по построению), рывок каждый кадр (хеш номера кадра из
+// timeSec: вызывающий даёт timeSec=frame/30). stageC здесь scratch
+// (снапшоты glow/scanlines делаются позже по цепочке — конфликта нет).
+// cur — текущий BGRX-буфер цепочки (один из stageA/stageB), scratch=stageC.
+void GateweavePostShift(uint8_t* cur, uint8_t* scratch, uint32_t w, uint32_t h,
+                        int level, double timeSec) {
+    const double L = (double)level / 100.0;
+    const int dxMax = (int)(32.0 * L * (double)w / 1280.0 + 0.5);
+    const int dyMax = (int)(32.0 * L * (double)h / 720.0 + 0.5);
+    if (dxMax <= 0 && dyMax <= 0) return;
+    const uint32_t frame = (uint32_t)(timeSec * 30.0 + 0.5);
+    const uint32_t hx = GateHash(frame * 2u + 1u);
+    const uint32_t hy = GateHash(frame * 2u + 0x9e3779b9u);
+    const int dx =
+        dxMax > 0 ? (int)(hx % (uint32_t)(2 * dxMax + 1)) - dxMax : 0;
+    const int dy =
+        dyMax > 0 ? (int)(hy % (uint32_t)(2 * dyMax + 1)) - dyMax : 0;
+    if (dx == 0 && dy == 0) return;
+    const size_t rowBytes = (size_t)w * 4u;
+    const size_t bytes = rowBytes * h;
+    std::memcpy(scratch, cur, bytes);
+    for (uint32_t y = 0; y < h; ++y) {
+        int sy = (int)y - dy;
+        if (sy < 0)
+            sy += (int)h;
+        else if (sy >= (int)h)
+            sy -= (int)h; // |dy|<=dyMax<h всегда (32px@720p), одного fix хватает
+        const uint8_t* srow = scratch + (size_t)sy * rowBytes;
+        uint8_t* drow = cur + (size_t)y * rowBytes;
+        if (dx == 0) {
+            std::memcpy(drow, srow, rowBytes);
+        } else if (dx > 0) {
+            const size_t n = (size_t)dx * 4u;
+            std::memcpy(drow, srow + rowBytes - n, n);
+            std::memcpy(drow + n, srow, rowBytes - n);
+        } else {
+            const size_t n = (size_t)(-dx) * 4u;
+            std::memcpy(drow, srow + n, rowBytes - n);
+            std::memcpy(drow + rowBytes - n, srow, n);
+        }
+    }
+}
+
 } // namespace
 
 FreiResult ApplyAnalog(uint8_t* bgrx, uint32_t w, uint32_t h,
@@ -642,9 +713,12 @@ FreiResult ApplyAnalog(uint8_t* bgrx, uint32_t w, uint32_t h,
             SetDouble(lp, inst, 3, 0.20 + 0.80 * L); // color (100 → 5/5)
             break;
         case kFxGateweave:
-            SetDouble(lp, inst, 0, 0.6); // interval: дефолт апстрима
-            SetDouble(lp, inst, 1, L);   // max_move_x (100 → ±10px размах)
-            SetDouble(lp, inst, 2, L);   // max_move_y (25 → ±2.5px, тонко)
+            // Interval падает с уровнем: 0.6 (вальяжный drift) → 0.1
+            // (резкие рывки каждый кадр). max_move как раньше (плагин даёт
+            // ±10px); явную амплитуду добирает пост-сдвиг ниже.
+            SetDouble(lp, inst, 0, 0.6 - 0.5 * L); // interval (100 → 0.1)
+            SetDouble(lp, inst, 1, L);   // max_move_x (100 → ±10px плагина)
+            SetDouble(lp, inst, 2, L);   // max_move_y
             break;
         case kFxGlow:
             SetDouble(lp, inst, 0, L); // blur (100 → kernel ~32px@1280)
@@ -684,6 +758,11 @@ FreiResult ApplyAnalog(uint8_t* bgrx, uint32_t w, uint32_t h,
             // Выход плагина (cur) → BGRX в nxt; nxt становится текущим.
             FromPluginLayout(lp, cur, nxt, pixels);
             std::swap(cur, nxt);
+        }
+        if (fx == kFxGateweave) {
+            // Явное дрожание: пост-сдвиг поверх плагина (wrap краёв).
+            // Level 0 сюда не доходит (пропуск выше = точный no-op).
+            GateweavePostShift(cur, st.stageC, w, h, level, req.timeSec);
         }
         if (fx == kFxGlow) {
             // Сила свечения — кроссфейд входа и выхода плагина
