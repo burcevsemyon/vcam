@@ -29,10 +29,10 @@
       <WarningLevel>Level3</WarningLevel>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <PreprocessorDefinitions>NDEBUG;_LIB;_WIN32_WINNT=0x0A00;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>NDEBUG;_LIB;_WIN32_WINNT=0x0A00;GPUPIXEL_STATIC_LINK;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)..\Common;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)..\Common;$(SolutionDir)third_party\gpupixel\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -41,6 +41,7 @@
     <ClCompile Include="CameraControls.cpp" />
     <ClCompile Include="ControlServer.cpp" />
     <ClCompile Include="FrameWriter.cpp" />
+    <ClCompile Include="GpuEffects.cpp" />
     <ClCompile Include="Settings.cpp" />
     <ClCompile Include="SettingsWatcher.cpp" />
     <ClCompile Include="SourceFactory.cpp" />
@@ -53,7 +54,7 @@
     <ClInclude Include="CameraSource.h" />
     <ClInclude Include="CameraControls.h" />
     <ClInclude Include="ControlServer.h" />
-    <ClInclude Include="FrameWriter.h" />
+    <ClInclude Include="GpuEffects.h" />
     <ClInclude Include="Settings.h" />
     <ClInclude Include="SettingsWatcher.h" />
     <ClInclude Include="StaticImageSource.h" />

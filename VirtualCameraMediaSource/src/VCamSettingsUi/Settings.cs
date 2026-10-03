@@ -14,6 +14,7 @@ namespace VCamSettingsUi;
 //     "camera": { "id": "<MF symbolic link>", "name": "<friendly name>",
 ///                "capture": "max" | "720p" | "1080p" },
 //     "quality": "source" | "fixed720p",
+//     "effects": { "mirror": bool, "grayscale": bool },
 //     "autostart": bool }
 // Empty camera section (id and name both "") -> host shows NO SIGNAL until a
 // device is chosen. Load also accepts the legacy flat format
@@ -81,6 +82,11 @@ public sealed class Settings
     // Root "quality" (v2): mirrors Settings::ParseQuality on the C++ side —
     // only "fixed720p" passes, anything else (incl. missing) is Source.
     public Quality Quality { get; set; } = Quality.Source;
+
+    // Section "effects" (host post-fx): mirrors EffectsSection on the C++ side.
+    // Legacy files without the section migrate to false/false.
+    public bool FxMirror { get; set; }
+    public bool FxGrayscale { get; set; }
 
     // Section "camera" capture: mirrors Settings::ParseCapture on the C++ side —
     // only "720p"/"1080p" pass, anything else (incl. missing) is Max.
@@ -157,6 +163,12 @@ public sealed class Settings
 
                 if (root.TryGetProperty("quality", out var q) && q.ValueKind == JsonValueKind.String)
                     s.Quality = ParseQuality(q.GetString() ?? "");
+
+                if (root.TryGetProperty("effects", out var fx) && fx.ValueKind == JsonValueKind.Object)
+                {
+                    s.FxMirror = GetBool(fx, "mirror");
+                    s.FxGrayscale = GetBool(fx, "grayscale");
+                }
 
                 if (root.TryGetProperty("autostart", out var au))
                     s.Autostart = au.ValueKind != JsonValueKind.False;
@@ -236,6 +248,11 @@ public sealed class Settings
                 },
             },
             ["quality"] = Quality == Quality.Fixed720p ? "fixed720p" : "source",
+            ["effects"] = new Dictionary<string, object>
+            {
+                ["mirror"] = FxMirror,
+                ["grayscale"] = FxGrayscale,
+            },
             ["autostart"] = Autostart,
         };
 

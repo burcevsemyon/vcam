@@ -14,6 +14,7 @@
 #include "ProducerApi.h"
 #include "Settings.h"
 #include "SettingsWatcher.h"
+#include "GpuEffects.h"
 #include "SharedMemoryContract.h"
 #include "MappedViewOfFilePtr.h"
 
@@ -554,6 +555,11 @@ struct Machine {
     SourceConfig target;
     bool hasTarget = false;
     std::wstring quality = L"source"; // Settings.quality; смена -> переоткрытие
+    // Эффекты (Settings.fx): применяются после RenderOne перед WriteOne;
+    // смена только эффектов — без переоткрытия источника.
+    bool fxMirror = false;
+    bool fxGrayscale = false;
+    bool fxGpuLogged = false; // one-shot лог fail-open GPU-эффектов
     Phase phase = Phase::Switch;
     ULONGLONG switchStart = 0;
     ULONGLONG nextAttempt = 0;
@@ -597,6 +603,20 @@ bool WriteOne(Machine& m)
         return m.writer.WriteFrameNative(m.buf.data(), (int)(m.frameW * 4),
                                          m.frameW, m.frameH);
     return m.writer.WriteFrame(m.buf.data(), (int)vcam::VCamStride);
+}
+
+// Эффекты хоста: после успешного RenderOne, перед WriteOne, над m.buf
+// (буфер плотно упакован frameW x frameH BGRX — stride frameW*4).
+// Единая точка для всех фаз (Switch/Active/Fallback-restore).
+// Исполнитель — GPUPixel (GpuEffects); false = fail-open: кадр без изменений.
+void ApplyFx(Machine& m)
+{
+    const bool ok = vcam::effects::ApplyEffects(m.buf.data(), (int)(m.frameW * 4),
+                                                m.frameW, m.frameH, m.fxMirror, m.fxGrayscale);
+    if (!ok && !m.fxGpuLogged) {
+        m.fxGpuLogged = true;
+        Log(L"[host] effects: GPU недоступен, кадры идут без эффектов (fail-open)");
+    }
 }
 
 // Один кадр из src: натив при известном NativeSize, иначе legacy 720p-путь
@@ -692,6 +712,7 @@ DWORD Step(Machine& m)
 
         std::wstring rerr;
         if (RenderOne(m.src.get(), m, rerr)) {
+            ApplyFx(m);
             bool written = WriteOne(m);
             m.phase = Phase::Active;
             SetActiveStatus(m);
@@ -713,6 +734,7 @@ DWORD Step(Machine& m)
     case Phase::Active: {
         std::wstring rerr;
         if (m.src && RenderOne(m.src.get(), m, rerr)) {
+            ApplyFx(m);
             if (WriteOne(m))
                 return 0;
             Sleep(kFrameMs);
@@ -732,6 +754,7 @@ DWORD Step(Machine& m)
                     std::wstring rerr;
                     if (RenderOne(cand.get(), m, rerr)) {
                         m.src = std::move(cand);
+                        ApplyFx(m);
                         WriteOne(m);
                         m.phase = Phase::Active;
                         SetActiveStatus(m);
@@ -787,12 +810,21 @@ DWORD WINAPI WorkerProc(LPVOID)
             SourceConfig want = ToSourceConfig(s);
             if (!m.hasTarget || want != m.target || s.quality != m.quality)
                 BeginSwitch(m, want, s.quality);
+            // Смена только эффектов — без переоткрытия источника: флаги
+            // подхватываются на лету (вотчер шлёт dirty через operator== с fx).
+            if (s.fx.mirror != m.fxMirror || s.fx.grayscale != m.fxGrayscale) {
+                m.fxMirror = s.fx.mirror;
+                m.fxGrayscale = s.fx.grayscale;
+                Log(L"[host] effects: mirror=%d grayscale=%d",
+                    (int)m.fxMirror, (int)m.fxGrayscale);
+            }
         }
         timeout = Step(m);
     }
 
     CloseSource(m);
     m.writer.Close();
+    vcam::effects::ShutdownEffects();
     Log(L"[host] worker stopped");
     return 0;
 }

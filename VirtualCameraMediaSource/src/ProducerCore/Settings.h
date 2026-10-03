@@ -40,6 +40,16 @@ struct CameraSection {
     }
 };
 
+struct EffectsSection {
+    bool mirror = false;    // зеркало по горизонтали
+    bool grayscale = false; // Ч/Б (BT.601 luma)
+
+    bool operator==(const EffectsSection& o) const
+    {
+        return mirror == o.mirror && grayscale == o.grayscale;
+    }
+};
+
 struct Settings {
     std::wstring sourceType = L"static"; // L"static" | L"video" | L"camera"
     StaticSection st;
@@ -50,11 +60,15 @@ struct Settings {
     // default) | L"fixed720p" (v2 = 720p, лесенка только вниз).
     // Cap натива — 4K константа (vcam::VCamNativeCapW/H), UI нет.
     std::wstring quality = L"source";
+    // Эффекты хоста (секция effects): смена только эффектов — без переоткрытия
+    // источника (отдельная ветка в WorkerProc, см. BeginSwitch по target/quality).
+    EffectsSection fx;
 
     bool operator==(const Settings& o) const
     {
         return sourceType == o.sourceType && st == o.st && video == o.video &&
-                cam == o.cam && autostart == o.autostart && quality == o.quality;
+                cam == o.cam && autostart == o.autostart && quality == o.quality &&
+                fx == o.fx;
     }
     bool operator!=(const Settings& o) const { return !(*this == o); }
 
