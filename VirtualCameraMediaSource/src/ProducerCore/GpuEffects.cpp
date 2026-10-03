@@ -41,14 +41,17 @@
 
 #include "GpuEffects.h"
 
+#include <atomic>
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <excpt.h>
 #include <future>
 #include <mutex>
 #include <queue>
 #include <thread>
+#include <vector>
 
 #include <windows.h>
 
@@ -463,23 +466,147 @@ bool EnsureBuiltLocked(State& st) {
 
 } // namespace
 
+// ---- CPU-аналог помех (без внешних зависимостей; работает и без GPU) ----
+// Кадр-счётчик для анимации: сид PRNG каждого кадра = splitmix64(frame^salt),
+// поэтому шум и трекинг меняются от кадра к кадру, но детерминированы внутри.
+std::atomic<uint64_t> g_analogFrame{0};
+
+uint64_t SplitMix64(uint64_t x) {
+    x += 0x9E3779B97F4A7C15ULL;
+    x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
+    return x ^ (x >> 31);
+}
+
+uint32_t XorShift32(uint32_t& s) {
+    s ^= s << 13;
+    s ^= s >> 17;
+    s ^= s << 5;
+    return s;
+}
+
+uint8_t ClampU8(int v) { return (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v); }
+
+// Белый/RGB-шум: ±20 на канал (один xorshift на пиксель, каналы — из разных
+// битовых срезов). "NOISE"-salt даёт независимый поток от трекинга.
+void CpuNoise(uint8_t* px, size_t pixels, uint64_t frame) {
+    uint32_t s = (uint32_t)SplitMix64(frame ^ 0x4E4F495345ULL);
+    if (s == 0) s = 0x243F6A88u;
+    for (size_t i = 0; i < pixels; ++i, px += 4) {
+        const uint32_t r = XorShift32(s);
+        px[0] = ClampU8((int)px[0] + ((int)(r & 63u) % 41) - 20);
+        px[1] = ClampU8((int)px[1] + ((int)((r >> 8) & 63u) % 41) - 20);
+        px[2] = ClampU8((int)px[2] + ((int)((r >> 16) & 63u) % 41) - 20);
+    }
+}
+
+// Scanlines: нечётные строки темнее (×185/256 ≈ 0.72) — CRT-маска.
+void CpuScanlines(uint8_t* px, uint32_t w, uint32_t h) {
+    const size_t rowBytes = (size_t)w * 4u;
+    for (uint32_t y = 1; y < h; y += 2) {
+        uint8_t* row = px + (size_t)y * rowBytes;
+        for (size_t i = 0; i < rowBytes; i += 4) {
+            row[i] = (uint8_t)((row[i] * 185u) >> 8);
+            row[i + 1] = (uint8_t)((row[i + 1] * 185u) >> 8);
+            row[i + 2] = (uint8_t)((row[i + 2] * 185u) >> 8);
+        }
+    }
+}
+
+// Хроматическая аберрация: R берём правее на dx, B — левее (построчный temp).
+void CpuRgbSplit(uint8_t* px, uint32_t w, uint32_t h) {
+    const int dx = (w >= 2560) ? 8 : (w >= 1280) ? 4 : 2;
+    if (dx <= 0 || (uint32_t)dx >= w) return;
+    const size_t rowBytes = (size_t)w * 4u;
+    std::vector<uint8_t> tmp(rowBytes); // throw → catch в ApplyEffects
+    for (uint32_t y = 0; y < h; ++y) {
+        uint8_t* row = px + (size_t)y * rowBytes;
+        std::memcpy(tmp.data(), row, rowBytes);
+        for (uint32_t x = 0; x < w; ++x) {
+            uint32_t xr = x + (uint32_t)dx;
+            if (xr >= w) xr = w - 1;
+            const uint32_t xb = (x >= (uint32_t)dx) ? x - (uint32_t)dx : 0;
+            row[x * 4u + 2] = tmp[xr * 4u + 2]; // R справа
+            row[x * 4u + 0] = tmp[xb * 4u + 0]; // B слева
+        }
+    }
+}
+
+// Трекинг-глитч: 2–4 полосы/кадр со случайным горизонтальным сдвигом (wrap)
+// + белая 2px-строка сверху полосы (head-switching). Позиции/сдвиги —
+// от frame-сида, поэтому полосы движутся от кадра к кадру.
+void CpuTracking(uint8_t* px, uint32_t w, uint32_t h, uint64_t frame) {
+    if (w < 16 || h < 16) return;
+    const size_t rowBytes = (size_t)w * 4u;
+    std::vector<uint8_t> snap((size_t)h * rowBytes);
+    std::memcpy(snap.data(), px, snap.size());
+    std::vector<uint8_t> tmp(rowBytes);
+    uint32_t s = (uint32_t)SplitMix64(frame ^ 0x545241434BULL);
+    if (s == 0) s = 0x452821E7u;
+    const int bands = 2 + (int)(XorShift32(s) % 3u);
+    const uint32_t maxBandH = h / 8u >= 8u ? h / 8u : 8u;
+    const uint32_t maxOff = w / 16u >= 8u ? w / 16u : 8u;
+    for (int b = 0; b < bands; ++b) {
+        const uint32_t bandH = 8u + XorShift32(s) % maxBandH;
+        const uint32_t y0 = XorShift32(s) % h;
+        uint32_t y1 = y0 + bandH;
+        if (y1 > h) y1 = h;
+        int off = 8 + (int)(XorShift32(s) % maxOff);
+        if (XorShift32(s) & 1u) off = -off;
+        for (uint32_t y = y0; y < y1; ++y) {
+            const uint8_t* src = snap.data() + (size_t)y * rowBytes;
+            uint8_t* dst = px + (size_t)y * rowBytes;
+            std::memcpy(tmp.data(), src, rowBytes);
+            for (uint32_t x = 0; x < w; ++x) {
+                int sx = ((int)x - off) % (int)w;
+                if (sx < 0) sx += (int)w;
+                const uint8_t* p = tmp.data() + (size_t)sx * 4u;
+                uint8_t* d = dst + (size_t)x * 4u;
+                d[0] = p[0];
+                d[1] = p[1];
+                d[2] = p[2];
+            }
+        }
+        // Белая строка head-switching поверх полосы (до 2px, если влезли).
+        for (uint32_t y = y0; y < y0 + 2 && y < y1; ++y) {
+            uint8_t* dst = px + (size_t)y * rowBytes;
+            for (size_t i = 0; i < rowBytes; i += 4) {
+                dst[i] = dst[i + 1] = dst[i + 2] = 255;
+            }
+        }
+    }
+}
+
 bool ApplyEffects(uint8_t* bgrx, int stride, uint32_t w, uint32_t h,
-                  bool mirror, bool grayscale) {
+                  const FxFlags& fx) {
     if (!bgrx || w == 0 || h == 0) return true;
-    if (!mirror && !grayscale) return true;
+    const bool mirror = fx.mirror;
+    const bool grayscale = fx.grayscale;
+    const bool needGpu = mirror || grayscale;
+    bool noise = fx.noise;
+    bool scanlines = fx.scanlines;
+    bool rgbSplit = fx.rgbSplit;
+    bool tracking = fx.tracking;
+    if (fx.vhs) noise = scanlines = rgbSplit = tracking = true;
+    const bool wantCpu = noise || scanlines || rgbSplit || tracking;
+    if (!needGpu && !wantCpu) return true;
     if (stride != (int)(w * 4u)) return false; // только плотная упаковка
     const size_t pixels = (size_t)w * h;
     if (pixels == 0 || pixels > (size_t)16384 * 16384) return false;
 
     State& st = FxState();
-    if (IsDisabled(st)) return false;
+    if (needGpu && IsDisabled(st)) return false;
 
     // Пайпы + shared_ptr-копии под pipeMutex; сам Process — на GpuThread без
     // мьютексов (копии держат цепочку живой даже при чужой пересборке).
+    // GPU-кусок — только при mirror/grayscale; чистый аналог работает и без
+    // GPU (Session 0), GL тогда не трогаем вообще.
+    bool gpuOk = !needGpu;
+    bool swapped = false;
+    if (needGpu) {
     std::shared_ptr<gpupixel::SourceRawData> src;
     std::shared_ptr<gpupixel::SinkRawData> snk;
     ScanInfo inputScan{};
-    bool swapped = false;
     {
         std::unique_lock<std::mutex> plock(st.pipeMutex);
         if (!EnsureBuiltLocked(st)) {
@@ -532,8 +659,10 @@ bool ApplyEffects(uint8_t* bgrx, int stride, uint32_t w, uint32_t h,
         } catch (...) {
         }
         if (frameOk) {
+            swapped = false; // CopyRgbaToBgrx уже вернул порядок BGRX
+            gpuOk = true;
             NoteOk(st);
-            return true;
+            break;
         }
         if (!corrupt) {
             // Обычная неудача без подписи порчи (вызов упал): откат swap,
@@ -572,11 +701,34 @@ bool ApplyEffects(uint8_t* bgrx, int stride, uint32_t w, uint32_t h,
             }
             inputScan = ScanFrame(bgrx, pixels);
         }
+    } // for attempt
+    } // if (needGpu)
+    if (!gpuOk) {
+        // Повтор тоже битый — липкий disabled, кадр не тронут (swap откачен).
+        // Сюда же попадаем при обычном GPU-фейле: CPU-аналог пропускаем
+        // (атомарно всё-или-ничего, один one-shot лог у вызывающего).
+        if (swapped) SwapRBInPlace(bgrx, pixels);
+        NoteFail(st, true);
+        return false;
     }
-    // Повтор тоже битый — липкий disabled, кадр не тронут (swap откачен).
-    if (swapped) SwapRBInPlace(bgrx, pixels);
-    NoteFail(st, true);
-    return false;
+
+    // CPU-аналог помех (после GPU; grayscale уже применён — цветной шум
+    // поверх Ч/Б задуман как chroma-noise, rgb-split даёт кромки и на сером).
+    // Единственный сбой здесь — OOM temp-буфера (кадр не тронут — аллокации
+    // все ДО модификации); сами циклы не бросают.
+    if (wantCpu) {
+        const uint64_t frame =
+            g_analogFrame.fetch_add(1, std::memory_order_relaxed);
+        try {
+            if (rgbSplit) CpuRgbSplit(bgrx, w, h);
+            if (tracking) CpuTracking(bgrx, w, h, frame);
+            if (noise) CpuNoise(bgrx, pixels, frame);
+            if (scanlines) CpuScanlines(bgrx, w, h);
+        } catch (...) {
+            return false;
+        }
+    }
+    return true;
 }
 
 void ShutdownEffects() {

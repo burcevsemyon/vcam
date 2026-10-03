@@ -14,7 +14,9 @@ namespace VCamSettingsUi;
 //     "camera": { "id": "<MF symbolic link>", "name": "<friendly name>",
 ///                "capture": "max" | "720p" | "1080p" },
 //     "quality": "source" | "fixed720p",
-//     "effects": { "mirror": bool, "grayscale": bool },
+//     "effects": { "mirror": bool, "grayscale": bool, "noise": bool,
+//                "scanlines": bool, "rgbsplit": bool, "tracking": bool,
+//                "vhs": bool },
 //     "autostart": bool }
 // Empty camera section (id and name both "") -> host shows NO SIGNAL until a
 // device is chosen. Load also accepts the legacy flat format
@@ -84,9 +86,15 @@ public sealed class Settings
     public Quality Quality { get; set; } = Quality.Source;
 
     // Section "effects" (host post-fx): mirrors EffectsSection on the C++ side.
-    // Legacy files without the section migrate to false/false.
+    // Legacy files without the section migrate to all-false.
+    // vhs = VHS preset (host ORs all four interferences at once).
     public bool FxMirror { get; set; }
     public bool FxGrayscale { get; set; }
+    public bool FxNoise { get; set; }
+    public bool FxScanlines { get; set; }
+    public bool FxRgbSplit { get; set; }
+    public bool FxTracking { get; set; }
+    public bool FxVhs { get; set; }
 
     // Section "camera" capture: mirrors Settings::ParseCapture on the C++ side —
     // only "720p"/"1080p" pass, anything else (incl. missing) is Max.
@@ -168,6 +176,11 @@ public sealed class Settings
                 {
                     s.FxMirror = GetBool(fx, "mirror");
                     s.FxGrayscale = GetBool(fx, "grayscale");
+                    s.FxNoise = GetBool(fx, "noise");
+                    s.FxScanlines = GetBool(fx, "scanlines");
+                    s.FxRgbSplit = GetBool(fx, "rgbsplit");
+                    s.FxTracking = GetBool(fx, "tracking");
+                    s.FxVhs = GetBool(fx, "vhs");
                 }
 
                 if (root.TryGetProperty("autostart", out var au))
@@ -252,6 +265,11 @@ public sealed class Settings
             {
                 ["mirror"] = FxMirror,
                 ["grayscale"] = FxGrayscale,
+                ["noise"] = FxNoise,
+                ["scanlines"] = FxScanlines,
+                ["rgbsplit"] = FxRgbSplit,
+                ["tracking"] = FxTracking,
+                ["vhs"] = FxVhs,
             },
             ["autostart"] = Autostart,
         };

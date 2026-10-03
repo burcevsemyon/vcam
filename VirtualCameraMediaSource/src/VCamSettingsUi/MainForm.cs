@@ -22,9 +22,16 @@ public sealed class MainForm : Form
     private readonly Label _qualityLabel = new();
     private readonly ComboBox _qualityCombo = new();
 
-    // Host post-fx (phase vcam-effects): mirror + grayscale, section "effects".
+    // Host post-fx (phase vcam-effects + analog): mirror + grayscale +
+    // analog interferences (noise/scanlines/rgbsplit/tracking/vhs),
+    // section "effects". Two rows of checkboxes (y=600/622).
     private readonly CheckBox _fxMirror = new();
     private readonly CheckBox _fxGrayscale = new();
+    private readonly CheckBox _fxNoise = new();
+    private readonly CheckBox _fxScanlines = new();
+    private readonly CheckBox _fxRgbSplit = new();
+    private readonly CheckBox _fxTracking = new();
+    private readonly CheckBox _fxVhs = new();
 
     // Info panel replacing the picture preview in video mode.
     private readonly Panel _videoPanel = new();
@@ -103,7 +110,7 @@ public sealed class MainForm : Form
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
-        ClientSize = new Size(880, 686);
+        ClientSize = new Size(880, 710);
         Font = new Font("Segoe UI", 9f);
         try
         {
@@ -212,31 +219,57 @@ public sealed class MainForm : Form
         _cropKeepAspect.Text = "Сохранять пропорции";
         _cropKeepAspect.Visible = false;
 
-        // Host post-fx row (always visible, below the crop fields row).
+        // Host post-fx rows (always visible, below the crop fields row).
         _fxMirror.Location = new Point(12, 600);
-        _fxMirror.Size = new Size(120, 22);
+        _fxMirror.Size = new Size(100, 22);
         _fxMirror.Text = "Зеркало";
         _fxMirror.Name = "fxMirror";
 
-        _fxGrayscale.Location = new Point(150, 600);
-        _fxGrayscale.Size = new Size(120, 22);
+        _fxGrayscale.Location = new Point(118, 600);
+        _fxGrayscale.Size = new Size(60, 22);
         _fxGrayscale.Text = "Ч/Б";
         _fxGrayscale.Name = "fxGrayscale";
 
-        _hintLabel.Location = new Point(12, 632);
+        _fxNoise.Location = new Point(184, 600);
+        _fxNoise.Size = new Size(70, 22);
+        _fxNoise.Text = "Шум";
+        _fxNoise.Name = "fxNoise";
+
+        _fxScanlines.Location = new Point(260, 600);
+        _fxScanlines.Size = new Size(110, 22);
+        _fxScanlines.Text = "Сканлайны";
+        _fxScanlines.Name = "fxScanlines";
+
+        _fxRgbSplit.Location = new Point(12, 622);
+        _fxRgbSplit.Size = new Size(110, 22);
+        _fxRgbSplit.Text = "RGB-сдвиг";
+        _fxRgbSplit.Name = "fxRgbSplit";
+
+        _fxTracking.Location = new Point(128, 622);
+        _fxTracking.Size = new Size(100, 22);
+        _fxTracking.Text = "Трекинг";
+        _fxTracking.Name = "fxTracking";
+
+        _fxVhs.Location = new Point(234, 622);
+        _fxVhs.Size = new Size(70, 22);
+        _fxVhs.Text = "VHS";
+        _fxVhs.Name = "fxVhs";
+
+        _hintLabel.Location = new Point(12, 652);
         _hintLabel.Size = new Size(660, 50);
         _hintLabel.ForeColor = Color.DimGray;
         _hintLabel.Text = $"Настройки: {Settings.FilePath} — хост VCam подхватит их автоматически (~1 с).";
         _hintLabel.Name = "hintLabel";
 
-        _helpButton.Location = new Point(688, 634);
+        _helpButton.Location = new Point(688, 654);
         _helpButton.Size = new Size(180, 40);
         _helpButton.Text = "Справка…";
         _helpButton.Name = "helpButton";
         _helpButton.Click += OnHelpClicked;
 
         Controls.AddRange(new Control[] { _preview, _cropView, _videoPanel, _cameraPanel, _pathLabel, _mediaLabel, _mediaCombo,
-            _qualityLabel, _qualityCombo, _fxMirror, _fxGrayscale,
+            _qualityLabel, _qualityCombo, _fxMirror, _fxGrayscale, _fxNoise, _fxScanlines,
+            _fxRgbSplit, _fxTracking, _fxVhs,
             _mode, _openButton, _fullSizeButton, _saveButton, _hostStatusLabel, _hostButton, _helpButton,
             _cropXLabel, _cropX, _cropYLabel, _cropY, _cropWLabel, _cropW, _cropHLabel, _cropH, _cropKeepAspect, _hintLabel });
 
@@ -553,6 +586,11 @@ public sealed class MainForm : Form
         _qualityCombo.SelectedIndex = s.Quality == Quality.Fixed720p ? 1 : 0;
         _fxMirror.Checked = s.FxMirror;
         _fxGrayscale.Checked = s.FxGrayscale;
+        _fxNoise.Checked = s.FxNoise;
+        _fxScanlines.Checked = s.FxScanlines;
+        _fxRgbSplit.Checked = s.FxRgbSplit;
+        _fxTracking.Checked = s.FxTracking;
+        _fxVhs.Checked = s.FxVhs;
         _mediaCombo.SelectedIndex = s.SourceType switch
         {
             SourceType.Video => 1,
@@ -957,6 +995,11 @@ public sealed class MainForm : Form
         var settings = Settings.Load();
         settings.FxMirror = _fxMirror.Checked;
         settings.FxGrayscale = _fxGrayscale.Checked;
+        settings.FxNoise = _fxNoise.Checked;
+        settings.FxScanlines = _fxScanlines.Checked;
+        settings.FxRgbSplit = _fxRgbSplit.Checked;
+        settings.FxTracking = _fxTracking.Checked;
+        settings.FxVhs = _fxVhs.Checked;
 
         if (CurrentSourceType == SourceType.Video)
         {

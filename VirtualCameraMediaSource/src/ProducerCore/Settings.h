@@ -42,12 +42,22 @@ struct CameraSection {
 
 struct EffectsSection {
     bool mirror = false;    // зеркало по горизонтали
-    bool grayscale = false; // Ч/Б (BT.601 luma)
+    bool grayscale = false; // Ч/Б (Rec.709 luma, исполнитель — GPUPixel)
+    // Аналоговые помехи (исполнитель — CPU в GpuEffects.cpp, после GPU):
+    bool noise = false;     // RGB/белый шум (±20/канал, анимирован по кадрам)
+    bool scanlines = false; // чересстрочные линии (нечётные строки ×0.72)
+    bool rgbSplit = false;  // хроматическая аберрация (R/B-разъезд по X)
+    bool tracking = false;  // трекинг-глитч (сдвинутые полосы, движутся)
+    bool vhs = false;       // VHS-пресет: все четыре помехи сразу (OR)
 
     bool operator==(const EffectsSection& o) const
     {
-        return mirror == o.mirror && grayscale == o.grayscale;
+        return mirror == o.mirror && grayscale == o.grayscale &&
+               noise == o.noise && scanlines == o.scanlines &&
+               rgbSplit == o.rgbSplit && tracking == o.tracking &&
+               vhs == o.vhs;
     }
+    bool operator!=(const EffectsSection& o) const { return !(*this == o); }
 };
 
 struct Settings {

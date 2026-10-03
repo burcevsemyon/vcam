@@ -2,19 +2,34 @@
 
 #include <cstdint>
 
-// Покадровые эффекты хоста на GPUPixel (замена самописного Effects.h).
+// Покадровые эффекты хоста: GPUPixel (зеркало + Ч/Б) + CPU-аналог помех.
 // Контракт вызова прежний: in-place над BGRX-кадром после RenderOne,
-// перед WriteOne. Settings/UI (`effects {mirror,grayscale}`) не меняются.
+// перед WriteOne.
 namespace vcam::effects {
 
+// Флаги эффектов — 1:1 с Settings::EffectsSection (Settings.h) и C# Settings.
+struct FxFlags {
+    bool mirror = false;
+    bool grayscale = false;
+    bool noise = false;     // RGB/белый шум
+    bool scanlines = false; // чересстрочные линии
+    bool rgbSplit = false;  // хроматическая аберрация (RGB-сдвиг)
+    bool tracking = false;  // трекинг-глитч (сдвинутые полосы)
+    bool vhs = false;       // VHS-пресет: все четыре помехи сразу
+};
+
 // Применяет эффекты к кадру. Возвращает:
-//   true  — эффекты применены (или оба флага выключены — кадр не тронут);
-//   false — GPU/библиотека недоступны: кадр ОСТАВЛЕН БЕЗ ИЗМЕНЕНИЙ
-//           (fail-open, камера обязана работать). Вызывающий логирует один раз.
+//   true  — эффекты применены (или все флаги выключены — кадр не тронут);
+//   false — сбой: кадр ОСТАВЛЕН БЕЗ ИЗМЕНЕНИЙ (fail-open, камера обязана
+//           работать). Вызывающий логирует один раз.
+// Порядок: GPU (mirror+grayscale, существующие пайпы) → CPU-аналог
+// (rgbSplit → tracking → noise → scanlines). Цветной шум поверх Ч/Б —
+// задуманный chroma-noise; rgb-split на сером даёт цветные кромки.
+// GPU запрошен и упал → CPU пропускается (атомарно всё-или-ничего).
 // Только плотно упакованные кадры (stride == w*4, как m.buf хоста);
 // прочий stride — тоже false без изменений.
 bool ApplyEffects(uint8_t* bgrx, int stride, uint32_t w, uint32_t h,
-                  bool mirror, bool grayscale);
+                  const FxFlags& fx);
 
 // Освобождение пайплайна (best-effort). Скрытый GL-контекст и worker-поток
 // принадлежат библиотеке и живут до конца процесса (дизайн GPUPixel:

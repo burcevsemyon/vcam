@@ -557,9 +557,8 @@ struct Machine {
     std::wstring quality = L"source"; // Settings.quality; смена -> переоткрытие
     // Эффекты (Settings.fx): применяются после RenderOne перед WriteOne;
     // смена только эффектов — без переоткрытия источника.
-    bool fxMirror = false;
-    bool fxGrayscale = false;
-    bool fxGpuLogged = false; // one-shot лог fail-open GPU-эффектов
+    EffectsSection fx;
+    bool fxGpuLogged = false; // one-shot лог fail-open эффектов
     Phase phase = Phase::Switch;
     ULONGLONG switchStart = 0;
     ULONGLONG nextAttempt = 0;
@@ -608,14 +607,23 @@ bool WriteOne(Machine& m)
 // Эффекты хоста: после успешного RenderOne, перед WriteOne, над m.buf
 // (буфер плотно упакован frameW x frameH BGRX — stride frameW*4).
 // Единая точка для всех фаз (Switch/Active/Fallback-restore).
-// Исполнитель — GPUPixel (GpuEffects); false = fail-open: кадр без изменений.
+// Исполнитель — GpuEffects (GPU mirror/grayscale + CPU-аналог помех);
+// false = fail-open: кадр без изменений.
 void ApplyFx(Machine& m)
 {
+    vcam::effects::FxFlags f;
+    f.mirror = m.fx.mirror;
+    f.grayscale = m.fx.grayscale;
+    f.noise = m.fx.noise;
+    f.scanlines = m.fx.scanlines;
+    f.rgbSplit = m.fx.rgbSplit;
+    f.tracking = m.fx.tracking;
+    f.vhs = m.fx.vhs;
     const bool ok = vcam::effects::ApplyEffects(m.buf.data(), (int)(m.frameW * 4),
-                                                m.frameW, m.frameH, m.fxMirror, m.fxGrayscale);
+                                                m.frameW, m.frameH, f);
     if (!ok && !m.fxGpuLogged) {
         m.fxGpuLogged = true;
-        Log(L"[host] effects: GPU недоступен, кадры идут без эффектов (fail-open)");
+        Log(L"[host] effects: сбой эффектов, кадры идут без них (fail-open)");
     }
 }
 
@@ -812,11 +820,12 @@ DWORD WINAPI WorkerProc(LPVOID)
                 BeginSwitch(m, want, s.quality);
             // Смена только эффектов — без переоткрытия источника: флаги
             // подхватываются на лету (вотчер шлёт dirty через operator== с fx).
-            if (s.fx.mirror != m.fxMirror || s.fx.grayscale != m.fxGrayscale) {
-                m.fxMirror = s.fx.mirror;
-                m.fxGrayscale = s.fx.grayscale;
-                Log(L"[host] effects: mirror=%d grayscale=%d",
-                    (int)m.fxMirror, (int)m.fxGrayscale);
+            if (s.fx != m.fx) {
+                m.fx = s.fx;
+                Log(L"[host] effects: mirror=%d grayscale=%d noise=%d scanlines=%d rgbsplit=%d tracking=%d vhs=%d",
+                    (int)m.fx.mirror, (int)m.fx.grayscale, (int)m.fx.noise,
+                    (int)m.fx.scanlines, (int)m.fx.rgbSplit, (int)m.fx.tracking,
+                    (int)m.fx.vhs);
             }
         }
         timeout = Step(m);
