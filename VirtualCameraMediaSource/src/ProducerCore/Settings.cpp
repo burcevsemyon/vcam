@@ -218,6 +218,15 @@ void ParseCapture(const std::wstring& c, std::wstring& out)
     out = (c == L"720p") ? L"720p" : (c == L"1080p") ? L"1080p" : L"max";
 }
 
+// Степень помех 0–100: отсутствует/мусор → 100 (вид при включённом тоггле
+// как без уровней), выход за границы → кламп.
+int ClampLevel(int v)
+{
+    if (v < 0) return 0;
+    if (v > 100) return 100;
+    return v;
+}
+
 void ParseNewSchema(const std::string& json, Settings& s)
 {
     size_t b = 0, e = 0;
@@ -252,6 +261,21 @@ void ParseNewSchema(const std::string& json, Settings& s)
         std::string sec = json.substr(b, e - b);
         s.fx.mirror = JsonGetBool(sec, "mirror", false);
         s.fx.grayscale = JsonGetBool(sec, "grayscale", false);
+        s.fx.noise = JsonGetBool(sec, "noise", false);
+        s.fx.scanlines = JsonGetBool(sec, "scanlines", false);
+        s.fx.rgbSplit = JsonGetBool(sec, "rgbsplit", false);
+        s.fx.tracking = JsonGetBool(sec, "tracking", false);
+        s.fx.vhs = JsonGetBool(sec, "vhs", false);
+        s.fx.noiseLevel = ClampLevel(JsonGetInt(sec, "noiseLevel", 100));
+        s.fx.scanlinesLevel = ClampLevel(JsonGetInt(sec, "scanlinesLevel", 100));
+        s.fx.rgbSplitLevel = ClampLevel(JsonGetInt(sec, "rgbsplitLevel", 100));
+        s.fx.trackingLevel = ClampLevel(JsonGetInt(sec, "trackingLevel", 100));
+        std::wstring be;
+        // backend: только "frei0r" проходит, всё остальное (включая
+        // отсутствие ключа) → "cpu" (default без DLL).
+        s.fx.backend = (JsonGetString(sec, "backend", be) && be == L"frei0r")
+                           ? L"frei0r"
+                           : L"cpu";
     }
     std::wstring q;
     if (JsonGetString(json, "quality", q)) ParseQuality(q, s.quality);
@@ -281,8 +305,18 @@ void ParseLegacySchema(const std::string& json, Settings& s)
     s.video.path = mediaPath;
     s.quality = L"source"; // legacy без ключа quality -> source
     s.cam.capture = L"max"; // legacy без секции camera -> max
-    s.fx.mirror = false;    // legacy без секции effects -> выкл
+    s.fx.mirror = false;    // legacy без секции effects -> всё выкл
     s.fx.grayscale = false;
+    s.fx.noise = false;
+    s.fx.scanlines = false;
+    s.fx.rgbSplit = false;
+    s.fx.tracking = false;
+    s.fx.vhs = false;
+    s.fx.noiseLevel = 100; // legacy без секции effects: були false, уровни
+    s.fx.scanlinesLevel = 100; // нейтральные (не влияют, но round-trip стабилен)
+    s.fx.rgbSplitLevel = 100;
+    s.fx.trackingLevel = 100;
+    s.fx.backend = L"cpu"; // legacy без секции effects -> CPU без DLL
     s.autostart = JsonGetBool(json, "autostart", true);
 }
 
@@ -336,6 +370,21 @@ std::string Settings::Serialize() const
     out += fx.mirror ? "true" : "false";
     out += ", \"grayscale\": ";
     out += fx.grayscale ? "true" : "false";
+    out += ", \"noise\": ";
+    out += fx.noise ? "true" : "false";
+    out += ", \"scanlines\": ";
+    out += fx.scanlines ? "true" : "false";
+    out += ", \"rgbsplit\": ";
+    out += fx.rgbSplit ? "true" : "false";
+    out += ", \"tracking\": ";
+    out += fx.tracking ? "true" : "false";
+    out += ", \"vhs\": ";
+    out += fx.vhs ? "true" : "false";
+    out += ", \"noiseLevel\": " + std::to_string(fx.noiseLevel);
+    out += ", \"scanlinesLevel\": " + std::to_string(fx.scanlinesLevel);
+    out += ", \"rgbsplitLevel\": " + std::to_string(fx.rgbSplitLevel);
+    out += ", \"trackingLevel\": " + std::to_string(fx.trackingLevel);
+    out += ", \"backend\": \"" + WideToUtf8(fx.backend == L"frei0r" ? L"frei0r" : L"cpu") + "\"";
     out += " },\n";
     out += "  \"autostart\": ";
     out += autostart ? "true" : "false";

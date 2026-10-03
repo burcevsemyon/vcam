@@ -42,12 +42,36 @@ struct CameraSection {
 
 struct EffectsSection {
     bool mirror = false;    // зеркало по горизонтали
-    bool grayscale = false; // Ч/Б (BT.601 luma)
+    bool grayscale = false; // Ч/Б (Rec.709 luma, исполнитель — GPUPixel)
+    // Аналоговые помехи (исполнитель — CPU в GpuEffects.cpp, после GPU):
+    bool noise = false;     // RGB/белый шум (±60/канал, анимирован по кадрам)
+    bool scanlines = false; // чересстрочные линии (нечётные строки ×0.35)
+    bool rgbSplit = false;  // хроматическая аберрация (R/B-разъезд по X)
+    bool tracking = false;  // трекинг-глитч (сдвинутые полосы, движутся)
+    bool vhs = false;       // VHS-пресет: все четыре помехи сразу (OR)
+    // Степень помех 0–100 (индивидуальные уровни; VHS использует их же,
+    // отдельного vhsLevel нет). Отсутствует в JSON → 100, кламп при чтении.
+    // Уровень 0 при включённом тоггле ≈ эффект выключен.
+    int noiseLevel = 100;      // амплитуда шума ±(level% от ±60)
+    int scanlinesLevel = 100;  // глубина затемнения нечётных строк
+    int rgbSplitLevel = 100;   // dx сдвига (100 → 6/12/24 по ширине)
+    int trackingLevel = 100;   // число/ширина полос (0 → нет полос)
+    // Исполнитель помех: L"cpu" (default, без DLL) | L"frei0r" (цепочка
+    // frei0r-плагинов, нет DLL → fail-open на CPU). Только эти два токена
+    // проходят, остальное (включая отсутствие) → cpu.
+    std::wstring backend = L"cpu";
 
     bool operator==(const EffectsSection& o) const
     {
-        return mirror == o.mirror && grayscale == o.grayscale;
+        return mirror == o.mirror && grayscale == o.grayscale &&
+               noise == o.noise && scanlines == o.scanlines &&
+               rgbSplit == o.rgbSplit && tracking == o.tracking &&
+               vhs == o.vhs && noiseLevel == o.noiseLevel &&
+               scanlinesLevel == o.scanlinesLevel &&
+               rgbSplitLevel == o.rgbSplitLevel &&
+               trackingLevel == o.trackingLevel && backend == o.backend;
     }
+    bool operator!=(const EffectsSection& o) const { return !(*this == o); }
 };
 
 struct Settings {

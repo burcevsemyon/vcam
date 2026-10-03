@@ -14,7 +14,11 @@ namespace VCamSettingsUi;
 //     "camera": { "id": "<MF symbolic link>", "name": "<friendly name>",
 ///                "capture": "max" | "720p" | "1080p" },
 //     "quality": "source" | "fixed720p",
-//     "effects": { "mirror": bool, "grayscale": bool },
+//     "effects": { "mirror": bool, "grayscale": bool, "noise": bool,
+//                "scanlines": bool, "rgbsplit": bool, "tracking": bool,
+//                "vhs": bool, "noiseLevel": int 0-100, "scanlinesLevel": int,
+//                "rgbsplitLevel": int, "trackingLevel": int,
+//                "backend": "cpu" | "frei0r" },
 //     "autostart": bool }
 // Empty camera section (id and name both "") -> host shows NO SIGNAL until a
 // device is chosen. Load also accepts the legacy flat format
@@ -84,9 +88,28 @@ public sealed class Settings
     public Quality Quality { get; set; } = Quality.Source;
 
     // Section "effects" (host post-fx): mirrors EffectsSection on the C++ side.
-    // Legacy files without the section migrate to false/false.
+    // Legacy files without the section migrate to all-false.
+    // vhs = VHS preset (host ORs all four interferences at once).
     public bool FxMirror { get; set; }
     public bool FxGrayscale { get; set; }
+    public bool FxNoise { get; set; }
+    public bool FxScanlines { get; set; }
+    public bool FxRgbSplit { get; set; }
+    public bool FxTracking { get; set; }
+    public bool FxVhs { get; set; }
+
+    // Analog interference intensity 0-100 (mirrors EffectsSection levels on
+    // the C++ side). Missing key -> 100, clamped on read. Level 0 with the
+    // toggle on ~= effect off. VHS has no own level: it uses these four.
+    public int FxNoiseLevel { get; set; } = 100;
+    public int FxScanlinesLevel { get; set; } = 100;
+    public int FxRgbSplitLevel { get; set; } = 100;
+    public int FxTrackingLevel { get; set; } = 100;
+
+    // Analog interference backend (mirrors EffectsSection.backend on the C++
+    // side): only "frei0r" passes, anything else (incl. missing) is "cpu".
+    // Legacy files without the key migrate to "cpu".
+    public string FxBackend { get; set; } = "cpu";
 
     // Section "camera" capture: mirrors Settings::ParseCapture on the C++ side —
     // only "720p"/"1080p" pass, anything else (incl. missing) is Max.
@@ -116,10 +139,24 @@ public sealed class Settings
         {
             var path = filePath ?? FilePath;
             if (!File.Exists(path)) return new Settings();
-            using var doc = JsonDocument.Parse(File.ReadAllText(path));
-            var root = doc.RootElement;
-            if (root.ValueKind != JsonValueKind.Object) return new Settings();
-            var s = new Settings();
+            return LoadFromText(File.ReadAllText(path));
+        }
+        catch
+        {
+            return new Settings();
+        }
+    }
+
+    // Parses an already-read snapshot (throws on malformed JSON — the caller
+    // decides between a silent default and a retry). Load() above keeps the
+    // old fail-soft contract; the live-sync watcher uses this directly so it
+    // applies exactly the validated text it has just read (no TOCTOU re-read).
+    public static Settings LoadFromText(string text)
+    {
+        using var doc = JsonDocument.Parse(text);
+        var root = doc.RootElement;
+        if (root.ValueKind != JsonValueKind.Object) return new Settings();
+        var s = new Settings();
 
             var isNew = root.TryGetProperty("source", out _) ||
                         root.TryGetProperty("static", out _) ||
@@ -168,6 +205,16 @@ public sealed class Settings
                 {
                     s.FxMirror = GetBool(fx, "mirror");
                     s.FxGrayscale = GetBool(fx, "grayscale");
+                    s.FxNoise = GetBool(fx, "noise");
+                    s.FxScanlines = GetBool(fx, "scanlines");
+                    s.FxRgbSplit = GetBool(fx, "rgbsplit");
+                    s.FxTracking = GetBool(fx, "tracking");
+                    s.FxVhs = GetBool(fx, "vhs");
+                    s.FxNoiseLevel = GetLevel(fx, "noiseLevel");
+                    s.FxScanlinesLevel = GetLevel(fx, "scanlinesLevel");
+                    s.FxRgbSplitLevel = GetLevel(fx, "rgbsplitLevel");
+                    s.FxTrackingLevel = GetLevel(fx, "trackingLevel");
+                    s.FxBackend = ParseBackend(GetString(fx, "backend"));
                 }
 
                 if (root.TryGetProperty("autostart", out var au))
@@ -196,11 +243,6 @@ public sealed class Settings
             }
 
             return s;
-        }
-        catch
-        {
-            return new Settings();
-        }
     }
 
     // Writes ONLY the new schema, UTF-8 without BOM (see SerializerOptions).
@@ -252,6 +294,16 @@ public sealed class Settings
             {
                 ["mirror"] = FxMirror,
                 ["grayscale"] = FxGrayscale,
+                ["noise"] = FxNoise,
+                ["scanlines"] = FxScanlines,
+                ["rgbsplit"] = FxRgbSplit,
+                ["tracking"] = FxTracking,
+                ["vhs"] = FxVhs,
+                ["noiseLevel"] = FxNoiseLevel,
+                ["scanlinesLevel"] = FxScanlinesLevel,
+                ["rgbsplitLevel"] = FxRgbSplitLevel,
+                ["trackingLevel"] = FxTrackingLevel,
+                ["backend"] = FxBackend == "frei0r" ? "frei0r" : "cpu",
             },
             ["autostart"] = Autostart,
         };
@@ -275,6 +327,16 @@ public sealed class Settings
     private static bool GetBool(JsonElement obj, string name) =>
         obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.True;
 
+    // Mirrors the C++ ClampLevel exactly: missing/non-numeric -> 100,
+    // out-of-range -> clamp 0-100.
+    private static int GetLevel(JsonElement obj, string name)
+    {
+        if (obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number &&
+            v.TryGetInt32(out var n))
+            return Math.Clamp(n, 0, 100);
+        return 100;
+    }
+
     private static ScaleMode ParseScaleMode(string mode) =>
         string.Equals(mode, "cover", StringComparison.OrdinalIgnoreCase) ? ScaleMode.Cover
         : string.Equals(mode, "crop", StringComparison.OrdinalIgnoreCase) ? ScaleMode.Crop
@@ -285,6 +347,12 @@ public sealed class Settings
     private static Quality ParseQuality(string quality) =>
         string.Equals(quality, "fixed720p", StringComparison.Ordinal) ? Quality.Fixed720p
         : Quality.Source;
+
+    // Mirrors the C++ effects.backend parsing exactly: only "frei0r" passes
+    // (ordinal), everything else (missing/garbage/future tokens) is "cpu".
+    private static string ParseBackend(string backend) =>
+        string.Equals(backend, "frei0r", StringComparison.Ordinal) ? "frei0r"
+        : "cpu";
 
     // Mirrors the C++ ParseCapture exactly: only "720p"/"1080p" pass (ordinal),
     // everything else (missing/garbage/future tokens) is Max.

@@ -41,6 +41,7 @@
     <ClCompile Include="CameraControls.cpp" />
     <ClCompile Include="ControlServer.cpp" />
     <ClCompile Include="FrameWriter.cpp" />
+    <ClCompile Include="FreiEffects.cpp" />
     <ClCompile Include="GpuEffects.cpp" />
     <ClCompile Include="Settings.cpp" />
     <ClCompile Include="SettingsWatcher.cpp" />
@@ -54,6 +55,7 @@
     <ClInclude Include="CameraSource.h" />
     <ClInclude Include="CameraControls.h" />
     <ClInclude Include="ControlServer.h" />
+    <ClInclude Include="FreiEffects.h" />
     <ClInclude Include="GpuEffects.h" />
     <ClInclude Include="Settings.h" />
     <ClInclude Include="SettingsWatcher.h" />
