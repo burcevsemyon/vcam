@@ -248,6 +248,11 @@ void ParseNewSchema(const std::string& json, Settings& s)
         std::wstring cap;
         if (JsonGetString(sec, "capture", cap)) ParseCapture(cap, s.cam.capture);
     }
+    if (FindObjectRange(json, "effects", b, e)) {
+        std::string sec = json.substr(b, e - b);
+        s.fx.mirror = JsonGetBool(sec, "mirror", false);
+        s.fx.grayscale = JsonGetBool(sec, "grayscale", false);
+    }
     std::wstring q;
     if (JsonGetString(json, "quality", q)) ParseQuality(q, s.quality);
     s.autostart = JsonGetBool(json, "autostart", true);
@@ -276,6 +281,8 @@ void ParseLegacySchema(const std::string& json, Settings& s)
     s.video.path = mediaPath;
     s.quality = L"source"; // legacy без ключа quality -> source
     s.cam.capture = L"max"; // legacy без секции camera -> max
+    s.fx.mirror = false;    // legacy без секции effects -> выкл
+    s.fx.grayscale = false;
     s.autostart = JsonGetBool(json, "autostart", true);
 }
 
@@ -325,6 +332,11 @@ std::string Settings::Serialize() const
            "\", \"name\": \"" + EscapeJson(cam.name) +
            "\", \"capture\": \"" + EscapeJson(cam.capture) + "\" },\n";
     out += "  \"quality\": \"" + EscapeJson(quality) + "\",\n";
+    out += "  \"effects\": { \"mirror\": ";
+    out += fx.mirror ? "true" : "false";
+    out += ", \"grayscale\": ";
+    out += fx.grayscale ? "true" : "false";
+    out += " },\n";
     out += "  \"autostart\": ";
     out += autostart ? "true" : "false";
     out += "\n";

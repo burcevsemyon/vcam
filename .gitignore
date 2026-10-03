@@ -11,3 +11,6 @@ test_input.bmp
 **/obj/
 memory.md
 *.memory.md
+# GPUPixel static libs: built locally via VirtualCameraMediaSource/third_party/gpupixel/build.ps1, not stored in git
+VirtualCameraMediaSource/third_party/gpupixel/lib/
+VirtualCameraMediaSource/third_party/**/*.lib

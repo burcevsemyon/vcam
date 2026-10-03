@@ -22,6 +22,10 @@ public sealed class MainForm : Form
     private readonly Label _qualityLabel = new();
     private readonly ComboBox _qualityCombo = new();
 
+    // Host post-fx (phase vcam-effects): mirror + grayscale, section "effects".
+    private readonly CheckBox _fxMirror = new();
+    private readonly CheckBox _fxGrayscale = new();
+
     // Info panel replacing the picture preview in video mode.
     private readonly Panel _videoPanel = new();
     private readonly Label _videoTitle = new();
@@ -99,7 +103,7 @@ public sealed class MainForm : Form
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
-        ClientSize = new Size(880, 656);
+        ClientSize = new Size(880, 686);
         Font = new Font("Segoe UI", 9f);
         try
         {
@@ -208,20 +212,31 @@ public sealed class MainForm : Form
         _cropKeepAspect.Text = "Сохранять пропорции";
         _cropKeepAspect.Visible = false;
 
-        _hintLabel.Location = new Point(12, 602);
+        // Host post-fx row (always visible, below the crop fields row).
+        _fxMirror.Location = new Point(12, 600);
+        _fxMirror.Size = new Size(120, 22);
+        _fxMirror.Text = "Зеркало";
+        _fxMirror.Name = "fxMirror";
+
+        _fxGrayscale.Location = new Point(150, 600);
+        _fxGrayscale.Size = new Size(120, 22);
+        _fxGrayscale.Text = "Ч/Б";
+        _fxGrayscale.Name = "fxGrayscale";
+
+        _hintLabel.Location = new Point(12, 632);
         _hintLabel.Size = new Size(660, 50);
         _hintLabel.ForeColor = Color.DimGray;
         _hintLabel.Text = $"Настройки: {Settings.FilePath} — хост VCam подхватит их автоматически (~1 с).";
         _hintLabel.Name = "hintLabel";
 
-        _helpButton.Location = new Point(688, 604);
+        _helpButton.Location = new Point(688, 634);
         _helpButton.Size = new Size(180, 40);
         _helpButton.Text = "Справка…";
         _helpButton.Name = "helpButton";
         _helpButton.Click += OnHelpClicked;
 
         Controls.AddRange(new Control[] { _preview, _cropView, _videoPanel, _cameraPanel, _pathLabel, _mediaLabel, _mediaCombo,
-            _qualityLabel, _qualityCombo,
+            _qualityLabel, _qualityCombo, _fxMirror, _fxGrayscale,
             _mode, _openButton, _fullSizeButton, _saveButton, _hostStatusLabel, _hostButton, _helpButton,
             _cropXLabel, _cropX, _cropYLabel, _cropY, _cropWLabel, _cropW, _cropHLabel, _cropH, _cropKeepAspect, _hintLabel });
 
@@ -536,6 +551,8 @@ public sealed class MainForm : Form
             _ => 0,
         };
         _qualityCombo.SelectedIndex = s.Quality == Quality.Fixed720p ? 1 : 0;
+        _fxMirror.Checked = s.FxMirror;
+        _fxGrayscale.Checked = s.FxGrayscale;
         _mediaCombo.SelectedIndex = s.SourceType switch
         {
             SourceType.Video => 1,
@@ -936,7 +953,10 @@ public sealed class MainForm : Form
     {
         // Start from what is on disk: autostart and the section that is not being
         // edited right now stay untouched; "Сохранить" writes both sections + type.
+        // Effects checkboxes apply to every branch (host picks them up hot).
         var settings = Settings.Load();
+        settings.FxMirror = _fxMirror.Checked;
+        settings.FxGrayscale = _fxGrayscale.Checked;
 
         if (CurrentSourceType == SourceType.Video)
         {
