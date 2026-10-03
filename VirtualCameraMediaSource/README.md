@@ -10,13 +10,13 @@
 |---|---|
 | `src/MediaSource` (MediaSource.dll) | COM media source: видео-потоки 1280×720@30 и 640×480@30 (RGB32 + NV12), автоматический даунскейлинг и конверсия в потоке. `IMFMediaSourceEx`, `IKsControl`, `IMFGetService`, синхронный pull-путь `RequestSample` (AllocateSample на COM-потоке клиента). |
 | `src/Registrar` (Registrar.exe) | Регистрация камеры: `add [name] [hold\|hold-watch]` / `remove`. Процесс нужно держать живым (Session lifetime). `hold` — вечно; `hold-watch` — сам выходит, когда писатель (seq секции) и потребители (heartbeat) молчат ≥30 с (хост запускает именно его). |
-| `src/ProducerCore` (ProducerCore.lib) | Общее ядро продюсеров: `Settings` (чтение/миграция/запись settings.json), `SettingsWatcher` (опрос 500 мс + debounce 200 мс), `FrameWriter` (запись в общую память, seqlock, FlushLast), источники `StaticImageSource` / `VideoFileSource` / `CameraSource` (захват физической камеры, MF Source Reader, letterbox), `CameraDevices` (перечисление камер), `SourceFactory`, `ToSourceConfig`. Используется хостом и CLI. |
-| `src/VCamVideoStreamProducer` (VCamVideoStreamProducer.exe) | Основной продюсер-хост: tray-иконка с меню (статус, «Настройки VCam…», «Окно предпросмотра…», «Автозагрузка», «Выход»), ядро state machine (hot-switch без перезапуска, fallback NO SIGNAL при ошибках источника), мьютекс `VCamVideoStreamProducer.Instance`, автозапуск через задачу Task Scheduler `VCamHost` по `settings.autostart`. |
+| `src/ProducerCore` (ProducerCore.lib) | Общее ядро продюсеров: `Settings` (чтение/миграция/запись settings.json), `SettingsWatcher` (опрос 500 мс + debounce 200 мс), `FrameWriter` (запись в общую память, seqlock, FlushLast), источники `StaticImageSource` / `VideoFileSource` (loop + play-once с `Ended()`) / `CameraSource` (захват физической камеры, MF Source Reader, letterbox), `CameraDevices` (перечисление камер), `SourceFactory`, `ToSourceConfig`, эффекты `GpuEffects` (GPUPixel static-lib + CPU-помехи, fail-open) / `FreiEffects` (frei0r-плагины, динамическая загрузка, fallback на CPU). Используется хостом и CLI. |
+| `src/VCamVideoStreamProducer` (VCamVideoStreamProducer.exe) | Основной продюсер-хост: tray-иконка с меню (статус, «Настройки VCam…», «Окно предпросмотра…», «Автозагрузка», «Выход»), ядро state machine (hot-switch без перезапуска, fallback NO SIGNAL при ошибках источника), мьютекс `VCamVideoStreamProducer.Instance`, автозапуск через задачу Task Scheduler `VCamHost` по `settings.autostart`, глобальные хоткеи (ролик поверх эфира + старт/стоп записи), `Mp4Recorder` (запись эфира с эффектами в H.264/MP4 720p@30), transient state/command JSON для хоткеев и записи. |
 | `src/VCamProducerCli` (VCamProducerCli.exe) | Консольный хост для отладки и E2E: `run [--type static\|video\|camera] [--path <file>] [--device <id>] [--settings <path>]` — то же ядро без tray (логи в stdout @30 FPS, остановка по Ctrl+C/Ctrl+Break/Esc); `list-devices` — перечисление физических камер (`id\tname` в stdout); `status` — путь/схема settings, `source.type`, секции, автозапуск, состояние хоста и writer-секции. |
 | `src/ProducerTest` (ProducerTest.exe) | Пишет анимированный test pattern в общую память @30 fps. |
 | `src/StaticProducer` (StaticProducer.exe) | Отдельная утилита: статическое изображение в общую память @30 fps. Понимает **legacy-поля** settings.json (`imagePath`/`mediaMode`/`mediaPath`, hot-reload ~0.7 с), аргумент командной строки — fallback. Для обычной работы используйте хост или CLI. |
 | `src/VideoProducer` (VideoProducer.exe) | Отдельная утилита: видеоролик в общую память @30 fps (декод Media Foundation, letterbox 1280×720, loop). Понимает **legacy-поля** settings.json (`mediaPath`, hot-reload), `argv[1]` — fallback. Для обычной работы используйте хост или CLI. |
-| `src/VCamSettingsUi` (VCamSettingsUi.exe) | C# WinForms UI: переключатель «Медиа» (статичная картинка / видеоролик / физическая камера), выбор файла, предпросмотр fit/cover, интерактивный crop (рамка мышью), просмотр 1:1 с зумом, список физических камер, запуск окна предпросмотра VCamPreview, сохранение настроек (новая схема). |
+| `src/VCamSettingsUi` (VCamSettingsUi.exe) | C# WinForms UI: переключатель «Медиа» (статичная картинка / видеоролик / физическая камера), выбор файла, предпросмотр fit/cover, интерактивный crop (рамка мышью), просмотр 1:1 с зумом, список физических камер, запуск окна предпросмотра VCamPreview, сохранение настроек (новая схема), группа «Эффекты» (7 чекбоксов + слайдеры 0–100 + backend CPU/frei0r + мастер-выключатель), профили настроек (`%APPDATA%\VCam\profiles\`), live-синхронизация с файлом (watcher + dirty-guard + «Обновить»), кнопка REC + путь записи, строка-подсказка хоткеев и индикатор borrowed-видео. Встроенное превью показывает исходник **без эффектов** (эффекты — только в эфире/VCamPreview/записи). |
 | `src/VCamPreview` (VCamPreview.exe) | Плавающее окно предпросмотра кадра: always-on-top, читает общую память, NO SIGNAL без провайдера, Esc/Ctrl+Q — выход. |
 | `src/CaptureTest` (CaptureTest.exe) | Диагностический захват: `inspect`, `device [strict] [name\|index] [width] [height] [prefix]`, bare `[numFrames] [prefix]`; сохраняет BMP. |
 
@@ -27,6 +27,23 @@
 ```
 
 Результат: `build\x64\Release\` (плюс per-project `src\*\build\`).
+
+## Сторонние библиотеки (сборка разово на машине разработчика)
+
+Бинарники (`.lib`/`.dll`) в git не лежат (см. `.gitignore`); хедеры заведены минимально.
+Перед первой сборкой решения прогнать оба скрипта (нужны VS + cmake, ~100 с каждый):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File third_party/gpupixel/build.ps1
+powershell -ExecutionPolicy Bypass -File third_party/frei0r/build.ps1
+```
+
+| Библиотека | Что | Источник |
+|---|---|---|
+| GPUPixel (Apache-2.0) | GPU-фильтры: зеркало (`FlipHorizontal`) + Ч/Б (`GrayscaleFilter`); свой GL-контекст не нужен (либа поднимает скрытое окно сама), без GPU — fail-open | исходники `pixpark/gpupixel` (пин в скрипте) → static-lib `/MT` в `third_party/gpupixel/lib/x64/` |
+| frei0r (GPL-2.0) | помехи: `rgbnoise` (шум), `scanline0r` (сканлайны), `rgbsplit0r` (хроматика), `glitch0r` (трекинг-глитч); грузятся динамически, нет DLL — откат на CPU | исходники `dyne/frei0r` (пин в скрипте) → 4 `.dll` в `build\x64\Release\frei0r\` |
+
+В установщик frei0r-DLL класть как внешние бинарники с указанием исходников (`third_party/frei0r/NOTICE.txt`).
 
 ## Деплой и запуск (все шаги — от администратора)
 
@@ -115,7 +132,17 @@
     "cropKeepAspect": false
   },
   "video": { "path": "C:\\path\\to\\clip.mp4" },
-  "camera": { "id": "\\\\?\\usb#vid_046d&pid_0949#...\\global", "name": "Brio 90" },
+  "camera": { "id": "\\\\?\\usb#vid_046d&pid_0949#...\\global", "name": "Brio 90", "capture": "max" },
+  "effects": {
+    "enabled": true, "mirror": false, "grayscale": false,
+    "noise": false, "scanlines": false, "rgbsplit": false, "tracking": false, "vhs": false,
+    "noiseLevel": 100, "scanlinesLevel": 100, "rgbsplitLevel": 100, "trackingLevel": 100,
+    "backend": "cpu"
+  },
+  "quality": "source",
+  "hotkey": { "modifiers": 3, "vk": 86 },
+  "recordHotkey": { "modifiers": 3, "vk": 82 },
+  "record": { "path": "" },
   "autostart": true
 }
 ```
@@ -130,6 +157,16 @@
 | `video.path` | путь к файлу | источник ролика (MP4/MKV/…), letterbox 1280×720, бесконечный loop |
 | `camera.id` | MF symbolic link | физическая камера (USB-устройство); пусто **и** пустое `camera.name` → источник не открывается, NO SIGNAL до выбора в UI |
 | `camera.name` | friendly name | запасной ключ поиска (точное имя → подстрока), если `id` не совпал (камера переставлена в другой порт); обычно заполняет UI |
+| `camera.capture` | `max` \| `720p` \| `1080p` | высота нативного захвата (`max` — лучшее в пределах cap 4K); смена = переоткрытие |
+| `effects.enabled` | `true` \| `false` | мастер-выключатель: `false` — эффекты скипаются целиком (дешевле поштучных галок) |
+| `effects.mirror` / `grayscale` | `true` \| `false` | зеркало (GPUPixel `FlipHorizontal`) / Ч/Б (GPUPixel `GrayscaleFilter`); без уровней |
+| `effects.noise` / `scanlines` / `rgbsplit` / `tracking` / `vhs` | `true` \| `false` | помехи аналогового сигнала: шум ±60, сканлайны ×0.35, RGB-сдвиг, трекинг-глитч; `vhs` = все четыре сразу |
+| `effects.*Level` | 0–100 | степень помехи (0 = нет эффекта, 100 = максимум); отсутствует → 100; дроби усекаются как в C++ |
+| `effects.backend` | `cpu` \| `frei0r` | исполнитель помех: свой CPU (default, работает всегда) или frei0r-плагины (сочнее; нет DLL — молча CPU) |
+| `quality` | `source` \| `fixed720p` | качество v2-секции: натив источника или фикс 720p |
+| `hotkey` | `{modifiers, vk}` | глобальный хоткей «ролик поверх эфира» (default `3`/`0x56` = Ctrl+Alt+V; биты: Alt=1, Ctrl=2, Shift=4, Win=8); занят другим процессом → fail-open с логом, лечится сменой комбинации |
+| `recordHotkey` | `{modifiers, vk}` | глобальный хоткей старт/стоп записи (default `3`/`0x52` = Ctrl+Alt+R) |
+| `record.path` | путь к `.mp4` | файл записи; пусто → `%Videos%\VCam_ГГГГММДД_ЧЧММСС.mp4` в момент старта |
 | `autostart` | `true` \| `false` | автозагрузка tray-хоста: при старте хост применяет флаг к задаче Task Scheduler `VCamHost` (ONLOGON, Highest); пункт меню «Автозагрузка» переключает и сохраняет. CLI `autостart` только показывает в `status` |
 
 - Сценарий работы: UI сохраняет файл → хост/CLI опрашивает его каждые 500 мс
@@ -192,6 +229,54 @@ UI (`src\VCamSettingsUi`): комбо **«Медиа»** — «статична�
   устройство занято другим приложением — фиксируйте факт, `Open` вернёт ошибку
   и вы получите NO SIGNAL (это штатное поведение, не баг).
 
+## Эффекты
+
+Применяются хостом после рендера источника, перед записью в общую память —
+один код для static/video/camera. Смена только эффектов — без переоткрытия
+источника (hot-swap); сбой эффекта = кадр без эффектов + лог (fail-open,
+камера работает всегда).
+
+- **Зеркало + Ч/Б** — GPUPixel (static-lib, свой GL-контекст внутри либы).
+- **Помехи** — шум, сканлайны, RGB-сдвиг (хроматика), трекинг-глитч, `vhs`
+  (все четыре сразу); степень 0–100 на каждую; backend `cpu` (предсказуемый)
+  или `frei0r` (характернее: двойной проход шума, сканлайны ×0.15, сдвиг
+  40 px, глитч на все строки).
+- UI: группа «Эффекты» — таблица (галка + слайдер + значение), комбобокс
+  backend, мастер-чекбокс «Эффекты включены»; файл правится и вручную —
+  UI подхватит live (watcher + debounce, чужие правки при dirty — индикатор
+  и кнопка «Обновить»).
+
+## Профили настроек
+
+Именованные снапшоты всего файла (`%APPDATA%\VCam\profiles\*.json`): комбо
+«Профиль» + «Применить» (выбор в комбо применяет сразу) / «Сохранить…» /
+«Удалить». Профиль заменяет настройки **целиком**, включая источник;
+хоткеи, путь записи и автозапуск — машинное, при применении сохраняются
+текущие. Встроенные сиды («Чистый эфир», «VHS», «Ретро Ч/Б», «Зеркало»,
+«Трекинг-хаос») при первом создании наследуют живой источник.
+
+## Горячие клавиши
+
+Глобальные, регистрирует tray-хост (комбинации — в settings.json, редактора
+в UI нет, текущая показывается строкой-подсказкой):
+
+- **Ролик поверх эфира** (default Ctrl+Alt+V): переключение на video-источник
+  на один прогон ролика (`play-once`), в конце — автовозврат туда, откуда
+  ушли; повторное нажатие — досрочный возврат; битый файл — возврат сразу.
+  Пока идёт borrowed-видео, UI показывает индикатор. Занята другим
+  процессом → хоткей отключён с логом (fail-open).
+- **Запись** (default Ctrl+Alt+R): старт/стоп (см. ниже).
+
+## Запись эфира
+
+`Mp4Recorder` в хосте пишет кадры **после** эффектов (бит-в-бит как в эфире):
+H.264 8 Мбит/с, 1280×720@30, только видео (`.mp4`), финализация при
+стопе/выходе (иначе файл битый). Старт/стоп — кнопка REC в UI (красная
+точка + путь) или хоткей; смена источника запись не прерывает; отставание
+кодера — дроп кадров записи (эфир важнее, дропы в логе). Состояние записи —
+transient (`record_state.json` + `record_command.json`), переживание
+перезапуска не предусмотрено.
+
 ## Контракт общей памяти
 
 | Поле | Значение |
@@ -230,11 +315,19 @@ src/ProducerCore/
   Settings.h/.cpp                чтение/миграция/запись settings.json, ToSourceConfig
   SettingsWatcher.h/.cpp         опрос 500 мс + debounce 200 мс, событие dirty
   FrameWriter.h/.cpp             запись кадра в секцию (seqlock, FlushLast, Close)
-  VideoFileSource.h/.cpp         MP4/MKV -> RGB32 letterbox (MF Source Reader, loop)
+  VideoFileSource.h/.cpp         MP4/MKV -> RGB32 letterbox (MF Source Reader, loop + play-once/Ended)
   CameraSource.h/.cpp            физическая камера -> RGB32 letterbox (фоновый захват)
   CameraDevices.h/.cpp           перечисление камер (id + friendly name)
   StaticImageSource.h/.cpp       PNG/JPG/BMP -> RGB32 (WIC, fit/cover/crop)
   SourceFactory.h/.cpp           тип -> источник
+  GpuEffects.h/.cpp              эффекты: GPUPixel (mirror/grayscale) + CPU-помехи (noise/scanlines/rgbsplit/tracking/vhs, уровни), GpuThread + таймаут, fail-open
+  FreiEffects.h/.cpp             frei0r-backend помех (динамические DLL, маппинг уровней, fallback на CPU)
+src/VCamVideoStreamProducer/
+  Mp4Recorder.h/.cpp             запись эфира: SinkWriter H.264 8 Мбит/с 720p@30 (bottom-up флип!), Finalize
+  (хост)                         хоткеи RegisterHotKey, borrow/play-once/автовозврат, record state/command JSON, settings-CS
+third_party/
+  gpupixel/{include,build.ps1}   хедеры GPUPixel + скрипт сборки static-lib /MT (DLL/`.lib` в git не идут)
+  frei0r/{build.ps1,NOTICE.txt}  скрипт сборки 4 плагинов + лицензия (GPL-2.0)
 src/MediaSource/
   MediaSource.h/.cpp             IMFMediaSource(+Ex) + IKsControl + IMFGetService
   MediaStream.h/.cpp             IMFMediaStream2: sync RequestSample, RGB32→NV12
@@ -242,13 +335,13 @@ src/MediaSource/
   dllmain.cpp                    ATL COM factory, DllRegisterServer
   MediaSource.def                экспорты
 src/Registrar/main.cpp           MFCreateVirtualCamera, add/hold/remove
-src/VCamVideoStreamProducer/     tray-хост: ядро state machine, меню, автозапуск, мьютекс
+src/VCamVideoStreamProducer/     tray-хост: ядро state machine, меню, автозапуск, мьютекс, хоткеи, запись
 src/VCamProducerCli/             консольный хост: run/status/list-devices, Ctrl+C/Esc, логи в stdout
 src/ProducerTest/main.cpp        test pattern → общая память
 src/StaticProducer/StaticProducer.cpp legacy-утилита: статическое изображение (WIC, fit/cover/crop)
 src/VideoProducer/VideoProducer.cpp   legacy-утилита: видеоролик (MF Source Reader, letterbox, loop)
 src/VCamPreview/VCamPreview.cpp     окно предпросмотра из общей памяти (always-on-top, NO SIGNAL, Esc)
-src/VCamSettingsUi/               C# WinForms UI: медиа static|video|camera, выбор/предпросмотр/зум/crop-рамка, список камер, запуск VCamPreview, settings.json (новая схема)
+src/VCamSettingsUi/               C# WinForms UI: медиа static|video|camera, выбор/предпросмотр/зум/crop-рамка, список камер, запуск VCamPreview, settings.json (новая схема), эффекты (GroupBox-таблица, backend, мастер), профили (Profiles.cs + profiles-seed/*.json), watcher/dirty-guard, REC, хоткей-хинты
 src/CaptureTest/main.cpp         inspect/capture → BMP
 register.bat, unregister.bat     регистрация (от администратора)
 e2e_test.ps1                     автоматический E2E-тест (через VCamProducerCli run)
