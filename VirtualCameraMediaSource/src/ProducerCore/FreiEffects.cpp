@@ -17,13 +17,23 @@
 //   rgbsplit0r[0] vert c=0.5, [1] horiz c=0.5; shift=(v-0.5)*dim/8.
 //   glitch0r[0] freq→0..100%, [1] block→1..h, [2] shift→1..w,
 //     [3] color→0..5; freq=0 → все строки passthrough (memcpy).
-// - Маппинг level (монотонно, level 0 = пропуск плагина = точный no-op):
-//   noise:     v = L/100 (100 → σ~127, явно видно);
-//   scanlines: params нет, фикс ×0.5 нечётных (L>0 применить);
-//   rgbsplit:  vert 0.5 (без вертикали — паритет с CPU), horiz 0.5+(L/100)*0.075
-//     → dx = L/100*w/106.7 (12px при 1280 — как CPU-максимум);
-//   tracking:  freq L/100, block 0.02+0.10*L/100, shift 0.02+0.08*L/100
-//     (100 → сдвиг до 10% ширины), color L/100.
+// - Маппинг level (монотонно, level 0 = пропуск плагина = точный no-op).
+//   Характер — «сочный frei0r» (фаза vcam-effects-character, CPU — эталон,
+//   НЕ трогаем): каждый эффект на 100 заметно сильнее CPU-аналога.
+//   noise:     v = L/100, ДВА прохода (σ_total ≈ σ√2; 100 → лютая статика).
+//     Параметр в спеке 0..1 — за неё не выходим, злость берём повтором.
+//   scanlines: params нет — пост-обработка в обёртке (снапшот нечётных до
+//     плагина, stageC): L<=50 — blend-back к исходнику
+//     out = (pre*(50-L) + plugin*L + 25)/50 (25 → ~×0.75, 50 → ×0.5);
+//     L>50 — дополнительное затемнение out*extra/100,
+//     extra = 100−70*(L−50)/50 (100 → ×0.3 → итог ×0.15: CRT-провал,
+//     вдвое глубже CPU ×0.35 — backend'ы разведены визуально).
+//   rgbsplit:  vert 0.5+L*0.04 (100 → dy≈3px@720, лёгкий крен),
+//     horiz 0.5+L*0.25 → dx = L/100*w/32 (100 → 40px@1280 — втрое шире CPU;
+//     320px кадр: dx=10, детерминировано: FP-точные 0.25/0.125/0.0625).
+//   tracking:  freq 0.15+0.85*L (100 → 100% строк), block 0.05+0.30*L
+//     (100 → 0.35 ≈ 252px@720 — крупные блоки), shift 0.05+0.25*L
+//     (100 → 0.30 ≈ 384px@1280), color 0.2+0.8*L (100 → 5/5 безумия).
 // Порядок цепочки — как CPU: rgbsplit → tracking(glitch0r) → noise → scanlines.
 //
 // Потокобезопасность: один мьютекс на весь вызов (заодно сериализует
@@ -137,6 +147,7 @@ struct State {
     std::map<InstanceKey, F0rInstance> instances;
     uint8_t* stageA = nullptr; // 16-байт, BGRX-layout stage
     uint8_t* stageB = nullptr;
+    uint8_t* stageC = nullptr; // снапшот кадра до scanline0r (blend-back L<=50)
     size_t stageBytes = 0;
     std::wstring searchOverride;
 };
@@ -496,15 +507,18 @@ FreiResult ApplyAnalog(uint8_t* bgrx, uint32_t w, uint32_t h,
     State& st = FreiState();
     std::unique_lock<std::mutex> lock(st.mutex);
 
-    if (st.stageBytes < bytes || !st.stageA || !st.stageB) {
+    if (st.stageBytes < bytes || !st.stageA || !st.stageB || !st.stageC) {
         if (st.stageA) _aligned_free(st.stageA);
         if (st.stageB) _aligned_free(st.stageB);
+        if (st.stageC) _aligned_free(st.stageC);
         st.stageA = (uint8_t*)_aligned_malloc(bytes, 16);
         st.stageB = (uint8_t*)_aligned_malloc(bytes, 16);
-        if (!st.stageA || !st.stageB) {
+        st.stageC = (uint8_t*)_aligned_malloc(bytes, 16);
+        if (!st.stageA || !st.stageB || !st.stageC) {
             if (st.stageA) _aligned_free(st.stageA);
             if (st.stageB) _aligned_free(st.stageB);
-            st.stageA = st.stageB = nullptr;
+            if (st.stageC) _aligned_free(st.stageC);
+            st.stageA = st.stageB = st.stageC = nullptr;
             st.stageBytes = 0;
             return FreiResult::kFailed;
         }
@@ -529,38 +543,74 @@ FreiResult ApplyAnalog(uint8_t* bgrx, uint32_t w, uint32_t h,
             return FreiResult::kNeedCpu;
         }
         // Параметры каждый кадр (hot-swap уровней без переоткрытия).
+        // Характерные режимы (фаза character): noise — два прохода,
+        // scanlines — пост-обработка ниже (снапшот нужен ДО плагина).
+        int passes = 1;
+        const bool needSnap = (fx == kFxScanlines && level <= 50);
+        if (needSnap) std::memcpy(st.stageC, cur, bytes);
         switch (fx) {
         case kFxNoise:
             SetDouble(lp, inst, 0, L);
+            passes = 2; // злее: повторный проход тем же v (σ√2)
             break;
         case kFxScanlines:
-            break; // params нет — фикс ×0.5 нечётных
+            break; // params нет — пост-обработка после плагина
         case kFxRgbSplit:
-            SetDouble(lp, inst, 0, 0.5);              // vertical: без сдвига
-            SetDouble(lp, inst, 1, 0.5 + L * 0.075);  // horiz: dx=12px@1280
+            SetDouble(lp, inst, 0, 0.5 + L * 0.04); // vertical: лёгкий крен
+            SetDouble(lp, inst, 1, 0.5 + L * 0.25); // horiz: dx=40px@1280
             break;
         case kFxTracking:
-            SetDouble(lp, inst, 0, L);                 // freq
-            SetDouble(lp, inst, 1, 0.02 + 0.10 * L);   // block
-            SetDouble(lp, inst, 2, 0.02 + 0.08 * L);   // shift (100 → 10% w)
-            SetDouble(lp, inst, 3, L);                 // color
+            SetDouble(lp, inst, 0, 0.15 + 0.85 * L); // freq (100 → все строки)
+            SetDouble(lp, inst, 1, 0.05 + 0.30 * L); // block (100 → 0.35h)
+            SetDouble(lp, inst, 2, 0.05 + 0.25 * L); // shift (100 → 0.30w)
+            SetDouble(lp, inst, 3, 0.20 + 0.80 * L); // color (100 → 5/5)
             break;
         }
         // Стадия: BGRX(cur) → layout плагина(nxt) → update(in=nxt, out=cur)
         // → BGRX(cur→nxt); nxt — текущий. В bgrx пишем только после успеха
         // всей цепочки (атомарно).
-        ToPluginLayout(lp, cur, nxt, pixels);
-        UpdateCtx c{&lp, inst, req.timeSec,
-                    reinterpret_cast<const uint32_t*>(nxt),
-                    reinterpret_cast<uint32_t*>(cur), false};
-        if (!GuardedCall(UpdateThunk, &c) || !c.ok) {
-            DropPluginLocked(st, fx); // AV/битый — выгрузить
-            g_cpuFallback.store(true, std::memory_order_relaxed);
-            return FreiResult::kNeedCpu;
+        for (int p = 0; p < passes; ++p) {
+            ToPluginLayout(lp, cur, nxt, pixels);
+            UpdateCtx c{&lp, inst, req.timeSec,
+                        reinterpret_cast<const uint32_t*>(nxt),
+                        reinterpret_cast<uint32_t*>(cur), false};
+            if (!GuardedCall(UpdateThunk, &c) || !c.ok) {
+                DropPluginLocked(st, fx); // AV/битый — выгрузить
+                g_cpuFallback.store(true, std::memory_order_relaxed);
+                return FreiResult::kNeedCpu;
+            }
+            // Выход плагина (cur) → BGRX в nxt; nxt становится текущим.
+            FromPluginLayout(lp, cur, nxt, pixels);
+            std::swap(cur, nxt);
         }
-        // Выход плагина (cur) → BGRX в nxt; nxt становится текущим.
-        FromPluginLayout(lp, cur, nxt, pixels);
-        std::swap(cur, nxt);
+        if (fx == kFxScanlines) {
+            // Контраст сканлайнов сверх фиксированных ×0.5 плагина.
+            // Чётные строки плагин не трогает — правим только нечётные.
+            const size_t rowBytes = (size_t)w * 4u;
+            if (level <= 50) {
+                // Blend-back к доснапшоту: мягкие линии на малых уровнях.
+                for (uint32_t y = 1; y < h; y += 2) {
+                    const uint8_t* pre = st.stageC + (size_t)y * rowBytes;
+                    uint8_t* out = cur + (size_t)y * rowBytes;
+                    for (size_t i = 0; i < rowBytes; i += 4)
+                        for (int ch = 0; ch < 3; ++ch)
+                            out[i + ch] = (uint8_t)(
+                                (pre[i + ch] * (50 - level) +
+                                 out[i + ch] * level + 25) /
+                                50);
+                }
+            } else {
+                // Дожим темноты: extra 100→30 (итог ×0.5×0.3=×0.15).
+                const int extra = 100 - (70 * (level - 50) + 25) / 50;
+                for (uint32_t y = 1; y < h; y += 2) {
+                    uint8_t* out = cur + (size_t)y * rowBytes;
+                    for (size_t i = 0; i < rowBytes; i += 4)
+                        for (int ch = 0; ch < 3; ++ch)
+                            out[i + ch] =
+                                (uint8_t)((out[i + ch] * extra + 50) / 100);
+                }
+            }
+        }
     }
     std::memcpy(bgrx, cur, bytes);
     return FreiResult::kApplied;
@@ -626,7 +676,8 @@ void ShutdownFrei() {
     }
     if (st.stageA) _aligned_free(st.stageA);
     if (st.stageB) _aligned_free(st.stageB);
-    st.stageA = st.stageB = nullptr;
+    if (st.stageC) _aligned_free(st.stageC);
+    st.stageA = st.stageB = st.stageC = nullptr;
     st.stageBytes = 0;
 }
 
