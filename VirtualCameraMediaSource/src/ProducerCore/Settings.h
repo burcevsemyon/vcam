@@ -44,17 +44,17 @@ struct EffectsSection {
     bool mirror = false;    // зеркало по горизонтали
     bool grayscale = false; // Ч/Б (Rec.709 luma, исполнитель — GPUPixel)
     // Аналоговые помехи (исполнитель — CPU в GpuEffects.cpp, после GPU):
-    bool noise = false;     // RGB/белый шум (±20/канал, анимирован по кадрам)
-    bool scanlines = false; // чересстрочные линии (нечётные строки ×0.72)
+    bool noise = false;     // RGB/белый шум (±60/канал, анимирован по кадрам)
+    bool scanlines = false; // чересстрочные линии (нечётные строки ×0.35)
     bool rgbSplit = false;  // хроматическая аберрация (R/B-разъезд по X)
     bool tracking = false;  // трекинг-глитч (сдвинутые полосы, движутся)
     bool vhs = false;       // VHS-пресет: все четыре помехи сразу (OR)
     // Степень помех 0–100 (индивидуальные уровни; VHS использует их же,
     // отдельного vhsLevel нет). Отсутствует в JSON → 100, кламп при чтении.
     // Уровень 0 при включённом тоггле ≈ эффект выключен.
-    int noiseLevel = 100;      // амплитуда шума ±(level% от ±20)
+    int noiseLevel = 100;      // амплитуда шума ±(level% от ±60)
     int scanlinesLevel = 100;  // глубина затемнения нечётных строк
-    int rgbSplitLevel = 100;   // dx сдвига (100 → 2/4/8 по ширине)
+    int rgbSplitLevel = 100;   // dx сдвига (100 → 6/12/24 по ширине)
     int trackingLevel = 100;   // число/ширина полос (0 → нет полос)
 
     bool operator==(const EffectsSection& o) const

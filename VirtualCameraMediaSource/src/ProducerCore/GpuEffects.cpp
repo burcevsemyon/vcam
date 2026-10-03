@@ -487,29 +487,29 @@ uint32_t XorShift32(uint32_t& s) {
 
 uint8_t ClampU8(int v) { return (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v); }
 
-// Белый/RGB-шум: амплитуда ±(level% от ±20), т.е. amp=(level*20+50)/100
-// (100 → ±20 как раньше, 0 → no-op). Один xorshift на пиксель, каналы —
-// из разных битовых срезов. "NOISE"-salt даёт независимый поток от трекинга.
+// Белый/RGB-шум: амплитуда ±(level% от ±60), т.е. amp=(level*60+50)/100
+// (100 → ±60 явно видно в превью 720p, 50 → ±30, 0 → no-op). Три xorshift
+// на пиксель (по одному на канал), каналы независимы. "NOISE"-salt даёт
+// независимый поток от трекинга.
 void CpuNoise(uint8_t* px, size_t pixels, uint64_t frame, int level) {
-    const int amp = (level * 20 + 50) / 100;
+    const int amp = (level * 60 + 50) / 100;
     if (amp <= 0) return;
-    const int range = amp * 2 + 1; // 100 → 41: формула бит-в-бит как раньше
+    const int range = amp * 2 + 1;
     uint32_t s = (uint32_t)SplitMix64(frame ^ 0x4E4F495345ULL);
     if (s == 0) s = 0x243F6A88u;
     for (size_t i = 0; i < pixels; ++i, px += 4) {
-        const uint32_t r = XorShift32(s);
-        px[0] = ClampU8((int)px[0] + ((int)(r & 63u) % range) - amp);
-        px[1] = ClampU8((int)px[1] + ((int)((r >> 8) & 63u) % range) - amp);
-        px[2] = ClampU8((int)px[2] + ((int)((r >> 16) & 63u) % range) - amp);
+        px[0] = ClampU8((int)px[0] + (int)(XorShift32(s) % (uint32_t)range) - amp);
+        px[1] = ClampU8((int)px[1] + (int)(XorShift32(s) % (uint32_t)range) - amp);
+        px[2] = ClampU8((int)px[2] + (int)(XorShift32(s) % (uint32_t)range) - amp);
     }
 }
 
 // Scanlines: глубина затемнения нечётных строк num/256,
-// num=256−(71*level+50)/100 (100 → ×185/256 ≈ 0.72 как раньше — CRT-маска,
-// 0 → ×256/256, т.е. без изменений).
+// num=256−(166*level+50)/100 (100 → ×90/256 ≈ 0.35 явно видно — CRT-маска,
+// 50 → ×173/256 ≈ 0.68, 0 → ×256/256, т.е. без изменений).
 void CpuScanlines(uint8_t* px, uint32_t w, uint32_t h, int level) {
     if (level <= 0) return;
-    const uint32_t num = (uint32_t)(256 - (71 * level + 50) / 100);
+    const uint32_t num = (uint32_t)(256 - (166 * level + 50) / 100);
     if (num >= 256) return;
     const size_t rowBytes = (size_t)w * 4u;
     for (uint32_t y = 1; y < h; y += 2) {
@@ -523,10 +523,11 @@ void CpuScanlines(uint8_t* px, uint32_t w, uint32_t h, int level) {
 }
 
 // Хроматическая аберрация: R берём правее на dx, B — левее (построчный temp).
-// dx=(dx100*level+50)/100, dx100=2/4/8 по ширине (100 → как раньше, 0 → no-op).
+// dx=(dx100*level+50)/100, dx100=6/12/24 по ширине (720p → 12px в каждую
+// сторону — явно видно, 0 → no-op).
 void CpuRgbSplit(uint8_t* px, uint32_t w, uint32_t h, int level) {
     if (level <= 0) return;
-    const int dx100 = (w >= 2560) ? 8 : (w >= 1280) ? 4 : 2;
+    const int dx100 = (w >= 2560) ? 24 : (w >= 1280) ? 12 : 6;
     const int dx = (dx100 * level + 50) / 100;
     if (dx <= 0 || (uint32_t)dx >= w) return;
     const size_t rowBytes = (size_t)w * 4u;
@@ -547,8 +548,8 @@ void CpuRgbSplit(uint8_t* px, uint32_t w, uint32_t h, int level) {
 // Трекинг-глитч: полосы/кадр со случайным горизонтальным сдвигом (wrap)
 // + белая 2px-строка сверху полосы (head-switching). Позиции/сдвиги —
 // от frame-сида, поэтому полосы движутся от кадра к кадру.
-// Масштаб от level (100 → как раньше: 2–4 полосы, h=8..h/12, сдвиг
-// ±(8..w/16); 0 → нет полос): число полос, высота и сдвиг умножаются на
+// Масштаб от level (100 → 4–8 полос, h=8..h/8, сдвиг ±(8..w/10) —
+// явно видно; 0 → нет полос): число полос, высота и сдвиг умножаются на
 // level% (минимумы 1 полоса / 2px высота / 1px сдвиг при level>0).
 // PRNG-последовательность та же, что без уровней, поэтому слабый уровень —
 // префикс полного прогона (монотонность: больше level → больше изменений).
@@ -562,12 +563,12 @@ void CpuTracking(uint8_t* px, uint32_t w, uint32_t h, uint64_t frame,
     std::vector<uint8_t> tmp(rowBytes);
     uint32_t s = (uint32_t)SplitMix64(frame ^ 0x545241434BULL);
     if (s == 0) s = 0x452821E7u;
-    const int bandsBase = 2 + (int)(XorShift32(s) % 3u);
+    const int bandsBase = 4 + (int)(XorShift32(s) % 5u);
     int bands = (bandsBase * level + 50) / 100;
     if (bands < 1) bands = 1;
     if (bands > bandsBase) bands = bandsBase;
     const uint32_t maxBandH = h / 8u >= 8u ? h / 8u : 8u;
-    const uint32_t maxOff = w / 16u >= 8u ? w / 16u : 8u;
+    const uint32_t maxOff = w / 10u >= 8u ? w / 10u : 8u;
     for (int b = 0; b < bands; ++b) {
         const uint32_t bandH100 = 8u + XorShift32(s) % maxBandH;
         uint32_t bandH = (bandH100 * (uint32_t)level + 50u) / 100u;
