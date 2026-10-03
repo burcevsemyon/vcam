@@ -21,10 +21,17 @@ struct AnalogRequest {
     bool scanlines = false;
     bool rgbSplit = false;
     bool tracking = false;
+    // Третья тройка (только frei0r-backend, CPU-аналогов нет):
+    bool gateweave = false; // дрожание плёнки (gateweave.dll)
+    bool glow = false;      // свечение светов (glow.dll)
+    bool denoise = false;   // шумодав hqdn3d (denoise_hqdn3d.dll)
     int noiseLevel = 100;
     int scanlinesLevel = 100;
     int rgbSplitLevel = 100;
     int trackingLevel = 100;
+    int gateweaveLevel = 100;
+    int glowLevel = 100;
+    int denoiseLevel = 100;
     double timeSec = 0.0; // время кадра для f0r_update (кадр/30)
 };
 

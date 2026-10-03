@@ -88,6 +88,11 @@ struct EffectsSection {
     bool rgbSplit = false;  // хроматическая аберрация (R/B-разъезд по X)
     bool tracking = false;  // трекинг-глитч (сдвинутые полосы, движутся)
     bool vhs = false;       // VHS-пресет: все четыре помехи сразу (OR)
+    // Третья тройка — только backend frei0r (CPU-аналогов нет; на cpu
+    // пропускаются с one-shot хинтом хоста, в VHS не входят):
+    bool gateweave = false; // дрожание плёнки (амплитуда сдвига кадра)
+    bool glow = false;      // свечение светов (сила screen-blend)
+    bool denoise = false;   // шумодав hqdn3d (сила сглаживания)
     // Степень помех 0–100 (индивидуальные уровни; VHS использует их же,
     // отдельного vhsLevel нет). Отсутствует в JSON → 100, кламп при чтении.
     // Уровень 0 при включённом тоггле ≈ эффект выключен.
@@ -95,6 +100,9 @@ struct EffectsSection {
     int scanlinesLevel = 100;  // глубина затемнения нечётных строк
     int rgbSplitLevel = 100;   // dx сдвига (100 → 6/12/24 по ширине)
     int trackingLevel = 100;   // число/ширина полос (0 → нет полос)
+    int gateweaveLevel = 100;  // размах дрожания (100 → ±10px)
+    int glowLevel = 100;       // радиус/сила свечения (100 → kernel ~32px@1280)
+    int denoiseLevel = 100;    // сила шумодава (100 → Dist25=100)
     // Исполнитель помех: L"cpu" (default, без DLL) | L"frei0r" (цепочка
     // frei0r-плагинов, нет DLL → fail-open на CPU). Только эти два токена
     // проходят, остальное (включая отсутствие) → cpu.
@@ -106,10 +114,13 @@ struct EffectsSection {
                 grayscale == o.grayscale &&
                noise == o.noise && scanlines == o.scanlines &&
                rgbSplit == o.rgbSplit && tracking == o.tracking &&
-               vhs == o.vhs && noiseLevel == o.noiseLevel &&
+               vhs == o.vhs && gateweave == o.gateweave && glow == o.glow &&
+               denoise == o.denoise && noiseLevel == o.noiseLevel &&
                scanlinesLevel == o.scanlinesLevel &&
                rgbSplitLevel == o.rgbSplitLevel &&
-               trackingLevel == o.trackingLevel && backend == o.backend;
+               trackingLevel == o.trackingLevel &&
+               gateweaveLevel == o.gateweaveLevel && glowLevel == o.glowLevel &&
+               denoiseLevel == o.denoiseLevel && backend == o.backend;
     }
     bool operator!=(const EffectsSection& o) const { return !(*this == o); }
 };

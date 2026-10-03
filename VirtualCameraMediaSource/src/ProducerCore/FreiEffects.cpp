@@ -5,18 +5,31 @@
 //   2) <каталог хоста>\frei0r\ (раскладка build и инсталлятора),
 //   3) <каталог хоста>,
 //   4) FREI0R_PATH (через ';' — так велит спека для Windows).
-// Имена: rgbnoise.dll, scanline0r.dll, rgbsplit0r.dll, glitch0r.dll.
+// Имена DLL = CMake TARGET апстрима: rgbnoise.dll, scanline0r.dll,
+// rgbsplit0r.dll, glitch0r.dll, gateweave.dll, glow.dll,
+// denoise_hqdn3d.dll (сборка — third_party/frei0r/build.ps1).
 //
 // Факты апстрима (пин 5378516, проверены чтением исходников):
-// - rgbnoise/rgbsplit0r/glitch0r — RGBA8888 (byte0=R), только f0r_update;
-//   scanline0r (C++ frei0r.hpp) — BGRA8888, 0 params, есть update и update2.
-//   Наши DLL экспортируют и update, и update2 (C-плагинам update2 добит
-//   шимом-форвардом в build.ps1); хост предпочитает update2.
+// - rgbnoise/rgbsplit0r/glitch0r/gateweave/glow/denoise_hqdn3d — RGBA8888
+//   (byte0=R), только f0r_update; scanline0r (C++ frei0r.hpp) — BGRA8888,
+//   0 params, есть update и update2. Наши DLL экспортируют и update, и
+//   update2 (C-плагинам update2 добит шимом-форвардом в build.ps1);
+//   хост предпочитает update2.
 // - Параметры (все double 0..1, менять каждый кадр можно и нужно):
 //   rgbnoise[0] noise: byteNoise = v*gauss*127 → 0.0 точный no-op.
 //   rgbsplit0r[0] vert c=0.5, [1] horiz c=0.5; shift=(v-0.5)*dim/8.
 //   glitch0r[0] freq→0..100%, [1] block→1..h, [2] shift→1..w,
 //     [3] color→0..5; freq=0 → все строки passthrough (memcpy).
+//   gateweave[0] interval def 0.6 (больше = медленнее drift),
+//     [1] max_move_x def 0.2, [2] max_move_y def 0.2; max сдвиг ±10*range px,
+//     0.0 → steady-state no-op (после construct prev=0).
+//   glow[0] blur: kernel = v/20*max(w,h)/2 (100 → ~32px@1280); update —
+//     screen-blend кадра с его блюром. v=0 НЕ no-op (подсветка остаётся!) →
+//     level 0 пропускаем в обёртке; сила — кроссфейдом входа/выхода
+//     (нативный blur почти не градуируется: screen доминирует).
+//   denoise_hqdn3d[0] spatial 0..1→Dist25 0..100 (def 0.04),
+//     [1] temporal (def 0.06); temporal-состояние живёт в инстансе
+//     (кэш инстансов обёртки его сохраняет между кадрами).
 // - Маппинг level (монотонно, level 0 = пропуск плагина = точный no-op).
 //   Характер — «сочный frei0r» (фаза vcam-effects-character, CPU — эталон,
 //   НЕ трогаем): каждый эффект на 100 заметно сильнее CPU-аналога.
@@ -34,7 +47,13 @@
 //   tracking:  freq 0.15+0.85*L (100 → 100% строк), block 0.05+0.30*L
 //     (100 → 0.35 ≈ 252px@720 — крупные блоки), shift 0.05+0.25*L
 //     (100 → 0.30 ≈ 384px@1280), color 0.2+0.8*L (100 → 5/5 безумия).
-// Порядок цепочки — как CPU: rgbsplit → tracking(glitch0r) → noise → scanlines.
+// Порядок цепочки: denoise → gateweave → rgbsplit → tracking(glitch0r) →
+// glow → noise → scanlines. Обоснование: denoise первым — чистит сенсорный
+// шум до стилизации (после noise-зёрна съедал бы его); gateweave —
+// глобальная геометрия перед локальной (rgbsplit/tracking); glow после
+// геометрии и цвета (screen-blend видит финальные цвета), но до зерна;
+// noise-зерно поверх glow (плёночное зерно сверху); scanlines последним
+// как раньше (уровень дисплея). VHS — только старые 4, тройку не включает.
 //
 // Потокобезопасность: один мьютекс на весь вызов (заодно сериализует
 // rand() внутри rgbnoise/glitch0r). AV в чужом коде ловим SEH и помечаем
@@ -125,12 +144,18 @@ constexpr int kFxNoise = 0;
 constexpr int kFxScanlines = 1;
 constexpr int kFxRgbSplit = 2;
 constexpr int kFxTracking = 3;
-constexpr int kFxCount = 4;
+constexpr int kFxGateweave = 4;
+constexpr int kFxGlow = 5;
+constexpr int kFxDenoise = 6;
+constexpr int kFxCount = 7;
 const EffectDef kEffects[kFxCount] = {
     {L"rgbnoise.dll", 1, false},
     {L"scanline0r.dll", 0, true},
     {L"rgbsplit0r.dll", 2, false},
     {L"glitch0r.dll", 4, false},
+    {L"gateweave.dll", 3, false},
+    {L"glow.dll", 1, false},
+    {L"denoise_hqdn3d.dll", 2, false},
 };
 
 struct InstanceKey {
@@ -545,8 +570,11 @@ FreiResult ApplyAnalog(uint8_t* bgrx, uint32_t w, uint32_t h,
     auto want = [&](bool on, int level, int fx) {
         if (on && level > 0) jobs[nJobs++] = Job{fx, level};
     };
+    want(req.denoise, req.denoiseLevel, kFxDenoise);
+    want(req.gateweave, req.gateweaveLevel, kFxGateweave);
     want(req.rgbSplit, req.rgbSplitLevel, kFxRgbSplit);
     want(req.tracking, req.trackingLevel, kFxTracking);
+    want(req.glow, req.glowLevel, kFxGlow);
     want(req.noise, req.noiseLevel, kFxNoise);
     want(req.scanlines, req.scanlinesLevel, kFxScanlines);
     if (nJobs == 0) return FreiResult::kApplied; // нечего делать, кадр цел
@@ -593,7 +621,8 @@ FreiResult ApplyAnalog(uint8_t* bgrx, uint32_t w, uint32_t h,
         // Характерные режимы (фаза character): noise — два прохода,
         // scanlines — пост-обработка ниже (снапшот нужен ДО плагина).
         int passes = 1;
-        const bool needSnap = (fx == kFxScanlines && level <= 50);
+        const bool needSnap = (fx == kFxScanlines && level <= 50) ||
+                              (fx == kFxGlow);
         if (needSnap) std::memcpy(st.stageC, cur, bytes);
         switch (fx) {
         case kFxNoise:
@@ -612,6 +641,25 @@ FreiResult ApplyAnalog(uint8_t* bgrx, uint32_t w, uint32_t h,
             SetDouble(lp, inst, 2, 0.05 + 0.25 * L); // shift (100 → 0.30w)
             SetDouble(lp, inst, 3, 0.20 + 0.80 * L); // color (100 → 5/5)
             break;
+        case kFxGateweave:
+            SetDouble(lp, inst, 0, 0.6); // interval: дефолт апстрима
+            SetDouble(lp, inst, 1, L);   // max_move_x (100 → ±10px размах)
+            SetDouble(lp, inst, 2, L);   // max_move_y (25 → ±2.5px, тонко)
+            break;
+        case kFxGlow:
+            SetDouble(lp, inst, 0, L); // blur (100 → kernel ~32px@1280)
+            break; // сила — кроссфейдом ниже (нативный blur почти не
+                   // градуируется: screen-blend доминирует уже на малых L)
+        case kFxDenoise: {
+            // Нативный отклик растёт лишь до Dist25≈70
+            // (замер: var 541/497/414/330/278/258/257/266/280/296 на
+            // L=10..100 — дальше насыщение и лёгкий откат плагина);
+            // кэп на sweet spot даёт монотонность на всём 0..100.
+            const double v = 0.7 * L; // spatial+temporal (100 → Dist25=70)
+            SetDouble(lp, inst, 0, v);
+            SetDouble(lp, inst, 1, v); // temporal-память живёт в инстансе
+            break;
+        }
         }
         // Стадия: BGRX(cur) → layout плагина(nxt) → update(in=nxt, out=cur)
         // → BGRX(cur→nxt); nxt — текущий. В bgrx пишем только после успеха
@@ -636,6 +684,18 @@ FreiResult ApplyAnalog(uint8_t* bgrx, uint32_t w, uint32_t h,
             // Выход плагина (cur) → BGRX в nxt; nxt становится текущим.
             FromPluginLayout(lp, cur, nxt, pixels);
             std::swap(cur, nxt);
+        }
+        if (fx == kFxGlow) {
+            // Сила свечения — кроссфейд входа и выхода плагина
+            // (прецедент — scanlines blend-back): нативный blur-параметр
+            // почти не градуируется, а так 25/50/100 дают ~25/50/100%
+            // эффекта — монотонность по построению. level 0 сюда не
+            // доходит (пропуск выше = точный no-op).
+            for (size_t i = 0; i < bytes; i += 4)
+                for (int ch = 0; ch < 3; ++ch)
+                    cur[i + ch] = (uint8_t)((st.stageC[i + ch] * (100 - level) +
+                                             cur[i + ch] * level + 50) /
+                                            100);
         }
         if (fx == kFxScanlines) {
             // Контраст сканлайнов сверх фиксированных ×0.5 плагина.

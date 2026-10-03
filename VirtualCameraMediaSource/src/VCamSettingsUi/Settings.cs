@@ -19,9 +19,13 @@ namespace VCamSettingsUi;
 //     "record": { "path": "..." },
 //     "effects": { "enabled": bool, "mirror": bool, "grayscale": bool,
 //                "noise": bool, "scanlines": bool, "rgbsplit": bool,
-//                "tracking": bool, "vhs": bool, "noiseLevel": int 0-100,
+//                "tracking": bool, "vhs": bool,
+//                "gateweave": bool, "glow": bool, "denoise": bool,
+//                "noiseLevel": int 0-100,
 //                "scanlinesLevel": int, "rgbsplitLevel": int,
-//                "trackingLevel": int, "backend": "cpu" | "frei0r" },
+//                "trackingLevel": int,
+//                "gateweaveLevel": int, "glowLevel": int, "denoiseLevel": int,
+//                "backend": "cpu" | "frei0r" },
 //     "autostart": bool }
 // Empty camera section (id and name both "") -> host shows NO SIGNAL until a
 // device is chosen. Load also accepts the legacy flat format
@@ -135,6 +139,12 @@ public sealed class Settings
     public bool FxTracking { get; set; }
     public bool FxVhs { get; set; }
 
+    // Third trio — frei0r-backend only (no CPU counterparts; skipped on cpu).
+    // Not part of the VHS preset. Missing key -> false, like the old toggles.
+    public bool FxGateweave { get; set; }
+    public bool FxGlow { get; set; }
+    public bool FxDenoise { get; set; }
+
     // Analog interference intensity 0-100 (mirrors EffectsSection levels on
     // the C++ side). Missing key -> 100, clamped on read. Level 0 with the
     // toggle on ~= effect off. VHS has no own level: it uses these four.
@@ -142,6 +152,9 @@ public sealed class Settings
     public int FxScanlinesLevel { get; set; } = 100;
     public int FxRgbSplitLevel { get; set; } = 100;
     public int FxTrackingLevel { get; set; } = 100;
+    public int FxGateweaveLevel { get; set; } = 100;
+    public int FxGlowLevel { get; set; } = 100;
+    public int FxDenoiseLevel { get; set; } = 100;
 
     // Analog interference backend (mirrors EffectsSection.backend on the C++
     // side): only "frei0r" passes, anything else (incl. missing) is "cpu".
@@ -258,10 +271,16 @@ public sealed class Settings
                     s.FxRgbSplit = GetBool(fx, "rgbsplit");
                     s.FxTracking = GetBool(fx, "tracking");
                     s.FxVhs = GetBool(fx, "vhs");
+                    s.FxGateweave = GetBool(fx, "gateweave");
+                    s.FxGlow = GetBool(fx, "glow");
+                    s.FxDenoise = GetBool(fx, "denoise");
                     s.FxNoiseLevel = GetLevel(fx, "noiseLevel");
                     s.FxScanlinesLevel = GetLevel(fx, "scanlinesLevel");
                     s.FxRgbSplitLevel = GetLevel(fx, "rgbsplitLevel");
                     s.FxTrackingLevel = GetLevel(fx, "trackingLevel");
+                    s.FxGateweaveLevel = GetLevel(fx, "gateweaveLevel");
+                    s.FxGlowLevel = GetLevel(fx, "glowLevel");
+                    s.FxDenoiseLevel = GetLevel(fx, "denoiseLevel");
                     s.FxBackend = ParseBackend(GetString(fx, "backend"));
                 }
 
@@ -363,10 +382,16 @@ public sealed class Settings
                 ["rgbsplit"] = FxRgbSplit,
                 ["tracking"] = FxTracking,
                 ["vhs"] = FxVhs,
+                ["gateweave"] = FxGateweave,
+                ["glow"] = FxGlow,
+                ["denoise"] = FxDenoise,
                 ["noiseLevel"] = FxNoiseLevel,
                 ["scanlinesLevel"] = FxScanlinesLevel,
                 ["rgbsplitLevel"] = FxRgbSplitLevel,
                 ["trackingLevel"] = FxTrackingLevel,
+                ["gateweaveLevel"] = FxGateweaveLevel,
+                ["glowLevel"] = FxGlowLevel,
+                ["denoiseLevel"] = FxDenoiseLevel,
                 ["backend"] = FxBackend == "frei0r" ? "frei0r" : "cpu",
             },
             ["autostart"] = Autostart,

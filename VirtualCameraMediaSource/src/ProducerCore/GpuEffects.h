@@ -21,10 +21,18 @@ struct FxFlags {
     bool rgbSplit = false;  // хроматическая аберрация (RGB-сдвиг)
     bool tracking = false;  // трекинг-глитч (сдвинутые полосы)
     bool vhs = false;       // VHS-пресет: все четыре помехи сразу
+    // Третья тройка — ТОЛЬКО backend frei0r (CPU-аналогов нет; на cpu
+    // пропускаются; UI их серит, хост даёт one-shot хинт в лог):
+    bool gateweave = false; // дрожание плёнки
+    bool glow = false;      // свечение светов
+    bool denoise = false;   // шумодав hqdn3d
     int noiseLevel = 100;
     int scanlinesLevel = 100;
     int rgbSplitLevel = 100;
     int trackingLevel = 100;
+    int gateweaveLevel = 100;
+    int glowLevel = 100;
+    int denoiseLevel = 100;
     std::wstring backend = L"cpu";
 };
 
@@ -32,8 +40,10 @@ struct FxFlags {
 //   true  — эффекты применены (или все флаги выключены — кадр не тронут);
 //   false — сбой: кадр ОСТАВЛЕН БЕЗ ИЗМЕНЕНИЙ (fail-open, камера обязана
 //           работать). Вызывающий логирует один раз.
-// Порядок: GPU (mirror+grayscale, существующие пайпы) → CPU-аналог
-// (rgbSplit → tracking → noise → scanlines). Цветной шум поверх Ч/Б —
+// Порядок: GPU (mirror+grayscale, существующие пайпы) → помехи.
+// CPU: rgbSplit → tracking → noise → scanlines. frei0r: denoise → gateweave
+// → rgbsplit → tracking → glow → noise → scanlines (VHS — только старые 4).
+// Цветной шум поверх Ч/Б —
 // задуманный chroma-noise; rgb-split на сером даёт цветные кромки.
 // GPU запрошен и упал → CPU пропускается (атомарно всё-или-ничего).
 // Только плотно упакованные кадры (stride == w*4, как m.buf хоста);

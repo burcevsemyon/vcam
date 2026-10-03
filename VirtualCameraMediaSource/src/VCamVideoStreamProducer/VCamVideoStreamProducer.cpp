@@ -1156,6 +1156,7 @@ struct Machine {
     // конфигурации молчал.
     bool fxGpuLogged = false;  // one-shot лог fail-open эффектов
     bool fxFreiLogged = false; // one-shot лог CPU-fallback backend frei0r
+    bool fxCpuTrioLogged = false; // one-shot хинт: трио на backend cpu пропущено
     Phase phase = Phase::Switch;
     ULONGLONG switchStart = 0;
     ULONGLONG nextAttempt = 0;
@@ -1302,11 +1303,27 @@ void ApplyFx(Machine& m)
     f.rgbSplit = m.fx.rgbSplit;
     f.tracking = m.fx.tracking;
     f.vhs = m.fx.vhs;
+    f.gateweave = m.fx.gateweave;
+    f.glow = m.fx.glow;
+    f.denoise = m.fx.denoise;
     f.noiseLevel = m.fx.noiseLevel;
     f.scanlinesLevel = m.fx.scanlinesLevel;
     f.rgbSplitLevel = m.fx.rgbSplitLevel;
     f.trackingLevel = m.fx.trackingLevel;
+    f.gateweaveLevel = m.fx.gateweaveLevel;
+    f.glowLevel = m.fx.glowLevel;
+    f.denoiseLevel = m.fx.denoiseLevel;
     f.backend = m.fx.backend;
+    // Трио без CPU-аналогов: на backend cpu пропускаются — один раз
+    // объясняем в лог (иначе ручной settings.json давал бы молчаливый no-op;
+    // через UI такое не включается — строки серые).
+    if (f.backend != L"frei0r" &&
+        ((f.gateweave && f.gateweaveLevel > 0) ||
+         (f.glow && f.glowLevel > 0) || (f.denoise && f.denoiseLevel > 0)) &&
+        !m.fxCpuTrioLogged) {
+        m.fxCpuTrioLogged = true;
+        Log(L"[host] effects: gateweave/glow/denoise — только backend frei0r, на CPU пропущены");
+    }
     const bool ok = vcam::effects::ApplyEffects(m.buf.data(), (int)(m.frameW * 4),
                                                 m.frameW, m.frameH, f);
     if (!ok && !m.fxGpuLogged) {
@@ -1559,12 +1576,15 @@ void ApplySettingsDiff(Machine& m, HotkeySection& curHotkey,
         // М5: новый набор эффектов — новый one-shot шанс залогировать
         // сбой (иначе флаг липкий навсегда с первой неудачи).
         m.fxGpuLogged = false;
+        m.fxCpuTrioLogged = false;
         m.fx = s.fx;
-        Log(L"[host] effects: enabled=%d mirror=%d grayscale=%d noise=%d(%d) scanlines=%d(%d) rgbsplit=%d(%d) tracking=%d(%d) vhs=%d backend=%s",
+        Log(L"[host] effects: enabled=%d mirror=%d grayscale=%d noise=%d(%d) scanlines=%d(%d) rgbsplit=%d(%d) tracking=%d(%d) gateweave=%d(%d) glow=%d(%d) denoise=%d(%d) vhs=%d backend=%s",
             (int)m.fx.enabled, (int)m.fx.mirror, (int)m.fx.grayscale, (int)m.fx.noise,
             m.fx.noiseLevel, (int)m.fx.scanlines, m.fx.scanlinesLevel,
             (int)m.fx.rgbSplit, m.fx.rgbSplitLevel, (int)m.fx.tracking,
-            m.fx.trackingLevel, (int)m.fx.vhs, m.fx.backend.c_str());
+            m.fx.trackingLevel, (int)m.fx.gateweave, m.fx.gateweaveLevel,
+            (int)m.fx.glow, m.fx.glowLevel, (int)m.fx.denoise, m.fx.denoiseLevel,
+            (int)m.fx.vhs, m.fx.backend.c_str());
     }
     // record {path} / recordHotkey в operator== дают watcher-dirty, но
     // переоткрытия не требуют (не входят в SourceConfig/quality/fx).
