@@ -4,6 +4,7 @@
 #include <atlbase.h>
 
 #include <cstdio>
+#include <cwctype>
 #include <string>
 
 namespace {
@@ -42,15 +43,52 @@ bool ReadUtf8File(const std::wstring& path, std::string& out)
     return ok && read == out.size();
 }
 
+// B6: атомарная запись через tmp+move (как host WriteRecordCommand):
+// конкурентный читатель (UI/host-рид) видит старый или новый файл целиком,
+// рваного truncate-read нет. Плюс retry при sharing-violation — вторая
+// сторона (C# Save тоже tmp+move) может держать файл в момент move.
 bool WriteUtf8FileNoBom(const std::wstring& path, const std::string& content)
 {
-    HANDLE raw = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
-        CREATE_ALWAYS, 0, nullptr);
-    if (raw == INVALID_HANDLE_VALUE) return false;
-    ATL::CHandle h(raw);
-    DWORD written = 0;
-    BOOL ok = WriteFile(h, content.data(), (DWORD)content.size(), &written, nullptr);
-    return ok && written == content.size();
+    // Уникальный tmp на запись (хост vs UI пишут одновременно; плюс
+    // g_settingsCs сериализует только потоки хоста): общий фиксированный tmp
+    // сталкивал писателей sharing-violation.
+    wchar_t uniq[48];
+    swprintf(uniq, 48, L".%lu.%llu.tmp", GetCurrentProcessId(),
+             (unsigned long long)GetTickCount64());
+    std::wstring tmp = path + uniq;
+    for (int attempt = 0;; ++attempt) {
+        HANDLE raw = CreateFileW(tmp.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+            CREATE_ALWAYS, 0, nullptr);
+        if (raw == INVALID_HANDLE_VALUE) {
+            DWORD e = GetLastError();
+            if (attempt >= 2 || (e != ERROR_SHARING_VIOLATION &&
+                                 e != ERROR_ACCESS_DENIED && e != ERROR_LOCK_VIOLATION))
+                return false;
+            Sleep(50);
+            continue;
+        }
+        ATL::CHandle h(raw);
+        DWORD written = 0;
+        BOOL ok = WriteFile(h, content.data(), (DWORD)content.size(), &written, nullptr);
+        h.Close();
+        if (!ok || written != content.size()) {
+            DeleteFileW(tmp.c_str());
+            return false;
+        }
+        break;
+    }
+    for (int attempt = 0;; ++attempt) {
+        if (MoveFileWithProgressW(tmp.c_str(), path.c_str(), nullptr, nullptr,
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+            return true;
+        DWORD e = GetLastError();
+        if (attempt >= 2 || (e != ERROR_SHARING_VIOLATION &&
+                             e != ERROR_ACCESS_DENIED && e != ERROR_LOCK_VIOLATION)) {
+            DeleteFileW(tmp.c_str());
+            return false;
+        }
+        Sleep(50);
+    }
 }
 
 void SkipWs(const std::string& json, size_t& p)
@@ -199,9 +237,30 @@ std::string EscapeJson(const std::wstring& w)
     return out;
 }
 
+// К4: ASCII case-insensitive compare (для JSON-токенов; C# —
+// OrdinalIgnoreCase). Юникод-фолдинг не нужен: токены строго ASCII.
+bool EqCI(const std::wstring& a, const wchar_t* b)
+{
+    size_t n = wcslen(b);
+    if (a.size() != n) return false;
+    for (size_t i = 0; i < n; ++i) {
+        wchar_t ca = a[i], cb = b[i];
+        if (ca >= L'A' && ca <= L'Z') ca = (wchar_t)(ca + (L'a' - L'A'));
+        if (cb >= L'A' && cb <= L'Z') cb = (wchar_t)(cb + (L'a' - L'A'));
+        if (ca != cb) return false;
+    }
+    return true;
+}
+
 bool ParseScaleMode(const std::wstring& m, std::wstring& out)
 {
-    if (m == L"fit" || m == L"cover" || m == L"crop") { out = m; return true; }
+    // К4: C# читает scaleMode через OrdinalIgnoreCase, C++ сравнивал exact —
+    // "FIT"/"Cover" давали fit в UI и cover в хосте. Унифицировано: обе
+    // стороны insensitive, канон — нижний регистр. Возврат как раньше:
+    // true = токен распознан, false = fallback fit.
+    if (EqCI(m, L"fit")) { out = L"fit"; return true; }
+    if (EqCI(m, L"cover")) { out = L"cover"; return true; }
+    if (EqCI(m, L"crop")) { out = L"crop"; return true; }
     out = L"fit";
     return false;
 }
@@ -259,6 +318,7 @@ void ParseNewSchema(const std::string& json, Settings& s)
     }
     if (FindObjectRange(json, "effects", b, e)) {
         std::string sec = json.substr(b, e - b);
+        s.fx.enabled = JsonGetBool(sec, "enabled", true);
         s.fx.mirror = JsonGetBool(sec, "mirror", false);
         s.fx.grayscale = JsonGetBool(sec, "grayscale", false);
         s.fx.noise = JsonGetBool(sec, "noise", false);
@@ -280,6 +340,26 @@ void ParseNewSchema(const std::string& json, Settings& s)
     std::wstring q;
     if (JsonGetString(json, "quality", q)) ParseQuality(q, s.quality);
     s.autostart = JsonGetBool(json, "autostart", true);
+    if (FindObjectRange(json, "hotkey", b, e)) {
+        std::string sec = json.substr(b, e - b);
+        // hotkey: {modifiers, vk}; мусор (включая 0) → дефолт Ctrl+Alt+V
+        // (модификаторы — биты MOD_ALT|CONTROL|SHIFT|WIN = 1|2|4|8).
+        int mods = JsonGetInt(sec, "modifiers", 3);
+        s.hotkey.modifiers = (mods >= 1 && mods <= 15) ? mods : 3;
+        int vk = JsonGetInt(sec, "vk", 0x56);
+        s.hotkey.vk = (vk >= 0x08 && vk <= 0xFE) ? vk : 0x56;
+    }
+    if (FindObjectRange(json, "recordHotkey", b, e)) {
+        std::string sec = json.substr(b, e - b);
+        // recordHotkey: те же правила, дефолт Ctrl+Alt+R.
+        int mods = JsonGetInt(sec, "modifiers", 3);
+        s.recordHotkey.modifiers = (mods >= 1 && mods <= 15) ? mods : 3;
+        int vk = JsonGetInt(sec, "vk", 0x52);
+        s.recordHotkey.vk = (vk >= 0x08 && vk <= 0xFE) ? vk : 0x52;
+    }
+    if (FindObjectRange(json, "record", b, e)) {
+        JsonGetString(json.substr(b, e - b), "path", s.record.path);
+    }
 }
 
 // Старый формат: корневые imagePath/mediaMode/mediaPath/scaleMode/crop*.
@@ -290,9 +370,12 @@ void ParseLegacySchema(const std::string& json, Settings& s)
     JsonGetString(json, "mediaPath", mediaPath);
     JsonGetString(json, "mediaMode", mediaMode);
 
-    s.sourceType = (mediaMode == L"video") ? L"video" : L"static";
+    // К4: mediaMode — insensitive как в C# (там OrdinalIgnoreCase "video"),
+    // иначе legacy {"mediaMode":"Video"} давал static в хосте и video в UI.
+    const bool isVideo = EqCI(mediaMode, L"video");
+    s.sourceType = isVideo ? L"video" : L"static";
     s.st.path = imagePath;
-    if (s.st.path.empty() && mediaMode != L"video") s.st.path = mediaPath;
+    if (s.st.path.empty() && !isVideo) s.st.path = mediaPath;
 
     std::wstring sm;
     if (JsonGetString(json, "scaleMode", sm)) ParseScaleMode(sm, s.st.scaleMode);
@@ -305,6 +388,12 @@ void ParseLegacySchema(const std::string& json, Settings& s)
     s.video.path = mediaPath;
     s.quality = L"source"; // legacy без ключа quality -> source
     s.cam.capture = L"max"; // legacy без секции camera -> max
+    s.hotkey.modifiers = 3; // legacy без секции hotkey -> Ctrl+Alt+V
+    s.hotkey.vk = 0x56;
+    s.recordHotkey.modifiers = 3; // legacy без recordHotkey -> Ctrl+Alt+R
+    s.recordHotkey.vk = 0x52;
+    s.record.path.clear(); // legacy без секции record -> дефолт хоста (Videos\...)
+    s.fx.enabled = true;    // legacy без секции effects -> мастер вкл, тоглы выкл
     s.fx.mirror = false;    // legacy без секции effects -> всё выкл
     s.fx.grayscale = false;
     s.fx.noise = false;
@@ -366,7 +455,14 @@ std::string Settings::Serialize() const
            "\", \"name\": \"" + EscapeJson(cam.name) +
            "\", \"capture\": \"" + EscapeJson(cam.capture) + "\" },\n";
     out += "  \"quality\": \"" + EscapeJson(quality) + "\",\n";
-    out += "  \"effects\": { \"mirror\": ";
+    out += "  \"hotkey\": { \"modifiers\": " + std::to_string(hotkey.modifiers) +
+           ", \"vk\": " + std::to_string(hotkey.vk) + " },\n";
+    out += "  \"recordHotkey\": { \"modifiers\": " + std::to_string(recordHotkey.modifiers) +
+           ", \"vk\": " + std::to_string(recordHotkey.vk) + " },\n";
+    out += "  \"record\": { \"path\": \"" + EscapeJson(record.path) + "\" },\n";
+    out += "  \"effects\": { \"enabled\": ";
+    out += fx.enabled ? "true" : "false";
+    out += ", \"mirror\": ";
     out += fx.mirror ? "true" : "false";
     out += ", \"grayscale\": ";
     out += fx.grayscale ? "true" : "false";

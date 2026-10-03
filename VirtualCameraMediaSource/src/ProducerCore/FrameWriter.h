@@ -83,8 +83,14 @@ public:
     // quality=fixed720p). Пишет обе секции, кэширует обе.
     bool WriteFrameNative(const uint8_t* bgrx, int stride, uint32_t w, uint32_t h);
     // Повторно публикует последний удачный кадр (hot-switch, пока новый источник
-    // не дал первый кадр). false — кадра ещё не было / writer не открыт.
+    // не готов). false — кадра ещё не было / writer не открыт.
     bool FlushLast();
+    // Последний опубликованный 720p-кадр v1 (packed 1280x720 BGRX top-down,
+    // stride 5120 — ровно то, что ушло в эфир, включая эффекты хоста).
+    // Пустой вектор = кадра ещё не было. Читатель — тот же worker-поток хоста,
+    // что зовёт Write* (доп. синхронизация не нужна); для записи эфира в файл.
+    bool HasFrame720p() const { return hasFrame_; }
+    const std::vector<uint8_t>& LastFrame720p() const { return cache_; }
 
 private:
     bool PublishLocked();

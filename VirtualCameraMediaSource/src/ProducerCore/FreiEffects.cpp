@@ -45,10 +45,14 @@
 #include "FreiEffects.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstring>
+#include <future>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -200,6 +204,39 @@ void UpdateThunk(void* p) {
         c->lp->update(c->inst, c->t, c->in, c->out);
     }
     c->ok = true;
+}
+
+// К3: прямой вызов чужого кода без таймаута вешал worker host-кадра навсегда.
+// Крутим UpdateThunk на отдельной нити, ждём ~500 мс, дальше fail-open.
+// Возврат: 1 = ok, 0 = упало быстро (SEH/false, нить завершена — плагин можно
+// безопасно выгружать через DropPluginLocked), -1 = ТАЙМАУТ (нить ещё внутри
+// чужого кода — выгружать/destruct/FreeLibrary НЕЛЬЗЯ, только липкий broken
+// без выгрузки; см. MarkPluginBrokenLocked). Контекст и promise — shared
+// (detached-нить держит свои копии), висячих записей в стек вызывающего нет;
+// выходной буфер при таймауте не трогаем (остаток кадра — через CPU fallback).
+int UpdateWithTimeout(LoadedPlugin* lp, F0rInstance inst, double t,
+                      const uint32_t* in, uint32_t* out, int timeoutMs = 500) {
+    auto job = std::make_shared<UpdateCtx>(UpdateCtx{lp, inst, t, in, out, false});
+    auto pr = std::make_shared<std::promise<bool>>();
+    std::future<bool> fu = pr->get_future();
+    try {
+        std::thread([job, pr] {
+            bool ok = GuardedCall(UpdateThunk, job.get()) && job->ok;
+            try {
+                pr->set_value(ok);
+            } catch (...) {
+            }
+        }).detach();
+    } catch (...) {
+        return 0;
+    }
+    if (fu.wait_for(std::chrono::milliseconds(timeoutMs)) != std::future_status::ready)
+        return -1; // timeout: detached-нить держит job/pr — UAF нет
+    try {
+        return fu.get() ? 1 : 0;
+    } catch (...) {
+        return 0;
+    }
 }
 
 struct DestructCtx {
@@ -382,6 +419,16 @@ void DropPluginLocked(State& st, int fx) {
     }
     lp = LoadedPlugin{};
     lp.broken = true; // до ShutdownFrei не трогаем (липкий битый)
+}
+
+// К3: пометить плагин битым БЕЗ выгрузки (для таймаута UpdateWithTimeout:
+// hung-нить ещё внутри update/dll — destruct/deinit/FreeLibrary по живому
+// коду = AV). Инстанс и DLL утекают bounded (макс 4 плагина за процесс),
+// повторных обращений не будет (EnsurePluginLocked смотрит broken первым).
+// Stage-буферы при этом может дописывать hung-нить — остаток кадра идёт
+// через CPU fallback, гонка принята как меньшее зло против вечного hang.
+void MarkPluginBrokenLocked(State& st, int fx) {
+    st.plugins[fx].broken = true;
 }
 
 // Instance под (w,h): кэш, пересоздание при смене размера (мьютекс взят).
@@ -571,11 +618,18 @@ FreiResult ApplyAnalog(uint8_t* bgrx, uint32_t w, uint32_t h,
         // всей цепочки (атомарно).
         for (int p = 0; p < passes; ++p) {
             ToPluginLayout(lp, cur, nxt, pixels);
-            UpdateCtx c{&lp, inst, req.timeSec,
-                        reinterpret_cast<const uint32_t*>(nxt),
-                        reinterpret_cast<uint32_t*>(cur), false};
-            if (!GuardedCall(UpdateThunk, &c) || !c.ok) {
-                DropPluginLocked(st, fx); // AV/битый — выгрузить
+            // К3: прямой вызов без таймаута вешал worker навсегда — ждём
+            // ~500 мс, дальше fail-open на CPU (kNeedCpu). Таймаут (-1) —
+            // только липкий broken БЕЗ выгрузки (hung-нить ещё внутри).
+            const int ur = UpdateWithTimeout(
+                &lp, inst, req.timeSec,
+                reinterpret_cast<const uint32_t*>(nxt),
+                reinterpret_cast<uint32_t*>(cur));
+            if (ur != 1) {
+                if (ur < 0)
+                    MarkPluginBrokenLocked(st, fx); // timeout — не выгружать
+                else
+                    DropPluginLocked(st, fx); // AV/битый — выгрузить
                 g_cpuFallback.store(true, std::memory_order_relaxed);
                 return FreiResult::kNeedCpu;
             }

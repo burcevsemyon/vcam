@@ -39,12 +39,16 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <AdditionalLibraryDirectories>$(SolutionDir)third_party\gpupixel\lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>gpupixel.lib;glfw3.lib;yuv.lib;glad.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>gpupixel.lib;glfw3.lib;yuv.lib;glad.lib;mfplat.lib;mfreadwrite.lib;mfuuid.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="Mp4Recorder.cpp" />
     <ClCompile Include="VCamVideoStreamProducer.cpp" />
     <ResourceCompile Include="version.rc" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Mp4Recorder.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\ProducerCore\ProducerCore.vcxproj">

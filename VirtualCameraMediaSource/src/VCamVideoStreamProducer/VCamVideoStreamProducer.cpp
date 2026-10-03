@@ -1,16 +1,20 @@
 #include <windows.h>
 #include <shellapi.h>
+#include <shlobj.h> // B7: SHGetKnownFolderPath(FOLDERID_Videos)
 #include <tlhelp32.h>
 #include <atlbase.h>
 
+#include <cctype> // B7: граница токена true/false в TryReadRecordState
 #include <cstdarg>
 #include <cstdio>
+#include <ctime>
 #include <cwchar>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include "FrameWriter.h"
+#include "Mp4Recorder.h"
 #include "ProducerApi.h"
 #include "Settings.h"
 #include "SettingsWatcher.h"
@@ -29,6 +33,9 @@ constexpr wchar_t kTrayClass[] = L"VCamVideoStreamProducerWnd";
 constexpr wchar_t kTrayTip[] = L"VCam Video Stream Producer";
 
 constexpr UINT WM_TRAYICON = WM_APP + 1;
+constexpr UINT WM_REAPPLY_HOTKEY = WM_APP + 2; // worker заметил смену hotkey в settings
+constexpr UINT kHotkeyId = 1;
+constexpr UINT kRecHotkeyId = 2; // старт/стоп записи эфира
 constexpr UINT ID_STATUS = 101;
 constexpr UINT ID_SETTINGS = 102;
 constexpr UINT ID_PREVIEW = 103;
@@ -56,6 +63,578 @@ ATL::CHandle g_logFile;
 
 CRITICAL_SECTION g_statusCs;
 std::wstring g_statusText = L"Нет сигнала (старт)";
+
+void Log(const wchar_t* fmt, ...); // определён ниже (host.log + stdout)
+
+// --- Глобальный хоткей static→video→auto-static (секция hotkey в settings).
+// Нажатие (вне video) = запомнить текущий тип и уйти в video на один проход
+// (playOnce через settings.json — хост и UI остаются согласованы через watcher);
+// нажатие во время заимствованного video = досрочный возврат; конец файла =
+// авто-возврат на запомненное (обычно static). Borrow живёт только в памяти
+// хоста; для UI-индикатора пишется transient-файл hotkey_state.json
+// (%APPDATA%\VCam, НЕ settings — иначе вотчер зациклит переключения).
+CRITICAL_SECTION g_hotkeyCs;
+HotkeySection g_hotkey; // последний зарегистрированный (дефолт = Ctrl+Alt+V)
+std::wstring g_hotkeyReturnType = L"static"; // куда вернуться после borrowed video
+bool g_hotkeyBorrowed = false;               // video сейчас заимствовано хоткеем
+// B5: backstop-таймаут borrow — Ended не fires при битом файле, а fallback
+// теперь тоже возвращает (ниже); тик страхует от вечного «идёт видео» при
+// залипшем источнике, который не падает и не кончается.
+ULONGLONG g_hotkeyBorrowTickMs = 0; // GetTickCount64 в момент borrow, 0 = нет borrow
+constexpr ULONGLONG kBorrowMaxMs = 30ULL * 60 * 1000; // 30 мин одного borrow достаточно
+
+// B6: сериализация всех мутаций settings.json внутри хоста: main-поток
+// (хоткей WM_HOTKEY, трей ToggleAutostart) vs worker (StartRecording,
+// auto-return). Без неё Load→Save из двух потоков теряли обновления друг
+// друга. UI-гонка (внешний процесс) остаётся last-writer-wins — снапшоты
+// полные, приемлемо; рваные чтения закрыты атомарным Save (tmp+move).
+CRITICAL_SECTION g_settingsCs;
+struct SettingsFileGuard {
+    SettingsFileGuard() { EnterCriticalSection(&g_settingsCs); }
+    ~SettingsFileGuard() { LeaveCriticalSection(&g_settingsCs); }
+};
+
+std::wstring HotkeyStatePath()
+{
+    wchar_t appdata[MAX_PATH] = {};
+    DWORD n = GetEnvironmentVariableW(L"APPDATA", appdata, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return {};
+    return std::wstring(appdata) + L"\\VCam\\hotkey_state.json";
+}
+
+// Человекочитаемая комбинация для логов/UI ("Ctrl+Alt+V"). Неизвестный vk —
+// "VK 0x..". Шаблон: HotkeySection и RecordHotkeySection (одинаковые поля).
+template <typename T>
+std::wstring HotkeyDisplay(const T& hk)
+{
+    std::wstring s;
+    if (hk.modifiers & MOD_CONTROL) s += L"Ctrl+";
+    if (hk.modifiers & MOD_ALT) s += L"Alt+";
+    if (hk.modifiers & MOD_SHIFT) s += L"Shift+";
+    if (hk.modifiers & MOD_WIN) s += L"Win+";
+    wchar_t key[32] = {};
+    if ((hk.vk >= '0' && hk.vk <= '9') || (hk.vk >= 'A' && hk.vk <= 'Z')) {
+        swprintf_s(key, L"%c", (wchar_t)hk.vk);
+    } else if (hk.vk >= VK_F1 && hk.vk <= VK_F24) {
+        swprintf_s(key, L"F%d", hk.vk - VK_F1 + 1);
+    } else {
+        switch (hk.vk) {
+        case VK_SPACE: wcscpy_s(key, L"Space"); break;
+        case VK_RETURN: wcscpy_s(key, L"Enter"); break;
+        case VK_TAB: wcscpy_s(key, L"Tab"); break;
+        case VK_ESCAPE: wcscpy_s(key, L"Esc"); break;
+        case VK_LEFT: wcscpy_s(key, L"Left"); break;
+        case VK_RIGHT: wcscpy_s(key, L"Right"); break;
+        case VK_UP: wcscpy_s(key, L"Up"); break;
+        case VK_DOWN: wcscpy_s(key, L"Down"); break;
+        default: swprintf_s(key, L"VK 0x%02X", (unsigned)hk.vk); break;
+        }
+    }
+    s += key;
+    return s;
+}
+
+void WriteHotkeyState(const std::wstring& returnTo)
+{
+    std::wstring path = HotkeyStatePath();
+    if (path.empty()) return;
+    size_t slash = path.find_last_of(L"\\/");
+    if (slash != std::wstring::npos) CreateDirectoryW(path.substr(0, slash).c_str(), nullptr);
+    std::string utf8 = "{\"borrowed\":true,\"returnTo\":\"";
+    for (wchar_t c : returnTo) utf8 += (c < 0x80) ? (char)c : '?'; // типы — ascii
+    utf8 += "\"}\n";
+    HANDLE raw = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                             CREATE_ALWAYS, 0, nullptr);
+    if (raw == INVALID_HANDLE_VALUE) {
+        Log(L"[host] hotkey state write failed: %lu", GetLastError());
+        return;
+    }
+    ATL::CHandle h(raw);
+    DWORD written = 0;
+    WriteFile(h, utf8.data(), (DWORD)utf8.size(), &written, nullptr);
+}
+
+void ClearHotkeyState()
+{
+    std::wstring path = HotkeyStatePath();
+    if (!path.empty()) DeleteFileW(path.c_str()); // нет файла — норма
+}
+
+// --- Запись эфира в .mp4 (секции record {path} + recordHotkey в settings).
+// Кадры — v1-кэш FrameWriter ПОСЛЕ ApplyFx (с эффектами), 720p RGB32→H.264.
+// Управление: UI пишет record_command.json (старт/стоп), хост пишет
+// record_state.json (идёт/путь/старт); оба transient в %APPDATA%\VCam.
+// Рекордер трогает ТОЛЬКО worker-поток (команда хоткея с main-потока идёт
+// через тот же command-файл — межпоточности нет).
+// g_hotkeyCs охраняет и g_recHotkey (состояние регистрации хоткеев).
+RecordHotkeySection g_recHotkey; // последний зарегистрированный (дефолт Ctrl+Alt+R)
+
+std::wstring RecordStatePath()
+{
+    wchar_t appdata[MAX_PATH] = {};
+    DWORD n = GetEnvironmentVariableW(L"APPDATA", appdata, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return {};
+    return std::wstring(appdata) + L"\\VCam\\record_state.json";
+}
+
+std::wstring RecordCommandPath()
+{
+    wchar_t appdata[MAX_PATH] = {};
+    DWORD n = GetEnvironmentVariableW(L"APPDATA", appdata, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return {};
+    return std::wstring(appdata) + L"\\VCam\\record_command.json";
+}
+
+// -- BEGIN FIXMAJ-BLOCK-RECORDPATH (мини-тест вырезает до END FIXMAJ-BLOCK-RECORDPATH) --
+// Путь записи по умолчанию: <Videos>\VCam_ГГГГММДД_ЧЧММСС.mp4.
+// B7: единый резолв через SHGetKnownFolderPath(FOLDERID_Videos) — то же, что
+// C# Environment.SpecialFolder.MyVideos в UI. %USERPROFILE%\Videos может не
+// совпадать с перенаправленной папкой; fallback — та же цепочка, что в UI.
+std::wstring DefaultRecordPath()
+{
+    std::wstring videos;
+    wchar_t* known = nullptr;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Videos, 0, nullptr, &known)) && known) {
+        videos = known;
+        CoTaskMemFree(known);
+    }
+    if (videos.empty()) {
+        wchar_t up[MAX_PATH] = {};
+        DWORD n = GetEnvironmentVariableW(L"USERPROFILE", up, MAX_PATH);
+        if (n == 0 || n >= MAX_PATH) return {};
+        videos = std::wstring(up) + L"\\Videos";
+    }
+    SYSTEMTIME st = {};
+    GetLocalTime(&st);
+    wchar_t name[64];
+    swprintf_s(name, L"VCam_%04u%02u%02u_%02u%02u%02u.mp4",
+               st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+    return videos + L"\\" + name;
+}
+// -- END FIXMAJ-BLOCK-RECORDPATH --
+
+// wide → UTF-8 + экранирование для JSON-строки.
+std::string EscapeJsonUtf8(const std::wstring& w)
+{
+    std::string out;
+    if (w.empty()) return out;
+    int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), nullptr, 0,
+                                nullptr, nullptr);
+    if (n <= 0) return out;
+    std::string s((size_t)n, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), &s[0], n, nullptr, nullptr);
+    for (char c : s) {
+        switch (c) {
+        case '\\': out += "\\\\"; break;
+        case '"': out += "\\\""; break;
+        case '\n': out += "\\n"; break;
+        case '\r': out += "\\r"; break;
+        case '\t': out += "\\t"; break;
+        default:
+            if ((unsigned char)c < 0x20) {
+                char b[8];
+                snprintf(b, sizeof(b), "\\u%04x", (unsigned char)c);
+                out += b;
+            } else {
+                out += c;
+            }
+        }
+    }
+    return out;
+}
+
+void WriteRecordState(const std::wstring& path)
+{
+    std::wstring sp = RecordStatePath();
+    if (sp.empty()) return;
+    size_t slash = sp.find_last_of(L"\\/");
+    if (slash != std::wstring::npos) CreateDirectoryW(sp.substr(0, slash).c_str(), nullptr);
+    std::string utf8 = "{\"recording\":true,\"path\":\"";
+    utf8 += EscapeJsonUtf8(path);
+    utf8 += "\",\"started\":";
+    utf8 += std::to_string((long long)time(nullptr));
+    utf8 += "}\n";
+    HANDLE raw = CreateFileW(sp.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                             CREATE_ALWAYS, 0, nullptr);
+    if (raw == INVALID_HANDLE_VALUE) {
+        Log(L"[host] record state write failed: %lu", GetLastError());
+        return;
+    }
+    ATL::CHandle h(raw);
+    DWORD written = 0;
+    WriteFile(h, utf8.data(), (DWORD)utf8.size(), &written, nullptr);
+}
+
+void ClearRecordState()
+{
+    std::wstring sp = RecordStatePath();
+    if (!sp.empty()) DeleteFileW(sp.c_str()); // нет файла — норма
+}
+
+// -- BEGIN FIXMAJ-BLOCK-JSON (мини-тест вырезает до END FIXMAJ-BLOCK-JSON) --
+// Плоский скан JSON-кавыченной строки после ключа
+// (с \" \\ \/ \b \f \n \r \t \uXXXX). Возвращает false если ключа/строки нет.
+// B7: строгая позиция ключа — "key" за которым (через ws) идёт ':'
+// (как FindKeyPos в Settings.cpp): плоский find ловил совпадения внутри
+// значений ("recordingX" для ключа "recording", "true" внутри path).
+static void SkipScanWs(const std::string& json, size_t& p)
+{
+    while (p < json.size() && (json[p] == ' ' || json[p] == '\t' ||
+                               json[p] == '\r' || json[p] == '\n'))
+        p++;
+}
+
+// B7: строгая позиция ключа (как FindKeyPos в Settings.cpp).
+static size_t ScanKeyPos(const std::string& json, const char* key, size_t from = 0)
+{
+    std::string k = std::string("\"") + key + "\"";
+    size_t p = json.find(k, from);
+    while (p != std::string::npos) {
+        size_t c = p + k.size();
+        SkipScanWs(json, c);
+        if (c < json.size() && json[c] == ':') return p;
+        p = json.find(k, p + 1);
+    }
+    return std::string::npos;
+}
+
+bool ScanJsonString(const std::string& json, const char* key, std::wstring& value)
+{
+    size_t kp = ScanKeyPos(json, key);
+    if (kp == std::string::npos) return false;
+    size_t p = json.find(':', kp);
+    if (p == std::string::npos) return false;
+    p++;
+    SkipScanWs(json, p);
+    if (p >= json.size() || json[p] != '"') return false;
+    std::string val;
+    for (p++; p < json.size() && json[p] != '"'; p++) {
+        if (json[p] == '\\' && p + 1 < json.size()) {
+            char c = json[++p];
+            switch (c) {
+            case '"': val += '"'; break;
+            case '\\': val += '\\'; break;
+            case '/': val += '/'; break; // B7: был default, явно как в JSON
+            case 'b': val += '\b'; break; // B7: не хватало
+            case 'f': val += '\f'; break; // B7: не хватало
+            case 'n': val += '\n'; break;
+            case 'r': val += '\r'; break;
+            case 't': val += '\t'; break;
+            case 'u':
+                if (p + 4 < json.size()) p += 4;
+                val += '?';
+                break;
+            default: val += c; break;
+            }
+        } else {
+            val += json[p];
+        }
+    }
+    if (p >= json.size()) return false;
+    if (val.empty()) { value.clear(); return true; }
+    int m = MultiByteToWideChar(CP_UTF8, 0, val.c_str(), (int)val.size(), nullptr, 0);
+    if (m <= 0) return false;
+    value.resize((size_t)m);
+    MultiByteToWideChar(CP_UTF8, 0, val.c_str(), (int)val.size(), &value[0], m);
+    return true;
+}
+
+bool ScanJsonInt(const std::string& json, const char* key, long long& value)
+{
+    size_t kp = ScanKeyPos(json, key);
+    if (kp == std::string::npos) return false;
+    size_t p = json.find(':', kp);
+    if (p == std::string::npos) return false;
+    p++;
+    SkipScanWs(json, p);
+    if (p >= json.size() || json[p] < '0' || json[p] > '9') return false;
+    long long v = 0;
+    for (; p < json.size() && json[p] >= '0' && json[p] <= '9'; p++) {
+        v = v * 10 + (json[p] - '0');
+        if (v > 99999999999LL) break;
+    }
+    value = v;
+    return true;
+}
+
+bool ReadSmallFile(const std::wstring& path, std::string& out)
+{
+    HANDLE raw = CreateFileW(path.c_str(), GENERIC_READ,
+                             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                             nullptr, OPEN_EXISTING, 0, nullptr);
+    if (raw == INVALID_HANDLE_VALUE) return false;
+    ATL::CHandle h(raw);
+    LARGE_INTEGER sz = {};
+    if (!GetFileSizeEx(h, &sz) || sz.QuadPart <= 0 || sz.QuadPart > 65536) return false;
+    out.resize((size_t)sz.QuadPart);
+    DWORD read = 0;
+    return ReadFile(h, &out[0], (DWORD)out.size(), &read, nullptr) && read == out.size();
+}
+
+// Идёт ли сейчас запись (для UI-индикатора, хоткея и трей-меню).
+bool TryReadRecordState(std::wstring& path, long long& started)
+{
+    path.clear();
+    started = 0;
+    std::wstring sp = RecordStatePath();
+    if (sp.empty()) return false;
+    std::string json;
+    if (!ReadSmallFile(sp, json)) return false;
+    // B7: строгий bool по ключу. Было: первый ':' файла + find("true") где
+    // угодно — путь "C:\true\x.mp4" при recording:false давал ложное true,
+    // а "recordingX":true перекрывал настоящий ключ. Теперь — позиция ключа
+    // (ScanKeyPos) + точный токен true/false с границей.
+    size_t kp = ScanKeyPos(json, "recording");
+    if (kp == std::string::npos) return false;
+    size_t p = json.find(':', kp);
+    if (p == std::string::npos) return false;
+    p++;
+    SkipScanWs(json, p);
+    bool rec;
+    if (json.compare(p, 4, "true") == 0 &&
+        (p + 4 >= json.size() || (!isalnum((unsigned char)json[p + 4]) && json[p + 4] != '_')))
+        rec = true;
+    else if (json.compare(p, 5, "false") == 0 &&
+             (p + 5 >= json.size() || (!isalnum((unsigned char)json[p + 5]) && json[p + 5] != '_')))
+        rec = false;
+    else
+        return false;
+    if (!rec) return false;
+    ScanJsonString(json, "path", path);
+    ScanJsonInt(json, "started", started);
+    return true;
+}
+// -- END FIXMAJ-BLOCK-JSON --
+
+// Команда UI/хоткея → worker: {"cmd":"start","path":"..."} / {"cmd":"stop"}.
+// Писатель — UI и main-поток хоткея; атомарно через tmp+move.
+bool WriteRecordCommand(const std::wstring& cmd, const std::wstring& path)
+{
+    std::wstring cp = RecordCommandPath();
+    if (cp.empty()) return false;
+    size_t slash = cp.find_last_of(L"\\/");
+    if (slash != std::wstring::npos) CreateDirectoryW(cp.substr(0, slash).c_str(), nullptr);
+    std::string utf8 = "{\"cmd\":\"";
+    for (wchar_t c : cmd) utf8 += (c < 0x80) ? (char)c : '?'; // start|stop — ascii
+    utf8 += "\",\"path\":\"" + EscapeJsonUtf8(path) + "\"}\n";
+    std::wstring tmp = cp + L".tmp";
+    HANDLE raw = CreateFileW(tmp.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                             CREATE_ALWAYS, 0, nullptr);
+    if (raw == INVALID_HANDLE_VALUE) return false;
+    {
+        ATL::CHandle h(raw);
+        DWORD written = 0;
+        if (!WriteFile(h, utf8.data(), (DWORD)utf8.size(), &written, nullptr) ||
+            written != utf8.size())
+            return false;
+    }
+    return MoveFileWithProgressW(tmp.c_str(), cp.c_str(), nullptr, nullptr,
+                                 MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+}
+
+// Читает и удаляет команду (только worker). true = команда была.
+// К2: атомарный захват через rename-в-обработку (cp -> *.processing +
+// чтение оттуда): команда, записанная UI между нашим чтением и удалением,
+// больше не теряется (старый read-then-delete её молча сносил).
+// Писатель кладёт команду через tmp+move, поэтому всё, что пришло после
+// нашего MoveFile, остаётся в cp до следующего опроса.
+bool ConsumeRecordCommand(std::wstring& cmd, std::wstring& path)
+{
+    cmd.clear();
+    path.clear();
+    std::wstring cp = RecordCommandPath();
+    if (cp.empty()) return false;
+    std::wstring proc = cp + L".processing";
+    // Нет файла — команды нет. REPLACE_EXISTING заодно подбирает зависший
+    // .processing от краша между move и delete.
+    if (!MoveFileWithProgressW(cp.c_str(), proc.c_str(), nullptr, nullptr,
+                               MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        return false;
+    std::string json;
+    if (!ReadSmallFile(proc, json)) {
+        DeleteFileW(proc.c_str());
+        return false;
+    }
+    DeleteFileW(proc.c_str()); // обработали — удаляем (повторов не будет)
+    if (!ScanJsonString(json, "cmd", cmd)) return false;
+    ScanJsonString(json, "path", path); // у stop пути может не быть — норма
+    return !cmd.empty();
+}
+
+// (Пере)регистрация глобальных хоткеев на окне трея. Вызывать только из
+// main-потока (владелец g_hwnd): из worker — PostMessage WM_REAPPLY_HOTKEY.
+void ApplyHotkeyRegistration()
+{
+    if (!g_hwnd) return;
+    UnregisterHotKey(g_hwnd, kHotkeyId); // не было — норма
+    UnregisterHotKey(g_hwnd, kRecHotkeyId);
+    HotkeySection hk;
+    RecordHotkeySection rk;
+    EnterCriticalSection(&g_hotkeyCs);
+    hk = g_hotkey;
+    rk = g_recHotkey;
+    LeaveCriticalSection(&g_hotkeyCs);
+    if (RegisterHotKey(g_hwnd, kHotkeyId, (UINT)hk.modifiers, (UINT)hk.vk)) {
+        Log(L"[host] hotkey registered: %s", HotkeyDisplay(hk).c_str());
+    } else {
+        Log(L"[host] hotkey RegisterHotKey(%s) failed: %lu - hotkey disabled until settings change",
+            HotkeyDisplay(hk).c_str(), GetLastError());
+    }
+    if (RegisterHotKey(g_hwnd, kRecHotkeyId, (UINT)rk.modifiers, (UINT)rk.vk)) {
+        Log(L"[host] record hotkey registered: %s", HotkeyDisplay(rk).c_str());
+    } else {
+        Log(L"[host] record hotkey RegisterHotKey(%s) failed: %lu - record hotkey disabled until settings change",
+            HotkeyDisplay(rk).c_str(), GetLastError());
+    }
+}
+
+// B5: единый автовозврат заимствованного video (конец ролика, fallback при
+// битом файле, backstop-таймаут) через settings.json — watcher подхватит как
+// обычное переключение. Семантика Load-неудач как раньше: settings биты =
+// retry позже (borrow жив), уже ушли вручную = просто снять borrow.
+// Возвращает true если borrow снят (или его не было). Вызывать БЕЗ g_hotkeyCs.
+bool AutoReturnBorrowedVideo(const std::wstring& settingsPath, const wchar_t* why)
+{
+    EnterCriticalSection(&g_hotkeyCs);
+    bool borrowed = g_hotkeyBorrowed;
+    std::wstring ret = g_hotkeyReturnType;
+    LeaveCriticalSection(&g_hotkeyCs);
+    if (!borrowed) return true;
+    if (ret.empty()) ret = L"static";
+    Settings back;
+    bool loaded = !settingsPath.empty() && back.Load(settingsPath);
+    if (!loaded) {
+        Log(L"[host] hotkey: %s, settings unreadable - retry later", why);
+        return false;
+    }
+    if (back.sourceType != L"video") {
+        // Уже ушли вручную: просто снять borrow.
+        EnterCriticalSection(&g_hotkeyCs);
+        g_hotkeyBorrowed = false;
+        g_hotkeyBorrowTickMs = 0;
+        LeaveCriticalSection(&g_hotkeyCs);
+        ClearHotkeyState();
+        return true;
+    }
+    back.sourceType = ret;
+    bool saved;
+    {
+        SettingsFileGuard fsg; // B6: vs StartRecording/concurrent main
+        saved = back.Save(settingsPath);
+    }
+    if (!saved) {
+        Log(L"[host] hotkey: %s, auto-return save failed - retry later", why);
+        return false;
+    }
+    EnterCriticalSection(&g_hotkeyCs);
+    g_hotkeyBorrowed = false;
+    g_hotkeyBorrowTickMs = 0;
+    LeaveCriticalSection(&g_hotkeyCs);
+    ClearHotkeyState();
+    Log(L"[host] hotkey: %s, auto-return to %s", why, ret.c_str());
+    return true;
+}
+
+// Нажатие хоткея (main-поток, WM_HOTKEY): переключение — через settings.json,
+// чтобы watcher хоста и UI остались согласованы.
+// B6: весь Load→Save под g_settingsCs (vs worker StartRecording/auto-return).
+void OnHotkeyPressed()
+{
+    std::wstring path = DefaultSettingsPath();
+    if (path.empty()) {
+        Log(L"[host] hotkey: settings path is empty");
+        return;
+    }
+    SettingsFileGuard fsg;
+    Settings s;
+    if (!s.Load(path)) {
+        Log(L"[host] hotkey: settings unreadable - ignored");
+        return;
+    }
+    std::wstring display;
+    EnterCriticalSection(&g_hotkeyCs);
+    display = HotkeyDisplay(g_hotkey);
+    bool borrowed = g_hotkeyBorrowed;
+    std::wstring retType = g_hotkeyReturnType;
+    LeaveCriticalSection(&g_hotkeyCs);
+
+    if (!borrowed) {
+        if (s.sourceType != L"video") {
+            std::wstring from = s.sourceType;
+            EnterCriticalSection(&g_hotkeyCs);
+            g_hotkeyReturnType = from;
+            g_hotkeyBorrowed = true;
+            g_hotkeyBorrowTickMs = GetTickCount64(); // B5: старт backstop-таймаута
+            LeaveCriticalSection(&g_hotkeyCs);
+            s.sourceType = L"video";
+            if (!s.Save(path)) {
+                EnterCriticalSection(&g_hotkeyCs);
+                g_hotkeyBorrowed = false;
+                g_hotkeyBorrowTickMs = 0;
+                LeaveCriticalSection(&g_hotkeyCs);
+                Log(L"[host] hotkey %s: settings save failed - borrow cancelled",
+                    display.c_str());
+                return;
+            }
+            WriteHotkeyState(from);
+            Log(L"[host] hotkey %s: %s -> video (play-once, auto-return to %s)",
+                display.c_str(), from.c_str(), from.c_str());
+        } else {
+            // Ручное video в эфире (не borrow): хоткей уводит в static без borrow.
+            s.sourceType = L"static";
+            if (s.Save(path))
+                Log(L"[host] hotkey %s: video -> static (manual video, no borrow)",
+                    display.c_str());
+            else
+                Log(L"[host] hotkey %s: settings save failed", display.c_str());
+        }
+        return;
+    }
+
+    // Borrowed video в эфире: досрочный возврат на запомненное.
+    // B5: та же семантика через helper (тиk сбрасывается внутри).
+    std::wstring back = retType.empty() ? L"static" : retType;
+    s.sourceType = back;
+    if (!s.Save(path)) {
+        Log(L"[host] hotkey %s: early return save failed - borrow kept", display.c_str());
+        return;
+    }
+    EnterCriticalSection(&g_hotkeyCs);
+    g_hotkeyBorrowed = false;
+    g_hotkeyBorrowTickMs = 0;
+    LeaveCriticalSection(&g_hotkeyCs);
+    ClearHotkeyState();
+    Log(L"[host] hotkey %s: early return video -> %s", display.c_str(), back.c_str());
+}
+
+// Нажатие хоткея записи (main-поток, WM_HOTKEY): только пишет команду —
+// исполняет worker (рекордер живёт только там). Тоггл по state-файлу.
+void OnRecordHotkeyPressed()
+{
+    std::wstring display;
+    EnterCriticalSection(&g_hotkeyCs);
+    display = HotkeyDisplay(g_recHotkey);
+    LeaveCriticalSection(&g_hotkeyCs);
+
+    std::wstring curPath;
+    long long curStarted = 0;
+    if (TryReadRecordState(curPath, curStarted)) {
+        if (!WriteRecordCommand(L"stop", L""))
+            Log(L"[host] record hotkey %s: stop command write failed", display.c_str());
+        else
+            Log(L"[host] record hotkey %s: stop requested", display.c_str());
+        return;
+    }
+    // Запись не идёт — старт: путь из settings (пусто = дефолт сгенерирует worker).
+    std::wstring want;
+    std::wstring sp = DefaultSettingsPath();
+    Settings s;
+    if (!sp.empty() && s.Load(sp)) want = s.record.path;
+    if (!WriteRecordCommand(L"start", want))
+        Log(L"[host] record hotkey %s: start command write failed", display.c_str());
+    else
+        Log(L"[host] record hotkey %s: start requested", display.c_str());
+}
 
 // %LOCALAPPDATA%\VCam\host.log — правда для пост-мортема после автозапуска
 // из HKCU\Run (stdout туда не идёт). Ротация: >1 МБ → host.log.old.
@@ -513,9 +1092,17 @@ void ToggleAutostart()
         return;
     }
     s.autostart = want;
-    if (!s.Save(path)) {
-        Log(L"[host] toggle autostart: settings save failed (task already changed)");
-        return;
+    // B6: перечитать под замком и писать свежее — иначе Load→schtasks→Save
+    // (секунды UAC-диалога) затирает чужие правки worker/UI за это время.
+    {
+        SettingsFileGuard fsg;
+        Settings fresh;
+        if (!fresh.Load(path)) fresh = s; // файл пропал — пишем что помним
+        fresh.autostart = want;
+        if (!fresh.Save(path)) {
+            Log(L"[host] toggle autostart: settings save failed (task already changed)");
+            return;
+        }
     }
     Log(L"[host] autostart -> %s", want ? L"on" : L"off");
 }
@@ -551,6 +1138,11 @@ struct Machine {
     FrameWriter writer;
     bool writerOpen = false;
     std::wstring writerErr;
+    // Запись эфира в .mp4: кадры v1-кэша writer'а после ApplyFx (с эффектами).
+    // Смена источника (BeginSwitch) рекордер не трогает — тот же файл дальше.
+    Mp4Recorder rec;
+    bool recErrLogged = false;   // one-shot лог ошибки записи (fail-open)
+    uint64_t recLastDropped = 0; // последний залогированный счётчик дропов
     std::unique_ptr<IFrameSource> src;
     SourceConfig target;
     bool hasTarget = false;
@@ -558,6 +1150,10 @@ struct Machine {
     // Эффекты (Settings.fx): применяются после RenderOne перед WriteOne;
     // смена только эффектов — без переоткрытия источника.
     EffectsSection fx;
+    // М5: оба one-shot флага сбрасываются при смене fx (см. ниже
+    // s.fx != m.fx): раньше fxGpuLogged был липким навсегда, а у
+    // fxFreiLogged сброс был только по backend — повторный сбой новой
+    // конфигурации молчал.
     bool fxGpuLogged = false;  // one-shot лог fail-open эффектов
     bool fxFreiLogged = false; // one-shot лог CPU-fallback backend frei0r
     Phase phase = Phase::Switch;
@@ -605,6 +1201,91 @@ bool WriteOne(Machine& m)
     return m.writer.WriteFrame(m.buf.data(), (int)vcam::VCamStride);
 }
 
+// Старт записи (только worker): резолв пути команда → settings record.path →
+// дефолт Videos\. Успешный старт с не-settings путём дописывает его в settings
+// как дефолт на будущее (watcher-релоад без переоткрытия: record не в target).
+void StartRecording(Machine& m, const std::wstring& requested)
+{
+    if (m.rec.IsOpen()) {
+        Log(L"[host] record start ignored: already recording (%s)", m.rec.Path().c_str());
+        return;
+    }
+    std::wstring settingsPath = DefaultSettingsPath();
+    Settings cur;
+    bool haveSettings = !settingsPath.empty() && cur.Load(settingsPath);
+    std::wstring path = requested;
+    if (path.empty() && haveSettings) path = cur.record.path;
+    if (path.empty()) path = DefaultRecordPath();
+    if (path.empty()) {
+        Log(L"[host] record start: no path resolved (settings + default both empty)");
+        return;
+    }
+    std::wstring err;
+    if (!m.rec.Start(path, err)) {
+        // fail-open: эфир продолжается, в логе причина
+        Log(L"[host] record start failed: %s (%s)", path.c_str(), err.c_str());
+        return;
+    }
+    m.recErrLogged = false;
+    m.recLastDropped = 0;
+    WriteRecordState(path);
+    // B6: дефолт дописываем свежим под замком (cur загружен до Start — за это
+    // время хоткей мог сменить sourceType; писать stale-копию нельзя).
+    {
+        SettingsFileGuard fsg;
+        Settings fresh;
+        if (!settingsPath.empty() && fresh.Load(settingsPath) && fresh.record.path != path) {
+            fresh.record.path = path;
+            if (fresh.Save(settingsPath))
+                Log(L"[host] record: default path saved to settings");
+            else
+                Log(L"[host] record: settings save failed (recording continues)");
+        }
+    }
+    Log(L"[host] record started: %s", path.c_str());
+}
+
+// Стоп записи (только worker): Finalize обязателен, иначе mp4 битый.
+void StopRecording(Machine& m, const std::wstring& reason)
+{
+    if (!m.rec.IsOpen()) return;
+    std::wstring path = m.rec.Path();
+    uint64_t frames = m.rec.FramesWritten();
+    uint64_t dropped = m.rec.FramesDropped();
+    ULONGLONG ms = GetTickCount64() - m.rec.StartTickMs();
+    m.rec.Stop(); // Finalize + освобождение
+    ClearRecordState();
+    std::wstring err = m.rec.LastError();
+    Log(L"[host] record stopped (%s): %s (frames=%llu, %.1fs, dropped=%llu%s%s)",
+        reason.c_str(), path.c_str(), (unsigned long long)frames, ms / 1000.0,
+        (unsigned long long)dropped,
+        err.empty() ? L"" : L", ", err.empty() ? L"" : err.c_str());
+}
+
+// Один эфирный кадр в запись: вызывается после УСПЕШНОГО WriteOne, т.е. кэш
+// writer'а свежий и уже с эффектами. Ошибка записи — стоп записи, эфир живёт.
+void RecordEtherFrame(Machine& m)
+{
+    if (!m.rec.IsOpen()) return;
+    if (!m.writer.HasFrame720p()) return;
+    const auto& f = m.writer.LastFrame720p();
+    if (f.size() < Mp4Recorder::kFrameSize) return;
+    if (!m.rec.WriteFrame720p(f.data())) {
+        if (!m.recErrLogged) {
+            m.recErrLogged = true;
+            Log(L"[host] record write failed: %s - recording stopped, эфир продолжается (fail-open)",
+                m.rec.LastError().c_str());
+        }
+        StopRecording(m, L"ошибка записи");
+        return;
+    }
+    if (m.rec.FramesDropped() != m.recLastDropped) {
+        m.recLastDropped = m.rec.FramesDropped();
+        Log(L"[host] record: encoder lags, dropped=%llu (эфир не ждёт)",
+            (unsigned long long)m.recLastDropped);
+    }
+}
+
 // Эффекты хоста: после успешного RenderOne, перед WriteOne, над m.buf
 // (буфер плотно упакован frameW x frameH BGRX — stride frameW*4).
 // Единая точка для всех фаз (Switch/Active/Fallback-restore).
@@ -612,6 +1293,7 @@ bool WriteOne(Machine& m)
 // false = fail-open: кадр без изменений.
 void ApplyFx(Machine& m)
 {
+    if (!m.fx.enabled) return; // мастер-выключатель: эффекты скипаются целиком
     vcam::effects::FxFlags f;
     f.mirror = m.fx.mirror;
     f.grayscale = m.fx.grayscale;
@@ -632,7 +1314,7 @@ void ApplyFx(Machine& m)
         Log(L"[host] effects: сбой эффектов, кадры идут без них (fail-open)");
     }
     // frei0r недоступен (нет DLL/init fail) — помехи посчитаны CPU, кадр
-    // в эфире; логируем один раз (флаг сбрасывается при смене backend).
+    // в эфире; логируем один раз (флаг сбрасывается при смене fx/backend).
     if (ok && vcam::effects::TakeFreiFallbackFlag() && !m.fxFreiLogged) {
         m.fxFreiLogged = true;
         Log(L"[host] effects: backend frei0r недоступен, помехи на CPU (fail-open)");
@@ -734,6 +1416,7 @@ DWORD Step(Machine& m)
         if (RenderOne(m.src.get(), m, rerr)) {
             ApplyFx(m);
             bool written = WriteOne(m);
+            if (written) RecordEtherFrame(m);
             m.phase = Phase::Active;
             SetActiveStatus(m);
             Log(L"[host] active: type=%s path=%s%s [%s %ux%u quality=%s]",
@@ -755,8 +1438,10 @@ DWORD Step(Machine& m)
         std::wstring rerr;
         if (m.src && RenderOne(m.src.get(), m, rerr)) {
             ApplyFx(m);
-            if (WriteOne(m))
+            if (WriteOne(m)) {
+                RecordEtherFrame(m);
                 return 0;
+            }
             Sleep(kFrameMs);
             return 0;
         }
@@ -775,7 +1460,7 @@ DWORD Step(Machine& m)
                     if (RenderOne(cand.get(), m, rerr)) {
                         m.src = std::move(cand);
                         ApplyFx(m);
-                        WriteOne(m);
+                        if (WriteOne(m)) RecordEtherFrame(m);
                         m.phase = Phase::Active;
                         SetActiveStatus(m);
                         Log(L"[host] signal restored: type=%s path=%s [%s %ux%u quality=%s]",
@@ -817,9 +1502,36 @@ DWORD WINAPI WorkerProc(LPVOID)
         SetStatus(FallbackStatus(m.writerErr));
     }
 
+    // Зависшие transient-файлы записи от краша: single-instance гарантирует,
+    // что чужой записи нет — запись НЕ возобновляем, команду НЕ исполняем.
+    // К2: чистим и недоеденный *.processing (краш между move и delete).
+    {
+        std::wstring cp = RecordCommandPath();
+        if (!cp.empty() && GetFileAttributesW(cp.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            DeleteFileW(cp.c_str());
+            Log(L"[host] record: stale command removed (not resuming after restart)");
+        }
+        if (!cp.empty()) {
+            std::wstring proc = cp + L".processing";
+            if (GetFileAttributesW(proc.c_str()) != INVALID_FILE_ATTRIBUTES) {
+                DeleteFileW(proc.c_str());
+                Log(L"[host] record: stale command processing removed (not resuming after restart)");
+            }
+        }
+        std::wstring curPath;
+        long long curStarted = 0;
+        if (TryReadRecordState(curPath, curStarted)) {
+            ClearRecordState();
+            Log(L"[host] record: stale state removed (was: %s)", curPath.c_str());
+        }
+    }
+
     HANDLE waits[2] = { static_cast<HANDLE>(g_stop), static_cast<HANDLE>(g_dirty) };
     bool first = true;
     DWORD timeout = 0;
+    const std::wstring settingsPath = DefaultSettingsPath();
+    HotkeySection curHotkey; // последний виденный в settings (дефолт = Ctrl+Alt+V)
+    RecordHotkeySection curRecHotkey; // последний виденный (дефолт = Ctrl+Alt+R)
     for (;;) {
         DWORD r = WaitForMultipleObjects(2, waits, FALSE, timeout);
         if (r == WAIT_OBJECT_0) break;
@@ -827,24 +1539,95 @@ DWORD WINAPI WorkerProc(LPVOID)
             first = false;
             Settings s;
             g_watcher.Current(s);
+            // Смена только хоткея — перерегистрация, без переоткрытия источника
+            // (Settings::operator== включает hotkey, поэтому watcher шлёт dirty).
+            if (s.hotkey != curHotkey) {
+                curHotkey = s.hotkey;
+                EnterCriticalSection(&g_hotkeyCs);
+                g_hotkey = s.hotkey;
+                LeaveCriticalSection(&g_hotkeyCs);
+                PostMessageW(g_hwnd, WM_REAPPLY_HOTKEY, 0, 0);
+            }
+            // Смена только хоткея записи — перерегистрация, без переоткрытия.
+            if (s.recordHotkey != curRecHotkey) {
+                curRecHotkey = s.recordHotkey;
+                EnterCriticalSection(&g_hotkeyCs);
+                g_recHotkey = s.recordHotkey;
+                LeaveCriticalSection(&g_hotkeyCs);
+                PostMessageW(g_hwnd, WM_REAPPLY_HOTKEY, 0, 0);
+            }
             SourceConfig want = ToSourceConfig(s);
+            EnterCriticalSection(&g_hotkeyCs);
+            bool borrowed = g_hotkeyBorrowed;
+            LeaveCriticalSection(&g_hotkeyCs);
+            // Пользователь ушёл из borrowed-video вручную (не хоткеем):
+            // borrow снят, автовозврата не будет.
+            if (borrowed && want.type != L"video") {
+                EnterCriticalSection(&g_hotkeyCs);
+                g_hotkeyBorrowed = false;
+                g_hotkeyBorrowTickMs = 0; // B5
+                LeaveCriticalSection(&g_hotkeyCs);
+                ClearHotkeyState();
+                Log(L"[host] hotkey: manual switch away from borrowed video - borrow dropped");
+                borrowed = false;
+            }
+            // Заимствованное video играется один раз (конец файла = Ended() =
+            // авто-возврат); обычное video — луп как раньше.
+            if (borrowed && want.type == L"video") want.playOnce = true;
             if (!m.hasTarget || want != m.target || s.quality != m.quality)
                 BeginSwitch(m, want, s.quality);
             // Смена только эффектов — без переоткрытия источника: флаги
             // подхватываются на лету (вотчер шлёт dirty через operator== с fx).
             if (s.fx != m.fx) {
                 if (s.fx.backend != m.fx.backend) m.fxFreiLogged = false;
+                // М5: новый набор эффектов — новый one-shot шанс залогировать
+                // сбой (иначе флаг липкий навсегда с первой неудачи).
+                m.fxGpuLogged = false;
                 m.fx = s.fx;
-                Log(L"[host] effects: mirror=%d grayscale=%d noise=%d(%d) scanlines=%d(%d) rgbsplit=%d(%d) tracking=%d(%d) vhs=%d backend=%s",
-                    (int)m.fx.mirror, (int)m.fx.grayscale, (int)m.fx.noise,
+                Log(L"[host] effects: enabled=%d mirror=%d grayscale=%d noise=%d(%d) scanlines=%d(%d) rgbsplit=%d(%d) tracking=%d(%d) vhs=%d backend=%s",
+                    (int)m.fx.enabled, (int)m.fx.mirror, (int)m.fx.grayscale, (int)m.fx.noise,
                     m.fx.noiseLevel, (int)m.fx.scanlines, m.fx.scanlinesLevel,
                     (int)m.fx.rgbSplit, m.fx.rgbSplitLevel, (int)m.fx.tracking,
                     m.fx.trackingLevel, (int)m.fx.vhs, m.fx.backend.c_str());
             }
+            // record {path} / recordHotkey в operator== дают watcher-dirty, но
+            // переоткрытия не требуют (не входят в SourceConfig/quality/fx).
+        }
+        // Команды записи UI/хоткея — каждую итерацию (дешёвый опрос файла).
+        {
+            std::wstring rcmd, rpath;
+            if (ConsumeRecordCommand(rcmd, rpath)) {
+                if (rcmd == L"start") StartRecording(m, rpath);
+                else if (rcmd == L"stop") StopRecording(m, L"команда UI/хоткея");
+                else Log(L"[host] record: unknown command ignored");
+            }
         }
         timeout = Step(m);
+        // Конец заимствованного ролика: авто-возврат на запомненный источник
+        // через settings.json (watcher подхватит как обычное переключение).
+        // B5: раньше — только Ended(). Битый ролик уходит в Fallback (open/
+        // render fail), Ended не fires — borrow висел вечно и UI врал
+        // «идёт видео». Теперь возврат и из Fallback + backstop-таймаут.
+        EnterCriticalSection(&g_hotkeyCs);
+        bool borrowedNow = g_hotkeyBorrowed;
+        ULONGLONG borrowTick = g_hotkeyBorrowTickMs;
+        LeaveCriticalSection(&g_hotkeyCs);
+        if (borrowedNow) {
+            bool ended = m.src && m.src->Ended();
+            ULONGLONG nowBorrow = GetTickCount64();
+            bool timedOut = borrowTick != 0 && nowBorrow - borrowTick > kBorrowMaxMs;
+            if (ended)
+                AutoReturnBorrowedVideo(settingsPath, L"video ended");
+            else if (m.phase == Phase::Fallback)
+                AutoReturnBorrowedVideo(settingsPath, L"fallback during borrowed video");
+            else if (timedOut)
+                AutoReturnBorrowedVideo(settingsPath, L"borrow timeout");
+        }
     }
 
+    // Запись обязана финализироваться (Finalize в Stop), иначе mp4 битый.
+    // До writer.Close: порядок не важен, но запись — до выхода точно.
+    if (m.rec.IsOpen()) StopRecording(m, L"выход хоста");
     CloseSource(m);
     m.writer.Close();
     vcam::effects::ShutdownEffects();
@@ -863,6 +1646,31 @@ void ShowTrayMenu(HWND hwnd)
     s.Load(DefaultSettingsPath()); // при неудаче остаются default (autostart=true)
 
     std::wstring status = GetStatus();
+    EnterCriticalSection(&g_hotkeyCs);
+    bool borrowedMenu = g_hotkeyBorrowed;
+    std::wstring retMenu = g_hotkeyReturnType;
+    LeaveCriticalSection(&g_hotkeyCs);
+    if (borrowedMenu)
+        status += L" [видео по хоткею, автовозврат → " +
+                  (retMenu.empty() ? std::wstring(L"static") : retMenu) + L"]";
+    // Индикатор записи из transient state-файла (main-поток, рекордер не трогаем).
+    {
+        std::wstring recPath;
+        long long recStarted = 0;
+        if (TryReadRecordState(recPath, recStarted)) {
+            long long el = (long long)time(nullptr) - recStarted;
+            if (el < 0) el = 0;
+            wchar_t t[32];
+            swprintf_s(t, L"%02lld:%02lld", el / 60, el % 60);
+            size_t bs = recPath.find_last_of(L"\\/");
+            std::wstring fn = (bs == std::wstring::npos) ? recPath : recPath.substr(bs + 1);
+            status += L" [● REC ";
+            status += t;
+            status += L" ";
+            status += fn;
+            status += L"]";
+        }
+    }
     HMENU menu = CreatePopupMenu();
     AppendMenuW(menu, MF_STRING | MF_GRAYED | MF_DISABLED, ID_STATUS, status.c_str());
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
@@ -887,6 +1695,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_TRAYICON:
         if (lp == WM_RBUTTONUP) ShowTrayMenu(hwnd);
         else if (lp == WM_LBUTTONDBLCLK) OpenSettingsUi();
+        return 0;
+    case WM_HOTKEY:
+        if (wp == kHotkeyId) OnHotkeyPressed();
+        else if (wp == kRecHotkeyId) OnRecordHotkeyPressed();
+        return 0;
+    case WM_REAPPLY_HOTKEY:
+        ApplyHotkeyRegistration();
         return 0;
     case WM_COMMAND:
         switch (LOWORD(wp)) {
@@ -980,6 +1795,8 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     if (GetLastError() == ERROR_ALREADY_EXISTS) ResetEvent(g_stop);
     g_dirty.Attach(CreateEventW(nullptr, FALSE, FALSE, nullptr));
     InitializeCriticalSection(&g_statusCs);
+    InitializeCriticalSection(&g_hotkeyCs);
+    InitializeCriticalSection(&g_settingsCs); // B6
 
     ApplyAutostartFromSettings();
 
@@ -1000,6 +1817,8 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                              0, 0, 0, 0, nullptr, nullptr, g_inst, nullptr);
     if (!g_hwnd) {
         Log(L"[host] CreateWindowEx failed: %lu", GetLastError());
+        DeleteCriticalSection(&g_settingsCs); // B6
+        DeleteCriticalSection(&g_hotkeyCs);
         DeleteCriticalSection(&g_statusCs);
         g_dirty.Close();
         g_stop.Close();
@@ -1007,6 +1826,19 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         g_mutex.Close();
         return 1;
     }
+
+    // Стартовые хоткеи из settings.json (мусор уже нормализован в дефолт
+    // парсером Settings).
+    {
+        Settings initS;
+        if (initS.Load(DefaultSettingsPath())) {
+            EnterCriticalSection(&g_hotkeyCs);
+            g_hotkey = initS.hotkey;
+            g_recHotkey = initS.recordHotkey;
+            LeaveCriticalSection(&g_hotkeyCs);
+        }
+    }
+    ApplyHotkeyRegistration();
 
     g_nid.cbSize = sizeof(g_nid);
     g_nid.hWnd = g_hwnd;
@@ -1060,11 +1892,15 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     }
     Shell_NotifyIconW(NIM_DELETE, &g_nid);
     Log(L"[host] tray icon removed");
+    UnregisterHotKey(g_hwnd, kHotkeyId);
+    UnregisterHotKey(g_hwnd, kRecHotkeyId);
     DestroyWindow(g_hwnd);
     g_hwnd = nullptr;
 
     g_dirty.Close();
     g_stop.Close();
+    DeleteCriticalSection(&g_settingsCs); // B6
+    DeleteCriticalSection(&g_hotkeyCs);
     DeleteCriticalSection(&g_statusCs);
     ReleaseMutex(g_mutex);
     g_mutex.Close();

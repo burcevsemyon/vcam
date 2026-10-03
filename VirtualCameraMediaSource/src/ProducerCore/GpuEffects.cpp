@@ -44,12 +44,14 @@
 #include "FreiEffects.h"
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <excpt.h>
 #include <future>
+#include <memory>
 #include <mutex>
 #include <queue>
 #include <thread>
@@ -313,7 +315,11 @@ struct State {
     struct Job {
         Thunk fn = nullptr;
         void* ctx = nullptr;
-        std::promise<bool>* done = nullptr;
+        // shared_ptr (а не голый &promise со стека вызывающего): при таймауте
+        // К3 вызывающий уходит, а worker позже всё равно сделает set_value —
+        // по висячему указателю это был бы UAF. Копия в очереди держит
+        // promise живым; set_value в пустоту безопасен.
+        std::shared_ptr<std::promise<bool>> done;
     };
     std::queue<Job> jobs;
     Pipe plain; // source -> sink (только зеркало)
@@ -379,6 +385,8 @@ void GpuWorkerLoop(State* st) {
 }
 
 // Выполнить thunk на GpuThread синхронно. false = нить/вызов сломаны.
+// К3: голый fu.get() без таймаута вешал worker host-кадра навсегда при
+// зависшем GL — ждём ~500 мс, дальше fail-open (false, кадр без эффектов).
 // stateMutex держится только на время постановки (во время ожидания свободен).
 bool RunOnGpuThread(State& st, Thunk fn, void* ctx) {
     std::unique_lock<std::mutex> lock(st.stateMutex);
@@ -391,12 +399,14 @@ bool RunOnGpuThread(State& st, Thunk fn, void* ctx) {
             return false;
         }
     }
-    std::promise<bool> pr;
-    std::future<bool> fu = pr.get_future();
-    st.jobs.push(State::Job{fn, ctx, &pr});
+    auto pr = std::make_shared<std::promise<bool>>();
+    std::future<bool> fu = pr->get_future();
+    st.jobs.push(State::Job{fn, ctx, pr});
     lock.unlock();
     st.cv.notify_one();
     try {
+        if (fu.wait_for(std::chrono::milliseconds(500)) != std::future_status::ready)
+            return false; // timeout: очередь держит свою копию pr — UAF нет
         return fu.get();
     } catch (...) {
         return false;
@@ -594,13 +604,16 @@ void CpuTracking(uint8_t* px, uint32_t w, uint32_t h, uint64_t frame,
                 d[0] = p[0];
                 d[1] = p[1];
                 d[2] = p[2];
+                d[3] = 255; // М7: BGRX X=255 как GPU-путь (CopyRgbaToBgrx)
+                            // и frei-путь (FromPluginLayout); иначе alpha
+                            // остаётся от старого пикселя назначения
             }
         }
         // Белая строка head-switching поверх полосы (до 2px, если влезли).
         for (uint32_t y = y0; y < y0 + 2 && y < y1; ++y) {
             uint8_t* dst = px + (size_t)y * rowBytes;
             for (size_t i = 0; i < rowBytes; i += 4) {
-                dst[i] = dst[i + 1] = dst[i + 2] = 255;
+                dst[i] = dst[i + 1] = dst[i + 2] = dst[i + 3] = 255; // М7: и X тоже
             }
         }
     }
@@ -755,6 +768,10 @@ bool ApplyEffects(uint8_t* bgrx, int stride, uint32_t w, uint32_t h,
     // для one-shot лога хоста). VHS на обоих — связка тех же четырёх.
     // Единственный сбой CPU-пути — OOM temp-буфера (кадр не тронут —
     // аллокации все ДО модификации); сами циклы не бросают.
+    // М8 (designed, не менять функционально): g_analogFrame стоит при
+    // выключенном аналоге — счётчик крутится только внутри if (wantCpu),
+    // т.е. анимация шума/трекинга ставится на паузу вместо дрейфа фазы.
+    // При повторном включении помехи продолжаются с того же кадра.
     if (wantCpu) {
         const uint64_t frame =
             g_analogFrame.fetch_add(1, std::memory_order_relaxed);

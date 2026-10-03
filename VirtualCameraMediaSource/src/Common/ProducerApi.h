@@ -16,13 +16,17 @@ struct SourceConfig {
     int cropW = 0;
     int cropH = 0;
     bool cropKeepAspect = false;
+    // Хоткей static→video: true = проиграть video один раз и сообщить Ended()
+    // (хост вернёт запомненный источник). false (default) = луп как раньше.
+    bool playOnce = false;
 
     bool operator==(const SourceConfig& o) const
     {
         return type == o.type && path == o.path && camName == o.camName &&
                 capture == o.capture && scaleMode == o.scaleMode &&
-               cropX == o.cropX && cropY == o.cropY && cropW == o.cropW &&
-               cropH == o.cropH && cropKeepAspect == o.cropKeepAspect;
+                cropX == o.cropX && cropY == o.cropY && cropW == o.cropW &&
+                cropH == o.cropH && cropKeepAspect == o.cropKeepAspect &&
+                playOnce == o.playOnce;
     }
     bool operator!=(const SourceConfig& o) const { return !(*this == o); }
 };
@@ -42,6 +46,10 @@ struct IFrameSource {
     // Нативные размеры источника (кламп к cap). false = неизвестны
     // (не открыт / первый кадр ещё не готов) — вызывающий ждёт/фолбэчит 720p.
     virtual bool NativeSize(uint32_t& w, uint32_t& h) = 0;
+    // Конец воспроизведения в режиме playOnce (video доиграло файл один раз:
+    // Render дальше даёт false с причиной "ended"). Default false; луп-режим
+    // никогда не заканчивается.
+    virtual bool Ended() const { return false; }
     virtual void Close() = 0;
     virtual const wchar_t* Name() const = 0;
     virtual ~IFrameSource() = default;

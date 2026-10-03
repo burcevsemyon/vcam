@@ -14,11 +14,14 @@ namespace VCamSettingsUi;
 //     "camera": { "id": "<MF symbolic link>", "name": "<friendly name>",
 ///                "capture": "max" | "720p" | "1080p" },
 //     "quality": "source" | "fixed720p",
-//     "effects": { "mirror": bool, "grayscale": bool, "noise": bool,
-//                "scanlines": bool, "rgbsplit": bool, "tracking": bool,
-//                "vhs": bool, "noiseLevel": int 0-100, "scanlinesLevel": int,
-//                "rgbsplitLevel": int, "trackingLevel": int,
-//                "backend": "cpu" | "frei0r" },
+//     "hotkey": { "modifiers": int 1-15, "vk": int 0x08-0xFE },
+//     "recordHotkey": { "modifiers": int 1-15, "vk": int 0x08-0xFE },
+//     "record": { "path": "..." },
+//     "effects": { "enabled": bool, "mirror": bool, "grayscale": bool,
+//                "noise": bool, "scanlines": bool, "rgbsplit": bool,
+//                "tracking": bool, "vhs": bool, "noiseLevel": int 0-100,
+//                "scanlinesLevel": int, "rgbsplitLevel": int,
+//                "trackingLevel": int, "backend": "cpu" | "frei0r" },
 //     "autostart": bool }
 // Empty camera section (id and name both "") -> host shows NO SIGNAL until a
 // device is chosen. Load also accepts the legacy flat format
@@ -34,11 +37,21 @@ public enum ScaleMode
 }
 
 // Which section feeds the camera: source.type in settings.json.
-public enum SourceType
+// В3: raw-строка (как FxBackend строкой, а не enum) — C++ хранит токен
+// verbatim (Settings.cpp ParseNewSchema), хост по неизвестному уходит в
+// fallback, но токен живёт. Известные — канон нижнего регистра
+// (insensitive как раньше); будущие неизвестные — verbatim обратно в Save,
+// чтобы текущий UI их не схлопывал в "static". Пусто = "static" (как C++).
+public static class SourceTypes
 {
-    Static,
-    Video,
-    Camera,
+    public const string Static = "static";
+    public const string Video = "video";
+    public const string Camera = "camera";
+
+    public static bool IsKnown(string? token) =>
+        string.Equals(token, Static, StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(token, Video, StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(token, Camera, StringComparison.OrdinalIgnoreCase);
 }
 
 // v2 frame quality (phase vcam-quality-v2): Source = native size of the
@@ -80,16 +93,40 @@ public sealed class Settings
     public string CameraId { get; set; } = "";
     public string CameraName { get; set; } = "";
 
-    // Section "source".
-    public SourceType SourceType { get; set; } = SourceType.Static;
+    // Section "source": raw token, see SourceTypes. UI maps unknown future
+    // tokens to the static view, but saves them back verbatim (MainForm keeps
+    // the token while the media combo is untouched by the user).
+    public string SourceType { get; set; } = SourceTypes.Static;
 
     // Root "quality" (v2): mirrors Settings::ParseQuality on the C++ side —
     // only "fixed720p" passes, anything else (incl. missing) is Source.
     public Quality Quality { get; set; } = Quality.Source;
 
+    // Section "hotkey" (global host hotkey static->video->auto-static): mirrors
+    // HotkeySection on the C++ side. Modifiers are RegisterHotKey bits
+    // (MOD_ALT=1, MOD_CONTROL=2, MOD_SHIFT=4, MOD_WIN=8); vk is the Virtual-Key
+    // code. Missing key or garbage (incl. 0) -> default Ctrl+Alt+V (3, 0x56).
+    public int HotkeyModifiers { get; set; } = 3;
+    public int HotkeyVk { get; set; } = 0x56;
+
+    // Section "recordHotkey" (host record start/stop toggle): mirrors
+    // RecordHotkeySection on the C++ side. Same rules as hotkey, default
+    // Ctrl+Alt+R (3, 0x52).
+    public int RecordHotkeyModifiers { get; set; } = 3;
+    public int RecordHotkeyVk { get; set; } = 0x52;
+
+    // Section "record" (default output path for the ether recording): mirrors
+    // RecordSection on the C++ side. Empty = the host generates
+    // %USERPROFILE%\Videos\VCam_yyyyMMdd_HHmmss.mp4 at record start.
+    // The recording STATE (on/off) never lives here — only the transient
+    // %APPDATA%\VCam\record_state.json the host writes while recording.
+    public string RecordPath { get; set; } = "";
+
     // Section "effects" (host post-fx): mirrors EffectsSection on the C++ side.
-    // Legacy files without the section migrate to all-false.
+    // Legacy files without the section migrate to enabled + all-false.
+    // enabled = master switch (host skips ApplyFx entirely when false).
     // vhs = VHS preset (host ORs all four interferences at once).
+    public bool FxEnabled { get; set; } = true;
     public bool FxMirror { get; set; }
     public bool FxGrayscale { get; set; }
     public bool FxNoise { get; set; }
@@ -168,13 +205,8 @@ public sealed class Settings
                 if (root.TryGetProperty("source", out var src) && src.ValueKind == JsonValueKind.Object &&
                     src.TryGetProperty("type", out var type) && type.ValueKind == JsonValueKind.String)
                 {
-                    // Unknown tokens map to Static for editing; the host keeps them verbatim.
-                    var typeToken = type.GetString();
-                    s.SourceType = string.Equals(typeToken, "video", StringComparison.OrdinalIgnoreCase)
-                        ? SourceType.Video
-                        : string.Equals(typeToken, "camera", StringComparison.OrdinalIgnoreCase)
-                            ? SourceType.Camera
-                            : SourceType.Static;
+                    // В3: raw-строка как C++ (verbatim для будущих типов).
+                    s.SourceType = NormalizeSourceType(type.GetString() ?? "");
                 }
 
                 if (root.TryGetProperty("static", out var st) && st.ValueKind == JsonValueKind.Object)
@@ -201,8 +233,24 @@ public sealed class Settings
                 if (root.TryGetProperty("quality", out var q) && q.ValueKind == JsonValueKind.String)
                     s.Quality = ParseQuality(q.GetString() ?? "");
 
+                if (root.TryGetProperty("hotkey", out var hk) && hk.ValueKind == JsonValueKind.Object)
+                {
+                    s.HotkeyModifiers = ParseHotkeyModifiers(GetInt(hk, "modifiers", 3));
+                    s.HotkeyVk = ParseHotkeyVk(GetInt(hk, "vk", 0x56));
+                }
+
+                if (root.TryGetProperty("recordHotkey", out var rhk) && rhk.ValueKind == JsonValueKind.Object)
+                {
+                    s.RecordHotkeyModifiers = ParseHotkeyModifiers(GetInt(rhk, "modifiers", 3));
+                    s.RecordHotkeyVk = ParseRecordHotkeyVk(GetInt(rhk, "vk", 0x52));
+                }
+
+                if (root.TryGetProperty("record", out var rc) && rc.ValueKind == JsonValueKind.Object)
+                    s.RecordPath = GetString(rc, "path");
+
                 if (root.TryGetProperty("effects", out var fx) && fx.ValueKind == JsonValueKind.Object)
                 {
+                    s.FxEnabled = GetBoolDefaultTrue(fx, "enabled");
                     s.FxMirror = GetBool(fx, "mirror");
                     s.FxGrayscale = GetBool(fx, "grayscale");
                     s.FxNoise = GetBool(fx, "noise");
@@ -227,7 +275,7 @@ public sealed class Settings
                 // mediaPath -> video.path, mediaMode=="video" -> source.type=video.
                 var mediaMode = GetString(root, "mediaMode");
                 var isVideo = string.Equals(mediaMode, "video", StringComparison.OrdinalIgnoreCase);
-                s.SourceType = isVideo ? SourceType.Video : SourceType.Static;
+                s.SourceType = isVideo ? SourceTypes.Video : SourceTypes.Static;
                 s.StaticPath = GetString(root, "imagePath");
                 if (string.IsNullOrEmpty(s.StaticPath) && !isVideo)
                     s.StaticPath = GetString(root, "mediaPath");
@@ -246,18 +294,19 @@ public sealed class Settings
     }
 
     // Writes ONLY the new schema, UTF-8 without BOM (see SerializerOptions).
+    // В6: атомарно через tmp+move (как host WriteRecordCommand): конкурентный
+    // читатель (хост) видит либо старый, либо новый файл целиком — рваного
+    // truncate-read нет. Плюс retry при sharing-violation (хост в этот момент
+    // пишет свою копию).
     public void Save(string? filePath = null)
     {
         var payload = new Dictionary<string, object>
         {
             ["source"] = new Dictionary<string, object>
             {
-                ["type"] = SourceType switch
-                {
-                    SourceType.Video => "video",
-                    SourceType.Camera => "camera",
-                    _ => "static",
-                },
+                // В3: пишем токен verbatim (неизвестный будущий переживает
+                // round-trip как в C++); пусто = "static".
+                ["type"] = string.IsNullOrEmpty(SourceType) ? SourceTypes.Static : SourceType,
             },
             ["static"] = new Dictionary<string, object>
             {
@@ -290,8 +339,23 @@ public sealed class Settings
                 },
             },
             ["quality"] = Quality == Quality.Fixed720p ? "fixed720p" : "source",
+            ["hotkey"] = new Dictionary<string, object>
+            {
+                ["modifiers"] = HotkeyModifiers,
+                ["vk"] = HotkeyVk,
+            },
+            ["recordHotkey"] = new Dictionary<string, object>
+            {
+                ["modifiers"] = RecordHotkeyModifiers,
+                ["vk"] = RecordHotkeyVk,
+            },
+            ["record"] = new Dictionary<string, object>
+            {
+                ["path"] = RecordPath,
+            },
             ["effects"] = new Dictionary<string, object>
             {
+                ["enabled"] = FxEnabled,
                 ["mirror"] = FxMirror,
                 ["grayscale"] = FxGrayscale,
                 ["noise"] = FxNoise,
@@ -311,7 +375,32 @@ public sealed class Settings
         var path = filePath ?? FilePath;
         var dir = Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-        File.WriteAllText(path, JsonSerializer.Serialize(payload, SerializerOptions), new UTF8Encoding(false));
+        var text = JsonSerializer.Serialize(payload, SerializerOptions);
+        // Уникальный tmp на запись (UI vs host пишут одновременно): общий
+        // фиксированный tmp сталкивал писателей sharing-violation.
+        var tmp = Path.Combine(dir ?? "", Path.GetRandomFileName());
+        try
+        {
+            File.WriteAllText(tmp, text, new UTF8Encoding(false));
+            for (var attempt = 0; ; attempt++)
+            {
+                try
+                {
+                    File.Move(tmp, path, true);
+                    return;
+                }
+                // Конкурентный move второго писателя surfaces как
+                // UnauthorizedAccess (а не IOException) — тоже retry.
+                catch (Exception ex) when ((ex is IOException || ex is UnauthorizedAccessException) && attempt < 3)
+                {
+                    Thread.Sleep(50);
+                }
+            }
+        }
+        finally
+        {
+            try { if (File.Exists(tmp)) File.Delete(tmp); } catch { /* best-effort */ }
+        }
     }
 
     private static string GetString(JsonElement obj, string name) =>
@@ -324,19 +413,53 @@ public sealed class Settings
             ? n
             : 0;
 
+    private static int GetInt(JsonElement obj, string name, int defaultValue) =>
+        obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var n)
+            ? n
+            : defaultValue;
+
     private static bool GetBool(JsonElement obj, string name) =>
         obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.True;
 
+    // Mirrors C++ JsonGetBool(..., default true) exactly: missing key or a
+    // non-bool token -> true; only an explicit false disables.
+    private static bool GetBoolDefaultTrue(JsonElement obj, string name) =>
+        !obj.TryGetProperty(name, out var v) || v.ValueKind != JsonValueKind.False;
+
     // Mirrors the C++ ClampLevel exactly: missing/non-numeric -> 100,
     // out-of-range -> clamp 0-100.
+    // В2: дробные числа C++ JsonGetInt читает как truncate (50.5→50 — цифры
+    // до '.'), а TryGetInt32 на них проваливается. Поэтому fallback — double
+    // с Truncate (к нулю, как разбор цифр C++), затем clamp.
     private static int GetLevel(JsonElement obj, string name)
     {
-        if (obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number &&
-            v.TryGetInt32(out var n))
-            return Math.Clamp(n, 0, 100);
+        if (obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number)
+        {
+            if (v.TryGetInt32(out var n))
+                return Math.Clamp(n, 0, 100);
+            if (v.TryGetDouble(out var d) && double.IsFinite(d))
+                return Math.Clamp((int)Math.Truncate(d), 0, 100);
+        }
         return 100;
     }
 
+    // В3: известные токены — канон нижнего регистра (insensitive, как раньше
+    // и как C++ K4-нормализация scaleMode); неизвестные будущие — verbatim;
+    // пусто/нет — "static" (как C++ fallback).
+    private static string NormalizeSourceType(string token)
+    {
+        if (string.Equals(token, SourceTypes.Video, StringComparison.OrdinalIgnoreCase))
+            return SourceTypes.Video;
+        if (string.Equals(token, SourceTypes.Camera, StringComparison.OrdinalIgnoreCase))
+            return SourceTypes.Camera;
+        if (string.Equals(token, SourceTypes.Static, StringComparison.OrdinalIgnoreCase) ||
+            string.IsNullOrEmpty(token))
+            return SourceTypes.Static;
+        return token;
+    }
+
+    // К4: insensitive как C++ ParseScaleMode/EqCI (обе стороны) — "FIT"/"Cover"
+    // дают тот же режим в UI и хосте; канон — нижний регистр.
     private static ScaleMode ParseScaleMode(string mode) =>
         string.Equals(mode, "cover", StringComparison.OrdinalIgnoreCase) ? ScaleMode.Cover
         : string.Equals(mode, "crop", StringComparison.OrdinalIgnoreCase) ? ScaleMode.Crop
@@ -353,6 +476,19 @@ public sealed class Settings
     private static string ParseBackend(string backend) =>
         string.Equals(backend, "frei0r", StringComparison.Ordinal) ? "frei0r"
         : "cpu";
+
+    // Mirrors the C++ hotkey parsing exactly: modifiers 1-15 pass, vk
+    // 0x08-0xFE passes, anything else (missing/garbage/0) is Ctrl+Alt+V.
+    private static int ParseHotkeyModifiers(int mods) =>
+        mods >= 1 && mods <= 15 ? mods : 3;
+
+    private static int ParseHotkeyVk(int vk) =>
+        vk >= 0x08 && vk <= 0xFE ? vk : 0x56;
+
+    // Mirrors the C++ RecordHotkeySection parsing exactly: same ranges,
+    // default Ctrl+Alt+R (0x52) instead of Ctrl+Alt+V.
+    private static int ParseRecordHotkeyVk(int vk) =>
+        vk >= 0x08 && vk <= 0xFE ? vk : 0x52;
 
     // Mirrors the C++ ParseCapture exactly: only "720p"/"1080p" pass (ordinal),
     // everything else (missing/garbage/future tokens) is Max.
