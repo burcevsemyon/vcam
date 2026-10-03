@@ -47,10 +47,20 @@ public sealed class MainForm : Form
     private readonly Label _fxRgbSplitLevelVal = new();
     private readonly Label _fxTrackingLevelVal = new();
 
-    // Analog interference backend (minimal ComboBox; full layout rework is the
-    // next subagent): CPU (default, no DLLs) | frei0r (frei0r plugin chain,
-    // falls back to CPU when the DLLs are missing).
+    // Analog interference backend (ComboBox in the effects group header):
+    // CPU (default, no DLLs) | frei0r (frei0r plugin chain, falls back to
+    // CPU when the DLLs are missing).
     private readonly ComboBox _fxBackend = new();
+    private readonly Label _fxBackendLabel = new();
+
+    // Effects section container: GroupBox "Эффекты" with a header row (backend
+    // switch) and a TableLayoutPanel (row = checkbox + slider + value).
+    // Table layout (AutoSize checkbox/value columns) keeps all 7 checkboxes +
+    // 4 sliders + backend visible without overlaps at 100% and 125% DPI —
+    // fixed X positions used to overlap once the font scaled up.
+    private readonly GroupBox _fxGroup = new();
+    private readonly Panel _fxHeader = new();
+    private readonly TableLayoutPanel _fxTable = new();
 
     // Info panel replacing the picture preview in video mode.
     private readonly Panel _videoPanel = new();
@@ -140,10 +150,14 @@ public sealed class MainForm : Form
     public MainForm()
     {
         Text = "VCam — настройки трансляции";
-        FormBorderStyle = FormBorderStyle.FixedDialog;
-        MaximizeBox = false;
+        // Sizable (was FixedDialog): the effects table needs the extra height,
+        // and users on 125%+ DPI can grow the window instead of clipping.
+        FormBorderStyle = FormBorderStyle.Sizable;
+        MaximizeBox = true;
+        MinimizeBox = true;
         StartPosition = FormStartPosition.CenterScreen;
-        ClientSize = new Size(880, 710);
+        ClientSize = new Size(880, 910);
+        MinimumSize = new Size(900, 960);
         Font = new Font("Segoe UI", 9f);
         try
         {
@@ -163,6 +177,7 @@ public sealed class MainForm : Form
         _preview.BackColor = Color.Black;
         _preview.BorderStyle = BorderStyle.FixedSingle;
         _preview.Name = "preview";
+        _preview.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
 
         _cropView.Location = _preview.Location;
         _cropView.Size = _preview.Size;
@@ -231,11 +246,12 @@ public sealed class MainForm : Form
 
         // Manual reload from settings.json (always available; also the way out
         // when the file changed externally while the form is dirty).
-        _reloadButton.Location = new Point(566, 654);
+        _reloadButton.Location = new Point(566, 860);
         _reloadButton.Size = new Size(116, 40);
         _reloadButton.Text = "Обновить";
         _reloadButton.Name = "reloadButton";
         _reloadButton.Click += OnReloadClicked;
+        _reloadButton.Anchor = AnchorStyles.Bottom;
 
         _hostStatusLabel.Location = new Point(430, 538);
         _hostStatusLabel.Size = new Size(244, 22);
@@ -260,84 +276,30 @@ public sealed class MainForm : Form
         _cropKeepAspect.Text = "Сохранять пропорции";
         _cropKeepAspect.Visible = false;
 
-        // Host post-fx rows (always visible, below the crop fields row).
-        // Row 1: mirror + grayscale + noise[slider] + scanlines[slider];
-        // row 2: rgbsplit[slider] + tracking[slider] + vhs (preset).
-        _fxMirror.Location = new Point(12, 600);
-        _fxMirror.Size = new Size(80, 22);
-        _fxMirror.Text = "Зеркало";
-        _fxMirror.Name = "fxMirror";
+        // Effects section (always visible, below the crop fields row):
+        // GroupBox "Эффекты" with a header (backend switch) and a table
+        // (row = checkbox + slider + value). CheckBoxes/values are AutoSize,
+        // sliders stretch (Dock Fill) — nothing overlaps at 100%/125% DPI.
+        SetupFxGroup();
 
-        _fxGrayscale.Location = new Point(96, 600);
-        _fxGrayscale.Size = new Size(55, 22);
-        _fxGrayscale.Text = "Ч/Б";
-        _fxGrayscale.Name = "fxGrayscale";
-
-        _fxNoise.Location = new Point(155, 600);
-        _fxNoise.Size = new Size(60, 22);
-        _fxNoise.Text = "Шум";
-        _fxNoise.Name = "fxNoise";
-
-        SetupFxLevel(_fxNoiseLevel, _fxNoiseLevelVal, 220, 598, "fxNoiseLevel");
-        _fxNoiseLevelVal.Location = new Point(335, 602);
-
-        _fxScanlines.Location = new Point(375, 600);
-        _fxScanlines.Size = new Size(90, 22);
-        _fxScanlines.Text = "Сканлайны";
-        _fxScanlines.Name = "fxScanlines";
-
-        SetupFxLevel(_fxScanlinesLevel, _fxScanlinesLevelVal, 470, 598, "fxScanlinesLevel");
-        _fxScanlinesLevelVal.Location = new Point(585, 602);
-
-        _fxRgbSplit.Location = new Point(12, 626);
-        _fxRgbSplit.Size = new Size(90, 22);
-        _fxRgbSplit.Text = "RGB-сдвиг";
-        _fxRgbSplit.Name = "fxRgbSplit";
-
-        SetupFxLevel(_fxRgbSplitLevel, _fxRgbSplitLevelVal, 107, 624, "fxRgbSplitLevel");
-        _fxRgbSplitLevelVal.Location = new Point(222, 628);
-
-        _fxTracking.Location = new Point(262, 626);
-        _fxTracking.Size = new Size(75, 22);
-        _fxTracking.Text = "Трекинг";
-        _fxTracking.Name = "fxTracking";
-
-        SetupFxLevel(_fxTrackingLevel, _fxTrackingLevelVal, 342, 624, "fxTrackingLevel");
-        _fxTrackingLevelVal.Location = new Point(457, 628);
-
-        _fxVhs.Location = new Point(500, 626);
-        _fxVhs.Size = new Size(60, 22);
-        _fxVhs.Text = "VHS";
-        _fxVhs.Name = "fxVhs";
-
-        // Minimal backend switch (layout rework is a separate task).
-        _fxBackend.Location = new Point(620, 624);
-        _fxBackend.Size = new Size(110, 28);
-        _fxBackend.DropDownStyle = ComboBoxStyle.DropDownList;
-        _fxBackend.Items.AddRange(FxBackendNames);
-        _fxBackend.SelectedIndex = 0;
-        _fxBackend.Name = "fxBackend";
-
-        _hintLabel.Location = new Point(12, 652);
-        _hintLabel.Size = new Size(548, 50);
+        _hintLabel.Location = new Point(12, 862);
+        _hintLabel.Size = new Size(548, 38);
         _hintLabel.ForeColor = Color.DimGray;
         _hintLabel.Text = $"Настройки: {Settings.FilePath} — хост VCam подхватит их автоматически (~1 с).";
         _hintLabel.Name = "hintLabel";
+        _hintLabel.Anchor = AnchorStyles.Left | AnchorStyles.Bottom;
 
-        _helpButton.Location = new Point(688, 654);
+        _helpButton.Location = new Point(688, 860);
         _helpButton.Size = new Size(180, 40);
         _helpButton.Text = "Справка…";
         _helpButton.Name = "helpButton";
         _helpButton.Click += OnHelpClicked;
+        _helpButton.Anchor = AnchorStyles.Right | AnchorStyles.Bottom;
 
         Controls.AddRange(new Control[] { _preview, _cropView, _videoPanel, _cameraPanel, _pathLabel, _mediaLabel, _mediaCombo,
-            _qualityLabel, _qualityCombo, _fxMirror, _fxGrayscale, _fxNoise, _fxNoiseLevel, _fxNoiseLevelVal,
-            _fxScanlines, _fxScanlinesLevel, _fxScanlinesLevelVal,
-            _fxRgbSplit, _fxRgbSplitLevel, _fxRgbSplitLevelVal,
-            _fxTracking, _fxTrackingLevel, _fxTrackingLevelVal, _fxVhs,
+            _qualityLabel, _qualityCombo, _fxGroup,
             _mode, _openButton, _fullSizeButton, _saveButton, _reloadButton, _hostStatusLabel, _hostButton, _helpButton,
-            _cropXLabel, _cropX, _cropYLabel, _cropY, _cropWLabel, _cropW, _cropHLabel, _cropH, _cropKeepAspect, _hintLabel,
-            _fxBackend });
+            _cropXLabel, _cropX, _cropYLabel, _cropY, _cropWLabel, _cropW, _cropHLabel, _cropH, _cropKeepAspect, _hintLabel });
 
         _previewExe = FindPreviewExe();
         _hostExe = FindHostExe();
@@ -480,12 +442,99 @@ public sealed class MainForm : Form
               _cameraIdLabel, _controlsPanel, _cameraHint, _cameraStatus });
     }
 
+    // Effects GroupBox + table: header (backend switch) on top, 7 rows
+    // (checkbox + slider + value) below. All checkbox/value cells are AutoSize
+    // so longer labels at 125% DPI widen their column instead of overlapping
+    // the neighbour (the old fixed-X layout clipped/overlapped).
+    private void SetupFxGroup()
+    {
+        _fxGroup.Location = new Point(12, 592);
+        _fxGroup.Size = new Size(856, 262);
+        _fxGroup.Text = "Эффекты";
+        _fxGroup.Name = "fxGroup";
+        _fxGroup.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+
+        _fxHeader.Dock = DockStyle.Top;
+        _fxHeader.Height = 34;
+        _fxHeader.Name = "fxHeader";
+
+        _fxBackendLabel.AutoSize = true;
+        _fxBackendLabel.Location = new Point(10, 9);
+        _fxBackendLabel.Text = "Backend:";
+        _fxBackendLabel.Name = "fxBackendLabel";
+
+        _fxBackend.Location = new Point(80, 5);
+        _fxBackend.Size = new Size(110, 28);
+        _fxBackend.DropDownStyle = ComboBoxStyle.DropDownList;
+        _fxBackend.Items.AddRange(FxBackendNames);
+        _fxBackend.SelectedIndex = 0;
+        _fxBackend.Name = "fxBackend";
+        _fxBackend.Anchor = AnchorStyles.Top | AnchorStyles.Left;
+        _fxHeader.Controls.AddRange(new Control[] { _fxBackendLabel, _fxBackend });
+
+        _fxTable.Dock = DockStyle.Fill;
+        _fxTable.Name = "fxTable";
+        _fxTable.ColumnCount = 3;
+        _fxTable.RowCount = 7;
+        _fxTable.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _fxTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+        _fxTable.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        for (var r = 0; r < 7; r++)
+            _fxTable.RowStyles.Add(new RowStyle(SizeType.Percent, 100f / 7f));
+
+        SetupFxCheck(_fxMirror, "Зеркало", "fxMirror");
+        SetupFxCheck(_fxGrayscale, "Ч/Б", "fxGrayscale");
+        SetupFxCheck(_fxNoise, "Шум", "fxNoise");
+        SetupFxCheck(_fxScanlines, "Сканлайны", "fxScanlines");
+        SetupFxCheck(_fxRgbSplit, "RGB-сдвиг", "fxRgbSplit");
+        SetupFxCheck(_fxTracking, "Трекинг", "fxTracking");
+        SetupFxCheck(_fxVhs, "VHS (пресет)", "fxVhs");
+
+        SetupFxLevel(_fxNoiseLevel, _fxNoiseLevelVal, "fxNoiseLevel");
+        SetupFxLevel(_fxScanlinesLevel, _fxScanlinesLevelVal, "fxScanlinesLevel");
+        SetupFxLevel(_fxRgbSplitLevel, _fxRgbSplitLevelVal, "fxRgbSplitLevel");
+        SetupFxLevel(_fxTrackingLevel, _fxTrackingLevelVal, "fxTrackingLevel");
+
+        // Rows: mirror / grayscale / noise / scanlines / rgbsplit / tracking / vhs.
+        AddFxRow(0, _fxMirror, null, null);
+        AddFxRow(1, _fxGrayscale, null, null);
+        AddFxRow(2, _fxNoise, _fxNoiseLevel, _fxNoiseLevelVal);
+        AddFxRow(3, _fxScanlines, _fxScanlinesLevel, _fxScanlinesLevelVal);
+        AddFxRow(4, _fxRgbSplit, _fxRgbSplitLevel, _fxRgbSplitLevelVal);
+        AddFxRow(5, _fxTracking, _fxTrackingLevel, _fxTrackingLevelVal);
+        AddFxRow(6, _fxVhs, null, null);
+
+        _fxGroup.Controls.Add(_fxTable);
+        _fxGroup.Controls.Add(_fxHeader);
+    }
+
+    private static void SetupFxCheck(CheckBox box, string text, string name)
+    {
+        box.AutoSize = true;
+        box.Text = text;
+        box.Name = name;
+        box.Anchor = AnchorStyles.Left;
+        box.Margin = new Padding(6, 3, 6, 3);
+    }
+
+    private void AddFxRow(int row, CheckBox box, TrackBar? bar, Label? val)
+    {
+        box.Dock = DockStyle.Fill;
+        _fxTable.Controls.Add(box, 0, row);
+        if (bar is not null && val is not null)
+        {
+            bar.Dock = DockStyle.Fill;
+            _fxTable.Controls.Add(bar, 1, row);
+            val.Dock = DockStyle.Fill;
+            _fxTable.Controls.Add(val, 2, row);
+        }
+    }
+
     // Intensity slider 0-100 next to an interference checkbox: compact
     // TrackBar (no ticks) + numeric value label. Scroll updates the label.
-    private void SetupFxLevel(TrackBar bar, Label val, int x, int y, string name)
+    // Geometry is owned by the effects table (Dock Fill); no coordinates here.
+    private void SetupFxLevel(TrackBar bar, Label val, string name)
     {
-        bar.Location = new Point(x, y);
-        bar.Size = new Size(110, 26);
         bar.Minimum = 0;
         bar.Maximum = 100;
         bar.TickStyle = TickStyle.None;
@@ -493,9 +542,13 @@ public sealed class MainForm : Form
         bar.LargeChange = 10;
         bar.Value = 100;
         bar.Name = name;
-        val.Size = new Size(35, 18);
+        bar.Margin = new Padding(6, 0, 6, 0);
+        val.AutoSize = true;
+        val.MinimumSize = new Size(30, 0);
         val.Text = "100";
+        val.TextAlign = ContentAlignment.MiddleLeft;
         val.Name = name + "Val";
+        val.Margin = new Padding(0, 3, 6, 3);
         bar.Scroll += (_, _) => val.Text = bar.Value.ToString();
         // ValueChanged covers Scroll + keyboard + programmatic sets; the label
         // stays in sync and user edits set the dirty flag (programmatic sets
