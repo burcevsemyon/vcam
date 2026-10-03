@@ -8,6 +8,8 @@
 namespace vcam::effects {
 
 // Флаги эффектов — 1:1 с Settings::EffectsSection (Settings.h) и C# Settings.
+// Уровни 0–100 (default 100 = вид как без уровней; 0 при включённом тоггле
+// ≈ эффект выключен). VHS использует индивидуальные уровни четырёх помех.
 struct FxFlags {
     bool mirror = false;
     bool grayscale = false;
@@ -16,6 +18,10 @@ struct FxFlags {
     bool rgbSplit = false;  // хроматическая аберрация (RGB-сдвиг)
     bool tracking = false;  // трекинг-глитч (сдвинутые полосы)
     bool vhs = false;       // VHS-пресет: все четыре помехи сразу
+    int noiseLevel = 100;
+    int scanlinesLevel = 100;
+    int rgbSplitLevel = 100;
+    int trackingLevel = 100;
 };
 
 // Применяет эффекты к кадру. Возвращает:

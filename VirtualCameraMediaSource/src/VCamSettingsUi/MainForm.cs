@@ -33,6 +33,18 @@ public sealed class MainForm : Form
     private readonly CheckBox _fxTracking = new();
     private readonly CheckBox _fxVhs = new();
 
+    // Analog interference intensity sliders (TrackBar 0-100) next to the
+    // interference checkboxes; section "effects" levels. VHS has no own
+    // slider: it uses these four individual levels.
+    private readonly TrackBar _fxNoiseLevel = new();
+    private readonly TrackBar _fxScanlinesLevel = new();
+    private readonly TrackBar _fxRgbSplitLevel = new();
+    private readonly TrackBar _fxTrackingLevel = new();
+    private readonly Label _fxNoiseLevelVal = new();
+    private readonly Label _fxScanlinesLevelVal = new();
+    private readonly Label _fxRgbSplitLevelVal = new();
+    private readonly Label _fxTrackingLevelVal = new();
+
     // Info panel replacing the picture preview in video mode.
     private readonly Panel _videoPanel = new();
     private readonly Label _videoTitle = new();
@@ -220,38 +232,52 @@ public sealed class MainForm : Form
         _cropKeepAspect.Visible = false;
 
         // Host post-fx rows (always visible, below the crop fields row).
+        // Row 1: mirror + grayscale + noise[slider] + scanlines[slider];
+        // row 2: rgbsplit[slider] + tracking[slider] + vhs (preset).
         _fxMirror.Location = new Point(12, 600);
-        _fxMirror.Size = new Size(100, 22);
+        _fxMirror.Size = new Size(80, 22);
         _fxMirror.Text = "Зеркало";
         _fxMirror.Name = "fxMirror";
 
-        _fxGrayscale.Location = new Point(118, 600);
-        _fxGrayscale.Size = new Size(60, 22);
+        _fxGrayscale.Location = new Point(96, 600);
+        _fxGrayscale.Size = new Size(55, 22);
         _fxGrayscale.Text = "Ч/Б";
         _fxGrayscale.Name = "fxGrayscale";
 
-        _fxNoise.Location = new Point(184, 600);
-        _fxNoise.Size = new Size(70, 22);
+        _fxNoise.Location = new Point(155, 600);
+        _fxNoise.Size = new Size(60, 22);
         _fxNoise.Text = "Шум";
         _fxNoise.Name = "fxNoise";
 
-        _fxScanlines.Location = new Point(260, 600);
-        _fxScanlines.Size = new Size(110, 22);
+        SetupFxLevel(_fxNoiseLevel, _fxNoiseLevelVal, 220, 598, "fxNoiseLevel");
+        _fxNoiseLevelVal.Location = new Point(335, 602);
+
+        _fxScanlines.Location = new Point(375, 600);
+        _fxScanlines.Size = new Size(90, 22);
         _fxScanlines.Text = "Сканлайны";
         _fxScanlines.Name = "fxScanlines";
 
-        _fxRgbSplit.Location = new Point(12, 622);
-        _fxRgbSplit.Size = new Size(110, 22);
+        SetupFxLevel(_fxScanlinesLevel, _fxScanlinesLevelVal, 470, 598, "fxScanlinesLevel");
+        _fxScanlinesLevelVal.Location = new Point(585, 602);
+
+        _fxRgbSplit.Location = new Point(12, 626);
+        _fxRgbSplit.Size = new Size(90, 22);
         _fxRgbSplit.Text = "RGB-сдвиг";
         _fxRgbSplit.Name = "fxRgbSplit";
 
-        _fxTracking.Location = new Point(128, 622);
-        _fxTracking.Size = new Size(100, 22);
+        SetupFxLevel(_fxRgbSplitLevel, _fxRgbSplitLevelVal, 107, 624, "fxRgbSplitLevel");
+        _fxRgbSplitLevelVal.Location = new Point(222, 628);
+
+        _fxTracking.Location = new Point(262, 626);
+        _fxTracking.Size = new Size(75, 22);
         _fxTracking.Text = "Трекинг";
         _fxTracking.Name = "fxTracking";
 
-        _fxVhs.Location = new Point(234, 622);
-        _fxVhs.Size = new Size(70, 22);
+        SetupFxLevel(_fxTrackingLevel, _fxTrackingLevelVal, 342, 624, "fxTrackingLevel");
+        _fxTrackingLevelVal.Location = new Point(457, 628);
+
+        _fxVhs.Location = new Point(500, 626);
+        _fxVhs.Size = new Size(60, 22);
         _fxVhs.Text = "VHS";
         _fxVhs.Name = "fxVhs";
 
@@ -268,8 +294,10 @@ public sealed class MainForm : Form
         _helpButton.Click += OnHelpClicked;
 
         Controls.AddRange(new Control[] { _preview, _cropView, _videoPanel, _cameraPanel, _pathLabel, _mediaLabel, _mediaCombo,
-            _qualityLabel, _qualityCombo, _fxMirror, _fxGrayscale, _fxNoise, _fxScanlines,
-            _fxRgbSplit, _fxTracking, _fxVhs,
+            _qualityLabel, _qualityCombo, _fxMirror, _fxGrayscale, _fxNoise, _fxNoiseLevel, _fxNoiseLevelVal,
+            _fxScanlines, _fxScanlinesLevel, _fxScanlinesLevelVal,
+            _fxRgbSplit, _fxRgbSplitLevel, _fxRgbSplitLevelVal,
+            _fxTracking, _fxTrackingLevel, _fxTrackingLevelVal, _fxVhs,
             _mode, _openButton, _fullSizeButton, _saveButton, _hostStatusLabel, _hostButton, _helpButton,
             _cropXLabel, _cropX, _cropYLabel, _cropY, _cropWLabel, _cropW, _cropHLabel, _cropH, _cropKeepAspect, _hintLabel });
 
@@ -410,6 +438,25 @@ public sealed class MainForm : Form
         _cameraPanel.Controls.AddRange(new Control[]
             { _cameraTitle, _cameraDevLabel, _cameraCombo, _cameraRefresh, _captureLabel, _captureCombo,
               _cameraIdLabel, _controlsPanel, _cameraHint, _cameraStatus });
+    }
+
+    // Intensity slider 0-100 next to an interference checkbox: compact
+    // TrackBar (no ticks) + numeric value label. Scroll updates the label.
+    private void SetupFxLevel(TrackBar bar, Label val, int x, int y, string name)
+    {
+        bar.Location = new Point(x, y);
+        bar.Size = new Size(110, 26);
+        bar.Minimum = 0;
+        bar.Maximum = 100;
+        bar.TickStyle = TickStyle.None;
+        bar.SmallChange = 5;
+        bar.LargeChange = 10;
+        bar.Value = 100;
+        bar.Name = name;
+        val.Size = new Size(35, 18);
+        val.Text = "100";
+        val.Name = name + "Val";
+        bar.Scroll += (_, _) => val.Text = bar.Value.ToString();
     }
 
     private static void PlaceCropField(Label label, NumericUpDown input, int x, int y, string text)
@@ -591,6 +638,14 @@ public sealed class MainForm : Form
         _fxRgbSplit.Checked = s.FxRgbSplit;
         _fxTracking.Checked = s.FxTracking;
         _fxVhs.Checked = s.FxVhs;
+        _fxNoiseLevel.Value = Math.Clamp(s.FxNoiseLevel, 0, 100);
+        _fxNoiseLevelVal.Text = _fxNoiseLevel.Value.ToString();
+        _fxScanlinesLevel.Value = Math.Clamp(s.FxScanlinesLevel, 0, 100);
+        _fxScanlinesLevelVal.Text = _fxScanlinesLevel.Value.ToString();
+        _fxRgbSplitLevel.Value = Math.Clamp(s.FxRgbSplitLevel, 0, 100);
+        _fxRgbSplitLevelVal.Text = _fxRgbSplitLevel.Value.ToString();
+        _fxTrackingLevel.Value = Math.Clamp(s.FxTrackingLevel, 0, 100);
+        _fxTrackingLevelVal.Text = _fxTrackingLevel.Value.ToString();
         _mediaCombo.SelectedIndex = s.SourceType switch
         {
             SourceType.Video => 1,
@@ -1000,6 +1055,10 @@ public sealed class MainForm : Form
         settings.FxRgbSplit = _fxRgbSplit.Checked;
         settings.FxTracking = _fxTracking.Checked;
         settings.FxVhs = _fxVhs.Checked;
+        settings.FxNoiseLevel = _fxNoiseLevel.Value;
+        settings.FxScanlinesLevel = _fxScanlinesLevel.Value;
+        settings.FxRgbSplitLevel = _fxRgbSplitLevel.Value;
+        settings.FxTrackingLevel = _fxTrackingLevel.Value;
 
         if (CurrentSourceType == SourceType.Video)
         {

@@ -487,35 +487,47 @@ uint32_t XorShift32(uint32_t& s) {
 
 uint8_t ClampU8(int v) { return (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v); }
 
-// Белый/RGB-шум: ±20 на канал (один xorshift на пиксель, каналы — из разных
-// битовых срезов). "NOISE"-salt даёт независимый поток от трекинга.
-void CpuNoise(uint8_t* px, size_t pixels, uint64_t frame) {
+// Белый/RGB-шум: амплитуда ±(level% от ±20), т.е. amp=(level*20+50)/100
+// (100 → ±20 как раньше, 0 → no-op). Один xorshift на пиксель, каналы —
+// из разных битовых срезов. "NOISE"-salt даёт независимый поток от трекинга.
+void CpuNoise(uint8_t* px, size_t pixels, uint64_t frame, int level) {
+    const int amp = (level * 20 + 50) / 100;
+    if (amp <= 0) return;
+    const int range = amp * 2 + 1; // 100 → 41: формула бит-в-бит как раньше
     uint32_t s = (uint32_t)SplitMix64(frame ^ 0x4E4F495345ULL);
     if (s == 0) s = 0x243F6A88u;
     for (size_t i = 0; i < pixels; ++i, px += 4) {
         const uint32_t r = XorShift32(s);
-        px[0] = ClampU8((int)px[0] + ((int)(r & 63u) % 41) - 20);
-        px[1] = ClampU8((int)px[1] + ((int)((r >> 8) & 63u) % 41) - 20);
-        px[2] = ClampU8((int)px[2] + ((int)((r >> 16) & 63u) % 41) - 20);
+        px[0] = ClampU8((int)px[0] + ((int)(r & 63u) % range) - amp);
+        px[1] = ClampU8((int)px[1] + ((int)((r >> 8) & 63u) % range) - amp);
+        px[2] = ClampU8((int)px[2] + ((int)((r >> 16) & 63u) % range) - amp);
     }
 }
 
-// Scanlines: нечётные строки темнее (×185/256 ≈ 0.72) — CRT-маска.
-void CpuScanlines(uint8_t* px, uint32_t w, uint32_t h) {
+// Scanlines: глубина затемнения нечётных строк num/256,
+// num=256−(71*level+50)/100 (100 → ×185/256 ≈ 0.72 как раньше — CRT-маска,
+// 0 → ×256/256, т.е. без изменений).
+void CpuScanlines(uint8_t* px, uint32_t w, uint32_t h, int level) {
+    if (level <= 0) return;
+    const uint32_t num = (uint32_t)(256 - (71 * level + 50) / 100);
+    if (num >= 256) return;
     const size_t rowBytes = (size_t)w * 4u;
     for (uint32_t y = 1; y < h; y += 2) {
         uint8_t* row = px + (size_t)y * rowBytes;
         for (size_t i = 0; i < rowBytes; i += 4) {
-            row[i] = (uint8_t)((row[i] * 185u) >> 8);
-            row[i + 1] = (uint8_t)((row[i + 1] * 185u) >> 8);
-            row[i + 2] = (uint8_t)((row[i + 2] * 185u) >> 8);
+            row[i] = (uint8_t)((row[i] * num) >> 8);
+            row[i + 1] = (uint8_t)((row[i + 1] * num) >> 8);
+            row[i + 2] = (uint8_t)((row[i + 2] * num) >> 8);
         }
     }
 }
 
 // Хроматическая аберрация: R берём правее на dx, B — левее (построчный temp).
-void CpuRgbSplit(uint8_t* px, uint32_t w, uint32_t h) {
-    const int dx = (w >= 2560) ? 8 : (w >= 1280) ? 4 : 2;
+// dx=(dx100*level+50)/100, dx100=2/4/8 по ширине (100 → как раньше, 0 → no-op).
+void CpuRgbSplit(uint8_t* px, uint32_t w, uint32_t h, int level) {
+    if (level <= 0) return;
+    const int dx100 = (w >= 2560) ? 8 : (w >= 1280) ? 4 : 2;
+    const int dx = (dx100 * level + 50) / 100;
     if (dx <= 0 || (uint32_t)dx >= w) return;
     const size_t rowBytes = (size_t)w * 4u;
     std::vector<uint8_t> tmp(rowBytes); // throw → catch в ApplyEffects
@@ -532,10 +544,17 @@ void CpuRgbSplit(uint8_t* px, uint32_t w, uint32_t h) {
     }
 }
 
-// Трекинг-глитч: 2–4 полосы/кадр со случайным горизонтальным сдвигом (wrap)
+// Трекинг-глитч: полосы/кадр со случайным горизонтальным сдвигом (wrap)
 // + белая 2px-строка сверху полосы (head-switching). Позиции/сдвиги —
 // от frame-сида, поэтому полосы движутся от кадра к кадру.
-void CpuTracking(uint8_t* px, uint32_t w, uint32_t h, uint64_t frame) {
+// Масштаб от level (100 → как раньше: 2–4 полосы, h=8..h/12, сдвиг
+// ±(8..w/16); 0 → нет полос): число полос, высота и сдвиг умножаются на
+// level% (минимумы 1 полоса / 2px высота / 1px сдвиг при level>0).
+// PRNG-последовательность та же, что без уровней, поэтому слабый уровень —
+// префикс полного прогона (монотонность: больше level → больше изменений).
+void CpuTracking(uint8_t* px, uint32_t w, uint32_t h, uint64_t frame,
+                 int level) {
+    if (level <= 0) return;
     if (w < 16 || h < 16) return;
     const size_t rowBytes = (size_t)w * 4u;
     std::vector<uint8_t> snap((size_t)h * rowBytes);
@@ -543,15 +562,22 @@ void CpuTracking(uint8_t* px, uint32_t w, uint32_t h, uint64_t frame) {
     std::vector<uint8_t> tmp(rowBytes);
     uint32_t s = (uint32_t)SplitMix64(frame ^ 0x545241434BULL);
     if (s == 0) s = 0x452821E7u;
-    const int bands = 2 + (int)(XorShift32(s) % 3u);
+    const int bandsBase = 2 + (int)(XorShift32(s) % 3u);
+    int bands = (bandsBase * level + 50) / 100;
+    if (bands < 1) bands = 1;
+    if (bands > bandsBase) bands = bandsBase;
     const uint32_t maxBandH = h / 8u >= 8u ? h / 8u : 8u;
     const uint32_t maxOff = w / 16u >= 8u ? w / 16u : 8u;
     for (int b = 0; b < bands; ++b) {
-        const uint32_t bandH = 8u + XorShift32(s) % maxBandH;
+        const uint32_t bandH100 = 8u + XorShift32(s) % maxBandH;
+        uint32_t bandH = (bandH100 * (uint32_t)level + 50u) / 100u;
+        if (bandH < 2u) bandH = 2u;
         const uint32_t y0 = XorShift32(s) % h;
         uint32_t y1 = y0 + bandH;
         if (y1 > h) y1 = h;
-        int off = 8 + (int)(XorShift32(s) % maxOff);
+        int off100 = 8 + (int)(XorShift32(s) % maxOff);
+        int off = (off100 * level + 50) / 100;
+        if (off < 1) off = 1;
         if (XorShift32(s) & 1u) off = -off;
         for (uint32_t y = y0; y < y1; ++y) {
             const uint8_t* src = snap.data() + (size_t)y * rowBytes;
@@ -588,7 +614,16 @@ bool ApplyEffects(uint8_t* bgrx, int stride, uint32_t w, uint32_t h,
     bool rgbSplit = fx.rgbSplit;
     bool tracking = fx.tracking;
     if (fx.vhs) noise = scanlines = rgbSplit = tracking = true;
-    const bool wantCpu = noise || scanlines || rgbSplit || tracking;
+    // Уровни — индивидуальные (VHS отдельного уровня не имеет, берёт те же).
+    // Уровень 0 при включённом тоггле ≈ эффект выключен (функции — no-op).
+    const int noiseLevel = fx.noiseLevel;
+    const int scanlinesLevel = fx.scanlinesLevel;
+    const int rgbSplitLevel = fx.rgbSplitLevel;
+    const int trackingLevel = fx.trackingLevel;
+    const bool wantCpu = (noise && noiseLevel > 0) ||
+                         (scanlines && scanlinesLevel > 0) ||
+                         (rgbSplit && rgbSplitLevel > 0) ||
+                         (tracking && trackingLevel > 0);
     if (!needGpu && !wantCpu) return true;
     if (stride != (int)(w * 4u)) return false; // только плотная упаковка
     const size_t pixels = (size_t)w * h;
@@ -720,10 +755,12 @@ bool ApplyEffects(uint8_t* bgrx, int stride, uint32_t w, uint32_t h,
         const uint64_t frame =
             g_analogFrame.fetch_add(1, std::memory_order_relaxed);
         try {
-            if (rgbSplit) CpuRgbSplit(bgrx, w, h);
-            if (tracking) CpuTracking(bgrx, w, h, frame);
-            if (noise) CpuNoise(bgrx, pixels, frame);
-            if (scanlines) CpuScanlines(bgrx, w, h);
+            if (rgbSplit && rgbSplitLevel > 0) CpuRgbSplit(bgrx, w, h, rgbSplitLevel);
+            if (tracking && trackingLevel > 0)
+                CpuTracking(bgrx, w, h, frame, trackingLevel);
+            if (noise && noiseLevel > 0) CpuNoise(bgrx, pixels, frame, noiseLevel);
+            if (scanlines && scanlinesLevel > 0)
+                CpuScanlines(bgrx, w, h, scanlinesLevel);
         } catch (...) {
             return false;
         }

@@ -16,7 +16,8 @@ namespace VCamSettingsUi;
 //     "quality": "source" | "fixed720p",
 //     "effects": { "mirror": bool, "grayscale": bool, "noise": bool,
 //                "scanlines": bool, "rgbsplit": bool, "tracking": bool,
-//                "vhs": bool },
+//                "vhs": bool, "noiseLevel": int 0-100, "scanlinesLevel": int,
+//                "rgbsplitLevel": int, "trackingLevel": int },
 //     "autostart": bool }
 // Empty camera section (id and name both "") -> host shows NO SIGNAL until a
 // device is chosen. Load also accepts the legacy flat format
@@ -95,6 +96,14 @@ public sealed class Settings
     public bool FxRgbSplit { get; set; }
     public bool FxTracking { get; set; }
     public bool FxVhs { get; set; }
+
+    // Analog interference intensity 0-100 (mirrors EffectsSection levels on
+    // the C++ side). Missing key -> 100, clamped on read. Level 0 with the
+    // toggle on ~= effect off. VHS has no own level: it uses these four.
+    public int FxNoiseLevel { get; set; } = 100;
+    public int FxScanlinesLevel { get; set; } = 100;
+    public int FxRgbSplitLevel { get; set; } = 100;
+    public int FxTrackingLevel { get; set; } = 100;
 
     // Section "camera" capture: mirrors Settings::ParseCapture on the C++ side —
     // only "720p"/"1080p" pass, anything else (incl. missing) is Max.
@@ -181,6 +190,10 @@ public sealed class Settings
                     s.FxRgbSplit = GetBool(fx, "rgbsplit");
                     s.FxTracking = GetBool(fx, "tracking");
                     s.FxVhs = GetBool(fx, "vhs");
+                    s.FxNoiseLevel = GetLevel(fx, "noiseLevel");
+                    s.FxScanlinesLevel = GetLevel(fx, "scanlinesLevel");
+                    s.FxRgbSplitLevel = GetLevel(fx, "rgbsplitLevel");
+                    s.FxTrackingLevel = GetLevel(fx, "trackingLevel");
                 }
 
                 if (root.TryGetProperty("autostart", out var au))
@@ -270,6 +283,10 @@ public sealed class Settings
                 ["rgbsplit"] = FxRgbSplit,
                 ["tracking"] = FxTracking,
                 ["vhs"] = FxVhs,
+                ["noiseLevel"] = FxNoiseLevel,
+                ["scanlinesLevel"] = FxScanlinesLevel,
+                ["rgbsplitLevel"] = FxRgbSplitLevel,
+                ["trackingLevel"] = FxTrackingLevel,
             },
             ["autostart"] = Autostart,
         };
@@ -292,6 +309,16 @@ public sealed class Settings
 
     private static bool GetBool(JsonElement obj, string name) =>
         obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.True;
+
+    // Mirrors the C++ ClampLevel exactly: missing/non-numeric -> 100,
+    // out-of-range -> clamp 0-100.
+    private static int GetLevel(JsonElement obj, string name)
+    {
+        if (obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number &&
+            v.TryGetInt32(out var n))
+            return Math.Clamp(n, 0, 100);
+        return 100;
+    }
 
     private static ScaleMode ParseScaleMode(string mode) =>
         string.Equals(mode, "cover", StringComparison.OrdinalIgnoreCase) ? ScaleMode.Cover

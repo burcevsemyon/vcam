@@ -619,6 +619,10 @@ void ApplyFx(Machine& m)
     f.rgbSplit = m.fx.rgbSplit;
     f.tracking = m.fx.tracking;
     f.vhs = m.fx.vhs;
+    f.noiseLevel = m.fx.noiseLevel;
+    f.scanlinesLevel = m.fx.scanlinesLevel;
+    f.rgbSplitLevel = m.fx.rgbSplitLevel;
+    f.trackingLevel = m.fx.trackingLevel;
     const bool ok = vcam::effects::ApplyEffects(m.buf.data(), (int)(m.frameW * 4),
                                                 m.frameW, m.frameH, f);
     if (!ok && !m.fxGpuLogged) {
@@ -822,10 +826,11 @@ DWORD WINAPI WorkerProc(LPVOID)
             // подхватываются на лету (вотчер шлёт dirty через operator== с fx).
             if (s.fx != m.fx) {
                 m.fx = s.fx;
-                Log(L"[host] effects: mirror=%d grayscale=%d noise=%d scanlines=%d rgbsplit=%d tracking=%d vhs=%d",
+                Log(L"[host] effects: mirror=%d grayscale=%d noise=%d(%d) scanlines=%d(%d) rgbsplit=%d(%d) tracking=%d(%d) vhs=%d",
                     (int)m.fx.mirror, (int)m.fx.grayscale, (int)m.fx.noise,
-                    (int)m.fx.scanlines, (int)m.fx.rgbSplit, (int)m.fx.tracking,
-                    (int)m.fx.vhs);
+                    m.fx.noiseLevel, (int)m.fx.scanlines, m.fx.scanlinesLevel,
+                    (int)m.fx.rgbSplit, m.fx.rgbSplitLevel, (int)m.fx.tracking,
+                    m.fx.trackingLevel, (int)m.fx.vhs);
             }
         }
         timeout = Step(m);
