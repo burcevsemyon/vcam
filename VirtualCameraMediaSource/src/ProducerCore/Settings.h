@@ -54,6 +54,30 @@ struct HotkeySection {
     bool operator!=(const HotkeySection& o) const { return !(*this == o); }
 };
 
+// Хоткей старт/стоп записи эфира (секция recordHotkey, рядом с hotkey).
+// Та же семантика полей; мусор/отсутствие → дефолт Ctrl+Alt+R.
+struct RecordHotkeySection {
+    int modifiers = 3; // MOD_CONTROL | MOD_ALT
+    int vk = 0x52;     // 'R'
+
+    bool operator==(const RecordHotkeySection& o) const
+    {
+        return modifiers == o.modifiers && vk == o.vk;
+    }
+    bool operator!=(const RecordHotkeySection& o) const { return !(*this == o); }
+};
+
+// Путь по умолчанию для записи эфира (секция record). Пусто = хост
+// сгенерирует %Videos%\VCam_ГГГГММДД_ЧЧММСС.mp4 при старте записи.
+// Состояние записи (идёт/нет) здесь НЕ живёт — только transient
+// %APPDATA%\VCam\record_state.json, иначе watcher зациклит старт/стоп.
+struct RecordSection {
+    std::wstring path;
+
+    bool operator==(const RecordSection& o) const { return path == o.path; }
+    bool operator!=(const RecordSection& o) const { return !(*this == o); }
+};
+
 struct EffectsSection {
     bool enabled = true;    // мастер-выключатель: false = хост скипает ApplyFx целиком
     bool mirror = false;    // зеркало по горизонтали
@@ -106,12 +130,18 @@ struct Settings {
     // Глобальный хоткей (секция hotkey): смена — только перерегистрация
     // RegisterHotKey, без переоткрытия источника.
     HotkeySection hotkey;
+    // Хоткей записи (секция recordHotkey): смена — только перерегистрация.
+    RecordHotkeySection recordHotkey;
+    // Путь записи по умолчанию (секция record): смена — без переоткрытия
+    // (в SourceConfig не входит; хост читает при старте записи).
+    RecordSection record;
 
     bool operator==(const Settings& o) const
     {
         return sourceType == o.sourceType && st == o.st && video == o.video &&
                 cam == o.cam && autostart == o.autostart && quality == o.quality &&
-                fx == o.fx && hotkey == o.hotkey;
+                fx == o.fx && hotkey == o.hotkey &&
+                recordHotkey == o.recordHotkey && record == o.record;
     }
     bool operator!=(const Settings& o) const { return !(*this == o); }
 

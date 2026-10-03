@@ -15,6 +15,8 @@ namespace VCamSettingsUi;
 ///                "capture": "max" | "720p" | "1080p" },
 //     "quality": "source" | "fixed720p",
 //     "hotkey": { "modifiers": int 1-15, "vk": int 0x08-0xFE },
+//     "recordHotkey": { "modifiers": int 1-15, "vk": int 0x08-0xFE },
+//     "record": { "path": "..." },
 //     "effects": { "enabled": bool, "mirror": bool, "grayscale": bool,
 //                "noise": bool, "scanlines": bool, "rgbsplit": bool,
 //                "tracking": bool, "vhs": bool, "noiseLevel": int 0-100,
@@ -94,6 +96,19 @@ public sealed class Settings
     // code. Missing key or garbage (incl. 0) -> default Ctrl+Alt+V (3, 0x56).
     public int HotkeyModifiers { get; set; } = 3;
     public int HotkeyVk { get; set; } = 0x56;
+
+    // Section "recordHotkey" (host record start/stop toggle): mirrors
+    // RecordHotkeySection on the C++ side. Same rules as hotkey, default
+    // Ctrl+Alt+R (3, 0x52).
+    public int RecordHotkeyModifiers { get; set; } = 3;
+    public int RecordHotkeyVk { get; set; } = 0x52;
+
+    // Section "record" (default output path for the ether recording): mirrors
+    // RecordSection on the C++ side. Empty = the host generates
+    // %USERPROFILE%\Videos\VCam_yyyyMMdd_HHmmss.mp4 at record start.
+    // The recording STATE (on/off) never lives here — only the transient
+    // %APPDATA%\VCam\record_state.json the host writes while recording.
+    public string RecordPath { get; set; } = "";
 
     // Section "effects" (host post-fx): mirrors EffectsSection on the C++ side.
     // Legacy files without the section migrate to enabled + all-false.
@@ -217,6 +232,15 @@ public sealed class Settings
                     s.HotkeyVk = ParseHotkeyVk(GetInt(hk, "vk", 0x56));
                 }
 
+                if (root.TryGetProperty("recordHotkey", out var rhk) && rhk.ValueKind == JsonValueKind.Object)
+                {
+                    s.RecordHotkeyModifiers = ParseHotkeyModifiers(GetInt(rhk, "modifiers", 3));
+                    s.RecordHotkeyVk = ParseRecordHotkeyVk(GetInt(rhk, "vk", 0x52));
+                }
+
+                if (root.TryGetProperty("record", out var rc) && rc.ValueKind == JsonValueKind.Object)
+                    s.RecordPath = GetString(rc, "path");
+
                 if (root.TryGetProperty("effects", out var fx) && fx.ValueKind == JsonValueKind.Object)
                 {
                     s.FxEnabled = GetBoolDefaultTrue(fx, "enabled");
@@ -312,6 +336,15 @@ public sealed class Settings
                 ["modifiers"] = HotkeyModifiers,
                 ["vk"] = HotkeyVk,
             },
+            ["recordHotkey"] = new Dictionary<string, object>
+            {
+                ["modifiers"] = RecordHotkeyModifiers,
+                ["vk"] = RecordHotkeyVk,
+            },
+            ["record"] = new Dictionary<string, object>
+            {
+                ["path"] = RecordPath,
+            },
             ["effects"] = new Dictionary<string, object>
             {
                 ["enabled"] = FxEnabled,
@@ -394,6 +427,11 @@ public sealed class Settings
 
     private static int ParseHotkeyVk(int vk) =>
         vk >= 0x08 && vk <= 0xFE ? vk : 0x56;
+
+    // Mirrors the C++ RecordHotkeySection parsing exactly: same ranges,
+    // default Ctrl+Alt+R (0x52) instead of Ctrl+Alt+V.
+    private static int ParseRecordHotkeyVk(int vk) =>
+        vk >= 0x08 && vk <= 0xFE ? vk : 0x52;
 
     // Mirrors the C++ ParseCapture exactly: only "720p"/"1080p" pass (ordinal),
     // everything else (missing/garbage/future tokens) is Max.

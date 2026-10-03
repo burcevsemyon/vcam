@@ -143,6 +143,21 @@ public sealed class MainForm : Form
     // there is no editor — a wrong value falls back to Ctrl+Alt+V in host+UI.
     private readonly Label _hotkeyHint = new();
 
+    // Ether recording to .mp4 (host SinkWriter, frames with effects applied):
+    // path box (default in settings "record"), browse, start/stop button,
+    // REC indicator. The on/off STATE is transient
+    // (%APPDATA%\VCam\record_state.json, written by the host, NOT settings);
+    // start/stop commands go via record_command.json in the same directory.
+    private readonly GroupBox _recGroup = new();
+    private readonly Label _recPathLabel = new();
+    private readonly TextBox _recPathText = new();
+    private readonly Button _recBrowse = new();
+    private readonly Button _recButton = new();
+    private readonly Label _recStatus = new();
+    private readonly Label _recHint = new();
+    private bool _recRecording;
+    private string _lastRecPath = "";
+
     // Host (VCamVideoStreamProducer.exe): start/stop button + status indicator.
     private readonly Button _hostButton = new();
     private readonly Label _hostStatusLabel = new();
@@ -181,8 +196,8 @@ public sealed class MainForm : Form
         MaximizeBox = true;
         MinimizeBox = true;
         StartPosition = FormStartPosition.CenterScreen;
-        ClientSize = new Size(880, 968);
-        MinimumSize = new Size(900, 1018);
+        ClientSize = new Size(880, 1082);
+        MinimumSize = new Size(900, 1132);
         Font = new Font("Segoe UI", 9f);
         try
         {
@@ -269,9 +284,13 @@ public sealed class MainForm : Form
         _saveButton.Name = "saveButton";
         _saveButton.Click += OnSaveClicked;
 
+        // Ether recording group (below the effects group): file path +
+        // start/stop + REC indicator + record-hotkey hint.
+        SetupRecGroup();
+
         // Manual reload from settings.json (always available; also the way out
         // when the file changed externally while the form is dirty).
-        _reloadButton.Location = new Point(566, 918);
+        _reloadButton.Location = new Point(566, 1032);
         _reloadButton.Size = new Size(116, 40);
         _reloadButton.Text = "Обновить";
         _reloadButton.Name = "reloadButton";
@@ -314,14 +333,14 @@ public sealed class MainForm : Form
         // sliders stretch (Dock Fill) — nothing overlaps at 100%/125% DPI.
         SetupFxGroup();
 
-        _hintLabel.Location = new Point(12, 920);
+        _hintLabel.Location = new Point(12, 1034);
         _hintLabel.Size = new Size(548, 38);
         _hintLabel.ForeColor = Color.DimGray;
         _hintLabel.Text = $"Настройки: {Settings.FilePath} — хост VCam подхватит их автоматически (~1 с).";
         _hintLabel.Name = "hintLabel";
         _hintLabel.Anchor = AnchorStyles.Left | AnchorStyles.Bottom;
 
-        _helpButton.Location = new Point(688, 918);
+        _helpButton.Location = new Point(688, 1032);
         _helpButton.Size = new Size(180, 40);
         _helpButton.Text = "Справка…";
         _helpButton.Name = "helpButton";
@@ -329,7 +348,7 @@ public sealed class MainForm : Form
         _helpButton.Anchor = AnchorStyles.Right | AnchorStyles.Bottom;
 
         Controls.AddRange(new Control[] { _preview, _cropView, _videoPanel, _cameraPanel, _pathLabel, _mediaLabel, _mediaCombo,
-            _qualityLabel, _qualityCombo, _fxGroup, _hotkeyHint,
+            _qualityLabel, _qualityCombo, _fxGroup, _recGroup, _hotkeyHint,
             _mode, _openButton, _fullSizeButton, _saveButton, _reloadButton, _hostStatusLabel, _hostButton, _helpButton,
             _cropXLabel, _cropX, _cropYLabel, _cropY, _cropWLabel, _cropW, _cropHLabel, _cropH, _cropKeepAspect, _hintLabel });
 
@@ -606,6 +625,59 @@ public sealed class MainForm : Form
             _fxNoiseLevel, _fxScanlinesLevel, _fxRgbSplitLevel, _fxTrackingLevel,
             _fxBackend })
             c.Enabled = on;
+    }
+
+    // Ether recording group: file path + browse + start/stop + REC line +
+    // record-hotkey hint. Below the effects group (fx bottom = 912).
+    private void SetupRecGroup()
+    {
+        _recGroup.Location = new Point(12, 916);
+        _recGroup.Size = new Size(856, 110);
+        _recGroup.Text = "Запись эфира";
+        _recGroup.Name = "recGroup";
+        _recGroup.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+
+        _recPathLabel.Location = new Point(16, 28);
+        _recPathLabel.Size = new Size(45, 22);
+        _recPathLabel.Text = "Файл:";
+        _recPathLabel.TextAlign = ContentAlignment.MiddleLeft;
+        _recPathLabel.Name = "recPathLabel";
+
+        _recPathText.Location = new Point(65, 26);
+        _recPathText.Size = new Size(512, 24);
+        _recPathText.Name = "recPathText";
+        _recPathText.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+        _recPathText.TextChanged += (_, _) => MarkDirty();
+
+        _recBrowse.Location = new Point(587, 25);
+        _recBrowse.Size = new Size(100, 28);
+        _recBrowse.Text = "Обзор…";
+        _recBrowse.Name = "recBrowse";
+        _recBrowse.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        _recBrowse.Click += OnRecBrowseClicked;
+
+        _recButton.Location = new Point(697, 25);
+        _recButton.Size = new Size(143, 28);
+        _recButton.Text = "● Начать запись";
+        _recButton.Name = "recButton";
+        _recButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        _recButton.Click += OnRecButtonClicked;
+
+        _recStatus.Location = new Point(16, 57);
+        _recStatus.Size = new Size(824, 22);
+        _recStatus.Text = "Не записывается";
+        _recStatus.ForeColor = Color.DimGray;
+        _recStatus.Name = "recStatus";
+        _recStatus.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+
+        _recHint.Location = new Point(16, 79);
+        _recHint.Size = new Size(824, 22);
+        _recHint.ForeColor = Color.DimGray;
+        _recHint.Name = "recHint";
+        _recHint.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+
+        _recGroup.Controls.AddRange(new Control[] {
+            _recPathLabel, _recPathText, _recBrowse, _recButton, _recStatus, _recHint });
     }
 
     private static void SetupFxCheck(CheckBox box, string text, string name)
@@ -975,6 +1047,7 @@ public sealed class MainForm : Form
         _hostStatusLabel.ForeColor = running ? Color.ForestGreen : Color.DimGray;
         _hostButton.Text = running ? "Перезапустить хост" : "Запустить хост";
         UpdateHotkeyBorrowLabel(); // опрос transient borrow-состояния (1 с)
+        UpdateRecStatus(); // опрос transient состояния записи (1 с)
     }
 
     private void OnHostButtonClicked(object? sender, EventArgs e)
@@ -1062,6 +1135,8 @@ public sealed class MainForm : Form
         _cropKeepAspect.Checked = s.CropKeepAspect;
         UpdateHotkeyHint(s);
         UpdateHotkeyBorrowLabel();
+        _recPathText.Text = string.IsNullOrEmpty(s.RecordPath) ? DefaultRecPath() : s.RecordPath;
+        UpdateRecHint(s);
         _mode.SelectedIndex = s.ScaleMode switch
         {
             ScaleMode.Cover => 1,
@@ -1263,14 +1338,20 @@ public sealed class MainForm : Form
     // Mirrors the host HotkeyDisplay (C++): modifiers are RegisterHotKey bits
     // (1=Alt, 2=Ctrl, 4=Shift, 8=Win), vk is the Virtual-Key code. Garbage is
     // already normalised to Ctrl+Alt+V by Settings parsing on both sides.
-    private static string HotkeyDisplay(Settings s)
+    private static string HotkeyDisplay(Settings s) =>
+        HotkeyDisplayMods(s.HotkeyModifiers, s.HotkeyVk);
+
+    // Same for the record hotkey (settings recordHotkey, default Ctrl+Alt+R).
+    private static string RecordHotkeyDisplay(Settings s) =>
+        HotkeyDisplayMods(s.RecordHotkeyModifiers, s.RecordHotkeyVk);
+
+    private static string HotkeyDisplayMods(int mods, int vk)
     {
         var sb = new StringBuilder();
-        if ((s.HotkeyModifiers & 2) != 0) sb.Append("Ctrl+");
-        if ((s.HotkeyModifiers & 1) != 0) sb.Append("Alt+");
-        if ((s.HotkeyModifiers & 4) != 0) sb.Append("Shift+");
-        if ((s.HotkeyModifiers & 8) != 0) sb.Append("Win+");
-        var vk = s.HotkeyVk;
+        if ((mods & 2) != 0) sb.Append("Ctrl+");
+        if ((mods & 1) != 0) sb.Append("Alt+");
+        if ((mods & 4) != 0) sb.Append("Shift+");
+        if ((mods & 8) != 0) sb.Append("Win+");
         if ((vk >= '0' && vk <= '9') || (vk >= 'A' && vk <= 'Z'))
             sb.Append((char)vk);
         else if (vk >= 0x70 && vk <= 0x87)
@@ -1332,6 +1413,223 @@ public sealed class MainForm : Form
             const string suffix = " Сейчас идёт видео по горячей клавише.";
             if (_hotkeyHint.Text.EndsWith(suffix, StringComparison.Ordinal))
                 _hotkeyHint.Text = _hotkeyHint.Text[..^suffix.Length];
+        }
+    }
+
+    // Transient record state the host writes while recording
+    // (%APPDATA%\VCam\record_state.json, NOT settings.json — otherwise the
+    // settings watcher would loop start/stop). Missing file (or garbage) =
+    // not recording. Never throws.
+    private static string RecordStatePath =>
+        Path.Combine(Settings.DirectoryPath, "record_state.json");
+
+    private static string RecordCommandPath =>
+        Path.Combine(Settings.DirectoryPath, "record_command.json");
+
+    private static bool TryReadRecordState(out string path, out long started)
+    {
+        path = "";
+        started = 0;
+        string text;
+        try
+        {
+            if (!File.Exists(RecordStatePath)) return false;
+            text = File.ReadAllText(RecordStatePath);
+        }
+        catch
+        {
+            return false;
+        }
+        try
+        {
+            using var doc = JsonDocument.Parse(text);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return false;
+            var rec = root.TryGetProperty("recording", out var b) &&
+                      b.ValueKind == JsonValueKind.True;
+            if (!rec) return false;
+            if (root.TryGetProperty("path", out var p) && p.ValueKind == JsonValueKind.String)
+                path = p.GetString() ?? "";
+            if (root.TryGetProperty("started", out var st) && st.ValueKind == JsonValueKind.Number &&
+                st.TryGetInt64(out var unix))
+                started = unix;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    // Default record path (mirrors the host DefaultRecordPath): Videos folder
+    // + VCam_yyyyMMdd_HHmmss.mp4. The host generates the same when the box
+    // (and settings record.path) is empty.
+    private static string DefaultRecPath()
+    {
+        string videos;
+        try
+        {
+            videos = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos);
+        }
+        catch
+        {
+            videos = "";
+        }
+        if (string.IsNullOrEmpty(videos))
+            videos = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Videos");
+        return Path.Combine(videos, $"VCam_{DateTime.Now:yyyyMMdd_HHmmss}.mp4");
+    }
+
+    // Command UI -> host (start/stop): atomic tmp+move so the worker never
+    // reads a torn file. Throws with a readable message on failure.
+    // Relaxed escaping keeps Cyrillic paths as UTF-8: the host decodes
+    // \uXXXX as '?' but passes UTF-8 bytes through.
+    private static void WriteRecordCommand(string cmd, string path)
+    {
+        var cmdPath = RecordCommandPath;
+        var dir = Path.GetDirectoryName(cmdPath);
+        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+        var options = new JsonSerializerOptions
+        {
+            Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+        };
+        var payload = JsonSerializer.Serialize(new Dictionary<string, string>
+        {
+            ["cmd"] = cmd,
+            ["path"] = path,
+        }, options);
+        var tmp = cmdPath + ".tmp";
+        File.WriteAllText(tmp, payload, new UTF8Encoding(false));
+        File.Move(tmp, cmdPath, true);
+    }
+
+    private void UpdateRecHint(Settings s)
+    {
+        _recHint.Text = "Горячая клавиша записи: " + RecordHotkeyDisplay(s) +
+            " — старт/стоп (комбинация — в settings.json (recordHotkey)).";
+    }
+
+    // REC indicator, polled on the host timer tick (1 s): red dot + elapsed
+    // + file while recording, quiet line otherwise. Button text follows.
+    // Text is only reassigned on change (no flicker).
+    private void UpdateRecStatus()
+    {
+        if (TryReadRecordState(out var path, out var started))
+        {
+            _recRecording = true;
+            if (!string.IsNullOrEmpty(path)) _lastRecPath = path;
+            var el = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - started;
+            if (el < 0) el = 0;
+            var status = $"● REC {el / 60:D2}:{el % 60:D2} — {path}";
+            if (_recStatus.Text != status)
+            {
+                _recStatus.ForeColor = Color.Red;
+                _recStatus.Text = status;
+            }
+            const string stop = "■ Остановить";
+            if (_recButton.Text != stop) _recButton.Text = stop;
+        }
+        else
+        {
+            _recRecording = false;
+            var status = string.IsNullOrEmpty(_lastRecPath)
+                ? "Не записывается"
+                : $"Не записывается. Последний файл: {_lastRecPath}";
+            if (_recStatus.Text != status)
+            {
+                _recStatus.ForeColor = Color.DimGray;
+                _recStatus.Text = status;
+            }
+            const string start = "● Начать запись";
+            if (_recButton.Text != start) _recButton.Text = start;
+        }
+    }
+
+    private void OnRecBrowseClicked(object? sender, EventArgs e)
+    {
+        using var dlg = new SaveFileDialog();
+        dlg.Filter = "Видео MP4 (*.mp4)|*.mp4|Все файлы (*.*)|*.*";
+        dlg.DefaultExt = "mp4";
+        var cur = _recPathText.Text.Trim();
+        try
+        {
+            if (!string.IsNullOrEmpty(cur))
+            {
+                var dir = Path.GetDirectoryName(cur);
+                if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir))
+                    dlg.InitialDirectory = dir;
+                dlg.FileName = Path.GetFileName(cur);
+            }
+            else
+            {
+                dlg.InitialDirectory = Path.GetDirectoryName(DefaultRecPath());
+                dlg.FileName = Path.GetFileName(DefaultRecPath());
+            }
+        }
+        catch
+        {
+            // Диалог и так подставит разумное.
+        }
+        if (dlg.ShowDialog(this) == DialogResult.OK)
+            _recPathText.Text = dlg.FileName; // TextChanged -> MarkDirty
+    }
+
+    private void OnRecButtonClicked(object? sender, EventArgs e)
+    {
+        if (_recRecording)
+        {
+            try
+            {
+                WriteRecordCommand("stop", "");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, $"Не удалось остановить запись:\n{ex.Message}", Text,
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            return;
+        }
+        if (!IsHostRunning())
+        {
+            MessageBox.Show(this, "Хост не запущен — запись некому вести. Нажмите «Запустить хост».", Text,
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            UpdateHostStatus();
+            return;
+        }
+        var path = _recPathText.Text.Trim();
+        if (string.IsNullOrEmpty(path))
+        {
+            path = DefaultRecPath();
+            _recPathText.Text = path;
+        }
+        // Лёгкий Save только record.path поверх диска (без валидации
+        // source-секций из CollectSettingsFromControls — старт записи не
+        // должен упираться в незаполненный источник).
+        try
+        {
+            var s = Settings.Load();
+            s.RecordPath = path;
+            s.Save();
+            _dirty = false;
+            _syncRetries = 0;
+            _reloadButton.Text = "Обновить";
+            _lastAppliedText = ReadSettingsText();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Не удалось сохранить путь записи:\n{ex.Message}", Text,
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+        try
+        {
+            WriteRecordCommand("start", path);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Не удалось начать запись:\n{ex.Message}", Text,
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
@@ -1668,6 +1966,7 @@ public sealed class MainForm : Form
     private (Settings Settings, string OkText, bool Warn)? CollectSettingsFromControls()
     {
         var settings = Settings.Load();
+        settings.RecordPath = _recPathText.Text.Trim();
         settings.FxEnabled = _fxEnabled.Checked;
         settings.FxMirror = _fxMirror.Checked;
         settings.FxGrayscale = _fxGrayscale.Checked;

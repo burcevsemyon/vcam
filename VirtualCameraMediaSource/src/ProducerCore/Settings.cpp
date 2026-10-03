@@ -290,6 +290,17 @@ void ParseNewSchema(const std::string& json, Settings& s)
         int vk = JsonGetInt(sec, "vk", 0x56);
         s.hotkey.vk = (vk >= 0x08 && vk <= 0xFE) ? vk : 0x56;
     }
+    if (FindObjectRange(json, "recordHotkey", b, e)) {
+        std::string sec = json.substr(b, e - b);
+        // recordHotkey: те же правила, дефолт Ctrl+Alt+R.
+        int mods = JsonGetInt(sec, "modifiers", 3);
+        s.recordHotkey.modifiers = (mods >= 1 && mods <= 15) ? mods : 3;
+        int vk = JsonGetInt(sec, "vk", 0x52);
+        s.recordHotkey.vk = (vk >= 0x08 && vk <= 0xFE) ? vk : 0x52;
+    }
+    if (FindObjectRange(json, "record", b, e)) {
+        JsonGetString(json.substr(b, e - b), "path", s.record.path);
+    }
 }
 
 // Старый формат: корневые imagePath/mediaMode/mediaPath/scaleMode/crop*.
@@ -317,6 +328,9 @@ void ParseLegacySchema(const std::string& json, Settings& s)
     s.cam.capture = L"max"; // legacy без секции camera -> max
     s.hotkey.modifiers = 3; // legacy без секции hotkey -> Ctrl+Alt+V
     s.hotkey.vk = 0x56;
+    s.recordHotkey.modifiers = 3; // legacy без recordHotkey -> Ctrl+Alt+R
+    s.recordHotkey.vk = 0x52;
+    s.record.path.clear(); // legacy без секции record -> дефолт хоста (Videos\...)
     s.fx.enabled = true;    // legacy без секции effects -> мастер вкл, тоглы выкл
     s.fx.mirror = false;    // legacy без секции effects -> всё выкл
     s.fx.grayscale = false;
@@ -381,6 +395,9 @@ std::string Settings::Serialize() const
     out += "  \"quality\": \"" + EscapeJson(quality) + "\",\n";
     out += "  \"hotkey\": { \"modifiers\": " + std::to_string(hotkey.modifiers) +
            ", \"vk\": " + std::to_string(hotkey.vk) + " },\n";
+    out += "  \"recordHotkey\": { \"modifiers\": " + std::to_string(recordHotkey.modifiers) +
+           ", \"vk\": " + std::to_string(recordHotkey.vk) + " },\n";
+    out += "  \"record\": { \"path\": \"" + EscapeJson(record.path) + "\" },\n";
     out += "  \"effects\": { \"enabled\": ";
     out += fx.enabled ? "true" : "false";
     out += ", \"mirror\": ";

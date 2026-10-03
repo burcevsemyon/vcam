@@ -5,12 +5,14 @@
 
 #include <cstdarg>
 #include <cstdio>
+#include <ctime>
 #include <cwchar>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include "FrameWriter.h"
+#include "Mp4Recorder.h"
 #include "ProducerApi.h"
 #include "Settings.h"
 #include "SettingsWatcher.h"
@@ -31,6 +33,7 @@ constexpr wchar_t kTrayTip[] = L"VCam Video Stream Producer";
 constexpr UINT WM_TRAYICON = WM_APP + 1;
 constexpr UINT WM_REAPPLY_HOTKEY = WM_APP + 2; // worker заметил смену hotkey в settings
 constexpr UINT kHotkeyId = 1;
+constexpr UINT kRecHotkeyId = 2; // старт/стоп записи эфира
 constexpr UINT ID_STATUS = 101;
 constexpr UINT ID_SETTINGS = 102;
 constexpr UINT ID_PREVIEW = 103;
@@ -82,8 +85,9 @@ std::wstring HotkeyStatePath()
 }
 
 // Человекочитаемая комбинация для логов/UI ("Ctrl+Alt+V"). Неизвестный vk —
-// "VK 0x..".
-std::wstring HotkeyDisplay(const HotkeySection& hk)
+// "VK 0x..". Шаблон: HotkeySection и RecordHotkeySection (одинаковые поля).
+template <typename T>
+std::wstring HotkeyDisplay(const T& hk)
 {
     std::wstring s;
     if (hk.modifiers & MOD_CONTROL) s += L"Ctrl+";
@@ -138,21 +142,259 @@ void ClearHotkeyState()
     if (!path.empty()) DeleteFileW(path.c_str()); // нет файла — норма
 }
 
-// (Пере)регистрация глобального хоткея на окне трея. Вызывать только из
+// --- Запись эфира в .mp4 (секции record {path} + recordHotkey в settings).
+// Кадры — v1-кэш FrameWriter ПОСЛЕ ApplyFx (с эффектами), 720p RGB32→H.264.
+// Управление: UI пишет record_command.json (старт/стоп), хост пишет
+// record_state.json (идёт/путь/старт); оба transient в %APPDATA%\VCam.
+// Рекордер трогает ТОЛЬКО worker-поток (команда хоткея с main-потока идёт
+// через тот же command-файл — межпоточности нет).
+// g_hotkeyCs охраняет и g_recHotkey (состояние регистрации хоткеев).
+RecordHotkeySection g_recHotkey; // последний зарегистрированный (дефолт Ctrl+Alt+R)
+
+std::wstring RecordStatePath()
+{
+    wchar_t appdata[MAX_PATH] = {};
+    DWORD n = GetEnvironmentVariableW(L"APPDATA", appdata, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return {};
+    return std::wstring(appdata) + L"\\VCam\\record_state.json";
+}
+
+std::wstring RecordCommandPath()
+{
+    wchar_t appdata[MAX_PATH] = {};
+    DWORD n = GetEnvironmentVariableW(L"APPDATA", appdata, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return {};
+    return std::wstring(appdata) + L"\\VCam\\record_command.json";
+}
+
+// Путь записи по умолчанию: %USERPROFILE%\Videos\VCam_ГГГГММДД_ЧЧММСС.mp4.
+std::wstring DefaultRecordPath()
+{
+    wchar_t up[MAX_PATH] = {};
+    DWORD n = GetEnvironmentVariableW(L"USERPROFILE", up, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return {};
+    SYSTEMTIME st = {};
+    GetLocalTime(&st);
+    wchar_t name[64];
+    swprintf_s(name, L"VCam_%04u%02u%02u_%02u%02u%02u.mp4",
+               st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+    return std::wstring(up) + L"\\Videos\\" + name;
+}
+
+// wide → UTF-8 + экранирование для JSON-строки.
+std::string EscapeJsonUtf8(const std::wstring& w)
+{
+    std::string out;
+    if (w.empty()) return out;
+    int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), nullptr, 0,
+                                nullptr, nullptr);
+    if (n <= 0) return out;
+    std::string s((size_t)n, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), &s[0], n, nullptr, nullptr);
+    for (char c : s) {
+        switch (c) {
+        case '\\': out += "\\\\"; break;
+        case '"': out += "\\\""; break;
+        case '\n': out += "\\n"; break;
+        case '\r': out += "\\r"; break;
+        case '\t': out += "\\t"; break;
+        default:
+            if ((unsigned char)c < 0x20) {
+                char b[8];
+                snprintf(b, sizeof(b), "\\u%04x", (unsigned char)c);
+                out += b;
+            } else {
+                out += c;
+            }
+        }
+    }
+    return out;
+}
+
+void WriteRecordState(const std::wstring& path)
+{
+    std::wstring sp = RecordStatePath();
+    if (sp.empty()) return;
+    size_t slash = sp.find_last_of(L"\\/");
+    if (slash != std::wstring::npos) CreateDirectoryW(sp.substr(0, slash).c_str(), nullptr);
+    std::string utf8 = "{\"recording\":true,\"path\":\"";
+    utf8 += EscapeJsonUtf8(path);
+    utf8 += "\",\"started\":";
+    utf8 += std::to_string((long long)time(nullptr));
+    utf8 += "}\n";
+    HANDLE raw = CreateFileW(sp.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                             CREATE_ALWAYS, 0, nullptr);
+    if (raw == INVALID_HANDLE_VALUE) {
+        Log(L"[host] record state write failed: %lu", GetLastError());
+        return;
+    }
+    ATL::CHandle h(raw);
+    DWORD written = 0;
+    WriteFile(h, utf8.data(), (DWORD)utf8.size(), &written, nullptr);
+}
+
+void ClearRecordState()
+{
+    std::wstring sp = RecordStatePath();
+    if (!sp.empty()) DeleteFileW(sp.c_str()); // нет файла — норма
+}
+
+// Плоский скан JSON-кавыченной строки после ключа (с \" \\ \n \r \t \uXXXX).
+// Возвращает false если ключа/строки нет.
+bool ScanJsonString(const std::string& json, const char* key, std::wstring& value)
+{
+    std::string k = std::string("\"") + key + "\"";
+    size_t p = json.find(k);
+    if (p == std::string::npos) return false;
+    p = json.find(':', p + k.size());
+    if (p == std::string::npos) return false;
+    p++;
+    while (p < json.size() && (json[p] == ' ' || json[p] == '\t')) p++;
+    if (p >= json.size() || json[p] != '"') return false;
+    std::string val;
+    for (p++; p < json.size() && json[p] != '"'; p++) {
+        if (json[p] == '\\' && p + 1 < json.size()) {
+            char c = json[++p];
+            switch (c) {
+            case 'n': val += '\n'; break;
+            case 'r': val += '\r'; break;
+            case 't': val += '\t'; break;
+            case 'u':
+                if (p + 4 < json.size()) p += 4;
+                val += '?';
+                break;
+            default: val += c; break;
+            }
+        } else {
+            val += json[p];
+        }
+    }
+    if (p >= json.size()) return false;
+    if (val.empty()) { value.clear(); return true; }
+    int m = MultiByteToWideChar(CP_UTF8, 0, val.c_str(), (int)val.size(), nullptr, 0);
+    if (m <= 0) return false;
+    value.resize((size_t)m);
+    MultiByteToWideChar(CP_UTF8, 0, val.c_str(), (int)val.size(), &value[0], m);
+    return true;
+}
+
+bool ScanJsonInt(const std::string& json, const char* key, long long& value)
+{
+    std::string k = std::string("\"") + key + "\"";
+    size_t p = json.find(k);
+    if (p == std::string::npos) return false;
+    p = json.find(':', p + k.size());
+    if (p == std::string::npos) return false;
+    p++;
+    while (p < json.size() && (json[p] == ' ' || json[p] == '\t')) p++;
+    if (p >= json.size() || json[p] < '0' || json[p] > '9') return false;
+    long long v = 0;
+    for (; p < json.size() && json[p] >= '0' && json[p] <= '9'; p++) {
+        v = v * 10 + (json[p] - '0');
+        if (v > 99999999999LL) break;
+    }
+    value = v;
+    return true;
+}
+
+bool ReadSmallFile(const std::wstring& path, std::string& out)
+{
+    HANDLE raw = CreateFileW(path.c_str(), GENERIC_READ,
+                             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                             nullptr, OPEN_EXISTING, 0, nullptr);
+    if (raw == INVALID_HANDLE_VALUE) return false;
+    ATL::CHandle h(raw);
+    LARGE_INTEGER sz = {};
+    if (!GetFileSizeEx(h, &sz) || sz.QuadPart <= 0 || sz.QuadPart > 65536) return false;
+    out.resize((size_t)sz.QuadPart);
+    DWORD read = 0;
+    return ReadFile(h, &out[0], (DWORD)out.size(), &read, nullptr) && read == out.size();
+}
+
+// Идёт ли сейчас запись (для UI-индикатора, хоткея и трей-меню).
+bool TryReadRecordState(std::wstring& path, long long& started)
+{
+    path.clear();
+    started = 0;
+    std::wstring sp = RecordStatePath();
+    if (sp.empty()) return false;
+    std::string json;
+    if (!ReadSmallFile(sp, json)) return false;
+    if (json.find("\"recording\"") == std::string::npos) return false;
+    size_t p = json.find(':');
+    if (p == std::string::npos) return false;
+    size_t t = json.find("true", p);
+    if (t == std::string::npos) return false;
+    ScanJsonString(json, "path", path);
+    ScanJsonInt(json, "started", started);
+    return true;
+}
+
+// Команда UI/хоткея → worker: {"cmd":"start","path":"..."} / {"cmd":"stop"}.
+// Писатель — UI и main-поток хоткея; атомарно через tmp+move.
+bool WriteRecordCommand(const std::wstring& cmd, const std::wstring& path)
+{
+    std::wstring cp = RecordCommandPath();
+    if (cp.empty()) return false;
+    size_t slash = cp.find_last_of(L"\\/");
+    if (slash != std::wstring::npos) CreateDirectoryW(cp.substr(0, slash).c_str(), nullptr);
+    std::string utf8 = "{\"cmd\":\"";
+    for (wchar_t c : cmd) utf8 += (c < 0x80) ? (char)c : '?'; // start|stop — ascii
+    utf8 += "\",\"path\":\"" + EscapeJsonUtf8(path) + "\"}\n";
+    std::wstring tmp = cp + L".tmp";
+    HANDLE raw = CreateFileW(tmp.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                             CREATE_ALWAYS, 0, nullptr);
+    if (raw == INVALID_HANDLE_VALUE) return false;
+    {
+        ATL::CHandle h(raw);
+        DWORD written = 0;
+        if (!WriteFile(h, utf8.data(), (DWORD)utf8.size(), &written, nullptr) ||
+            written != utf8.size())
+            return false;
+    }
+    return MoveFileWithProgressW(tmp.c_str(), cp.c_str(), nullptr, nullptr,
+                                 MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+}
+
+// Читает и удаляет команду (только worker). true = команда была.
+bool ConsumeRecordCommand(std::wstring& cmd, std::wstring& path)
+{
+    cmd.clear();
+    path.clear();
+    std::wstring cp = RecordCommandPath();
+    if (cp.empty()) return false;
+    std::string json;
+    if (!ReadSmallFile(cp, json)) return false;
+    DeleteFileW(cp.c_str()); // прочитали — удаляем (повторов не будет)
+    if (!ScanJsonString(json, "cmd", cmd)) return false;
+    ScanJsonString(json, "path", path); // у stop пути может не быть — норма
+    return !cmd.empty();
+}
+
+// (Пере)регистрация глобальных хоткеев на окне трея. Вызывать только из
 // main-потока (владелец g_hwnd): из worker — PostMessage WM_REAPPLY_HOTKEY.
 void ApplyHotkeyRegistration()
 {
     if (!g_hwnd) return;
     UnregisterHotKey(g_hwnd, kHotkeyId); // не было — норма
+    UnregisterHotKey(g_hwnd, kRecHotkeyId);
     HotkeySection hk;
+    RecordHotkeySection rk;
     EnterCriticalSection(&g_hotkeyCs);
     hk = g_hotkey;
+    rk = g_recHotkey;
     LeaveCriticalSection(&g_hotkeyCs);
     if (RegisterHotKey(g_hwnd, kHotkeyId, (UINT)hk.modifiers, (UINT)hk.vk)) {
         Log(L"[host] hotkey registered: %s", HotkeyDisplay(hk).c_str());
     } else {
         Log(L"[host] hotkey RegisterHotKey(%s) failed: %lu - hotkey disabled until settings change",
             HotkeyDisplay(hk).c_str(), GetLastError());
+    }
+    if (RegisterHotKey(g_hwnd, kRecHotkeyId, (UINT)rk.modifiers, (UINT)rk.vk)) {
+        Log(L"[host] record hotkey registered: %s", HotkeyDisplay(rk).c_str());
+    } else {
+        Log(L"[host] record hotkey RegisterHotKey(%s) failed: %lu - record hotkey disabled until settings change",
+            HotkeyDisplay(rk).c_str(), GetLastError());
     }
 }
 
@@ -220,6 +462,35 @@ void OnHotkeyPressed()
     LeaveCriticalSection(&g_hotkeyCs);
     ClearHotkeyState();
     Log(L"[host] hotkey %s: early return video -> %s", display.c_str(), back.c_str());
+}
+
+// Нажатие хоткея записи (main-поток, WM_HOTKEY): только пишет команду —
+// исполняет worker (рекордер живёт только там). Тоггл по state-файлу.
+void OnRecordHotkeyPressed()
+{
+    std::wstring display;
+    EnterCriticalSection(&g_hotkeyCs);
+    display = HotkeyDisplay(g_recHotkey);
+    LeaveCriticalSection(&g_hotkeyCs);
+
+    std::wstring curPath;
+    long long curStarted = 0;
+    if (TryReadRecordState(curPath, curStarted)) {
+        if (!WriteRecordCommand(L"stop", L""))
+            Log(L"[host] record hotkey %s: stop command write failed", display.c_str());
+        else
+            Log(L"[host] record hotkey %s: stop requested", display.c_str());
+        return;
+    }
+    // Запись не идёт — старт: путь из settings (пусто = дефолт сгенерирует worker).
+    std::wstring want;
+    std::wstring sp = DefaultSettingsPath();
+    Settings s;
+    if (!sp.empty() && s.Load(sp)) want = s.record.path;
+    if (!WriteRecordCommand(L"start", want))
+        Log(L"[host] record hotkey %s: start command write failed", display.c_str());
+    else
+        Log(L"[host] record hotkey %s: start requested", display.c_str());
 }
 
 // %LOCALAPPDATA%\VCam\host.log — правда для пост-мортема после автозапуска
@@ -716,6 +987,11 @@ struct Machine {
     FrameWriter writer;
     bool writerOpen = false;
     std::wstring writerErr;
+    // Запись эфира в .mp4: кадры v1-кэша writer'а после ApplyFx (с эффектами).
+    // Смена источника (BeginSwitch) рекордер не трогает — тот же файл дальше.
+    Mp4Recorder rec;
+    bool recErrLogged = false;   // one-shot лог ошибки записи (fail-open)
+    uint64_t recLastDropped = 0; // последний залогированный счётчик дропов
     std::unique_ptr<IFrameSource> src;
     SourceConfig target;
     bool hasTarget = false;
@@ -768,6 +1044,85 @@ bool WriteOne(Machine& m)
         return m.writer.WriteFrameNative(m.buf.data(), (int)(m.frameW * 4),
                                          m.frameW, m.frameH);
     return m.writer.WriteFrame(m.buf.data(), (int)vcam::VCamStride);
+}
+
+// Старт записи (только worker): резолв пути команда → settings record.path →
+// дефолт Videos\. Успешный старт с не-settings путём дописывает его в settings
+// как дефолт на будущее (watcher-релоад без переоткрытия: record не в target).
+void StartRecording(Machine& m, const std::wstring& requested)
+{
+    if (m.rec.IsOpen()) {
+        Log(L"[host] record start ignored: already recording (%s)", m.rec.Path().c_str());
+        return;
+    }
+    std::wstring settingsPath = DefaultSettingsPath();
+    Settings cur;
+    bool haveSettings = !settingsPath.empty() && cur.Load(settingsPath);
+    std::wstring path = requested;
+    if (path.empty() && haveSettings) path = cur.record.path;
+    if (path.empty()) path = DefaultRecordPath();
+    if (path.empty()) {
+        Log(L"[host] record start: no path resolved (settings + default both empty)");
+        return;
+    }
+    std::wstring err;
+    if (!m.rec.Start(path, err)) {
+        // fail-open: эфир продолжается, в логе причина
+        Log(L"[host] record start failed: %s (%s)", path.c_str(), err.c_str());
+        return;
+    }
+    m.recErrLogged = false;
+    m.recLastDropped = 0;
+    WriteRecordState(path);
+    if (haveSettings && cur.record.path != path) {
+        cur.record.path = path;
+        if (cur.Save(settingsPath))
+            Log(L"[host] record: default path saved to settings");
+        else
+            Log(L"[host] record: settings save failed (recording continues)");
+    }
+    Log(L"[host] record started: %s", path.c_str());
+}
+
+// Стоп записи (только worker): Finalize обязателен, иначе mp4 битый.
+void StopRecording(Machine& m, const std::wstring& reason)
+{
+    if (!m.rec.IsOpen()) return;
+    std::wstring path = m.rec.Path();
+    uint64_t frames = m.rec.FramesWritten();
+    uint64_t dropped = m.rec.FramesDropped();
+    ULONGLONG ms = GetTickCount64() - m.rec.StartTickMs();
+    m.rec.Stop(); // Finalize + освобождение
+    ClearRecordState();
+    std::wstring err = m.rec.LastError();
+    Log(L"[host] record stopped (%s): %s (frames=%llu, %.1fs, dropped=%llu%s%s)",
+        reason.c_str(), path.c_str(), (unsigned long long)frames, ms / 1000.0,
+        (unsigned long long)dropped,
+        err.empty() ? L"" : L", ", err.empty() ? L"" : err.c_str());
+}
+
+// Один эфирный кадр в запись: вызывается после УСПЕШНОГО WriteOne, т.е. кэш
+// writer'а свежий и уже с эффектами. Ошибка записи — стоп записи, эфир живёт.
+void RecordEtherFrame(Machine& m)
+{
+    if (!m.rec.IsOpen()) return;
+    if (!m.writer.HasFrame720p()) return;
+    const auto& f = m.writer.LastFrame720p();
+    if (f.size() < Mp4Recorder::kFrameSize) return;
+    if (!m.rec.WriteFrame720p(f.data())) {
+        if (!m.recErrLogged) {
+            m.recErrLogged = true;
+            Log(L"[host] record write failed: %s - recording stopped, эфир продолжается (fail-open)",
+                m.rec.LastError().c_str());
+        }
+        StopRecording(m, L"ошибка записи");
+        return;
+    }
+    if (m.rec.FramesDropped() != m.recLastDropped) {
+        m.recLastDropped = m.rec.FramesDropped();
+        Log(L"[host] record: encoder lags, dropped=%llu (эфир не ждёт)",
+            (unsigned long long)m.recLastDropped);
+    }
 }
 
 // Эффекты хоста: после успешного RenderOne, перед WriteOne, над m.buf
@@ -900,6 +1255,7 @@ DWORD Step(Machine& m)
         if (RenderOne(m.src.get(), m, rerr)) {
             ApplyFx(m);
             bool written = WriteOne(m);
+            if (written) RecordEtherFrame(m);
             m.phase = Phase::Active;
             SetActiveStatus(m);
             Log(L"[host] active: type=%s path=%s%s [%s %ux%u quality=%s]",
@@ -921,8 +1277,10 @@ DWORD Step(Machine& m)
         std::wstring rerr;
         if (m.src && RenderOne(m.src.get(), m, rerr)) {
             ApplyFx(m);
-            if (WriteOne(m))
+            if (WriteOne(m)) {
+                RecordEtherFrame(m);
                 return 0;
+            }
             Sleep(kFrameMs);
             return 0;
         }
@@ -941,7 +1299,7 @@ DWORD Step(Machine& m)
                     if (RenderOne(cand.get(), m, rerr)) {
                         m.src = std::move(cand);
                         ApplyFx(m);
-                        WriteOne(m);
+                        if (WriteOne(m)) RecordEtherFrame(m);
                         m.phase = Phase::Active;
                         SetActiveStatus(m);
                         Log(L"[host] signal restored: type=%s path=%s [%s %ux%u quality=%s]",
@@ -983,11 +1341,28 @@ DWORD WINAPI WorkerProc(LPVOID)
         SetStatus(FallbackStatus(m.writerErr));
     }
 
+    // Зависшие transient-файлы записи от краша: single-instance гарантирует,
+    // что чужой записи нет — запись НЕ возобновляем, команду НЕ исполняем.
+    {
+        std::wstring cp = RecordCommandPath();
+        if (!cp.empty() && GetFileAttributesW(cp.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            DeleteFileW(cp.c_str());
+            Log(L"[host] record: stale command removed (not resuming after restart)");
+        }
+        std::wstring curPath;
+        long long curStarted = 0;
+        if (TryReadRecordState(curPath, curStarted)) {
+            ClearRecordState();
+            Log(L"[host] record: stale state removed (was: %s)", curPath.c_str());
+        }
+    }
+
     HANDLE waits[2] = { static_cast<HANDLE>(g_stop), static_cast<HANDLE>(g_dirty) };
     bool first = true;
     DWORD timeout = 0;
     const std::wstring settingsPath = DefaultSettingsPath();
     HotkeySection curHotkey; // последний виденный в settings (дефолт = Ctrl+Alt+V)
+    RecordHotkeySection curRecHotkey; // последний виденный (дефолт = Ctrl+Alt+R)
     for (;;) {
         DWORD r = WaitForMultipleObjects(2, waits, FALSE, timeout);
         if (r == WAIT_OBJECT_0) break;
@@ -1001,6 +1376,14 @@ DWORD WINAPI WorkerProc(LPVOID)
                 curHotkey = s.hotkey;
                 EnterCriticalSection(&g_hotkeyCs);
                 g_hotkey = s.hotkey;
+                LeaveCriticalSection(&g_hotkeyCs);
+                PostMessageW(g_hwnd, WM_REAPPLY_HOTKEY, 0, 0);
+            }
+            // Смена только хоткея записи — перерегистрация, без переоткрытия.
+            if (s.recordHotkey != curRecHotkey) {
+                curRecHotkey = s.recordHotkey;
+                EnterCriticalSection(&g_hotkeyCs);
+                g_recHotkey = s.recordHotkey;
                 LeaveCriticalSection(&g_hotkeyCs);
                 PostMessageW(g_hwnd, WM_REAPPLY_HOTKEY, 0, 0);
             }
@@ -1033,6 +1416,17 @@ DWORD WINAPI WorkerProc(LPVOID)
                     m.fx.noiseLevel, (int)m.fx.scanlines, m.fx.scanlinesLevel,
                     (int)m.fx.rgbSplit, m.fx.rgbSplitLevel, (int)m.fx.tracking,
                     m.fx.trackingLevel, (int)m.fx.vhs, m.fx.backend.c_str());
+            }
+            // record {path} / recordHotkey в operator== дают watcher-dirty, но
+            // переоткрытия не требуют (не входят в SourceConfig/quality/fx).
+        }
+        // Команды записи UI/хоткея — каждую итерацию (дешёвый опрос файла).
+        {
+            std::wstring rcmd, rpath;
+            if (ConsumeRecordCommand(rcmd, rpath)) {
+                if (rcmd == L"start") StartRecording(m, rpath);
+                else if (rcmd == L"stop") StopRecording(m, L"команда UI/хоткея");
+                else Log(L"[host] record: unknown command ignored");
             }
         }
         timeout = Step(m);
@@ -1069,6 +1463,9 @@ DWORD WINAPI WorkerProc(LPVOID)
         }
     }
 
+    // Запись обязана финализироваться (Finalize в Stop), иначе mp4 битый.
+    // До writer.Close: порядок не важен, но запись — до выхода точно.
+    if (m.rec.IsOpen()) StopRecording(m, L"выход хоста");
     CloseSource(m);
     m.writer.Close();
     vcam::effects::ShutdownEffects();
@@ -1094,6 +1491,24 @@ void ShowTrayMenu(HWND hwnd)
     if (borrowedMenu)
         status += L" [видео по хоткею, автовозврат → " +
                   (retMenu.empty() ? std::wstring(L"static") : retMenu) + L"]";
+    // Индикатор записи из transient state-файла (main-поток, рекордер не трогаем).
+    {
+        std::wstring recPath;
+        long long recStarted = 0;
+        if (TryReadRecordState(recPath, recStarted)) {
+            long long el = (long long)time(nullptr) - recStarted;
+            if (el < 0) el = 0;
+            wchar_t t[32];
+            swprintf_s(t, L"%02lld:%02lld", el / 60, el % 60);
+            size_t bs = recPath.find_last_of(L"\\/");
+            std::wstring fn = (bs == std::wstring::npos) ? recPath : recPath.substr(bs + 1);
+            status += L" [● REC ";
+            status += t;
+            status += L" ";
+            status += fn;
+            status += L"]";
+        }
+    }
     HMENU menu = CreatePopupMenu();
     AppendMenuW(menu, MF_STRING | MF_GRAYED | MF_DISABLED, ID_STATUS, status.c_str());
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
@@ -1121,6 +1536,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     case WM_HOTKEY:
         if (wp == kHotkeyId) OnHotkeyPressed();
+        else if (wp == kRecHotkeyId) OnRecordHotkeyPressed();
         return 0;
     case WM_REAPPLY_HOTKEY:
         ApplyHotkeyRegistration();
@@ -1247,13 +1663,14 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         return 1;
     }
 
-    // Стартовый хоткей из settings.json (мусор уже нормализован в дефолт
+    // Стартовые хоткеи из settings.json (мусор уже нормализован в дефолт
     // парсером Settings).
     {
         Settings initS;
         if (initS.Load(DefaultSettingsPath())) {
             EnterCriticalSection(&g_hotkeyCs);
             g_hotkey = initS.hotkey;
+            g_recHotkey = initS.recordHotkey;
             LeaveCriticalSection(&g_hotkeyCs);
         }
     }
@@ -1312,6 +1729,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     Shell_NotifyIconW(NIM_DELETE, &g_nid);
     Log(L"[host] tray icon removed");
     UnregisterHotKey(g_hwnd, kHotkeyId);
+    UnregisterHotKey(g_hwnd, kRecHotkeyId);
     DestroyWindow(g_hwnd);
     g_hwnd = nullptr;
 
