@@ -259,6 +259,7 @@ void ParseNewSchema(const std::string& json, Settings& s)
     }
     if (FindObjectRange(json, "effects", b, e)) {
         std::string sec = json.substr(b, e - b);
+        s.fx.enabled = JsonGetBool(sec, "enabled", true);
         s.fx.mirror = JsonGetBool(sec, "mirror", false);
         s.fx.grayscale = JsonGetBool(sec, "grayscale", false);
         s.fx.noise = JsonGetBool(sec, "noise", false);
@@ -305,6 +306,7 @@ void ParseLegacySchema(const std::string& json, Settings& s)
     s.video.path = mediaPath;
     s.quality = L"source"; // legacy без ключа quality -> source
     s.cam.capture = L"max"; // legacy без секции camera -> max
+    s.fx.enabled = true;    // legacy без секции effects -> мастер вкл, тоглы выкл
     s.fx.mirror = false;    // legacy без секции effects -> всё выкл
     s.fx.grayscale = false;
     s.fx.noise = false;
@@ -366,7 +368,9 @@ std::string Settings::Serialize() const
            "\", \"name\": \"" + EscapeJson(cam.name) +
            "\", \"capture\": \"" + EscapeJson(cam.capture) + "\" },\n";
     out += "  \"quality\": \"" + EscapeJson(quality) + "\",\n";
-    out += "  \"effects\": { \"mirror\": ";
+    out += "  \"effects\": { \"enabled\": ";
+    out += fx.enabled ? "true" : "false";
+    out += ", \"mirror\": ";
     out += fx.mirror ? "true" : "false";
     out += ", \"grayscale\": ";
     out += fx.grayscale ? "true" : "false";

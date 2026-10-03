@@ -1,0 +1,39 @@
+{
+  "source": {
+    "type": "static"
+  },
+  "static": {
+    "path": "",
+    "scaleMode": "fit",
+    "cropX": 0,
+    "cropY": 0,
+    "cropW": 0,
+    "cropH": 0,
+    "cropKeepAspect": false
+  },
+  "video": {
+    "path": ""
+  },
+  "camera": {
+    "id": "",
+    "name": "",
+    "capture": "max"
+  },
+  "quality": "source",
+  "effects": {
+    "enabled": true,
+    "mirror": false,
+    "grayscale": false,
+    "noise": false,
+    "scanlines": false,
+    "rgbsplit": false,
+    "tracking": false,
+    "vhs": true,
+    "noiseLevel": 100,
+    "scanlinesLevel": 100,
+    "rgbsplitLevel": 100,
+    "trackingLevel": 100,
+    "backend": "cpu"
+  },
+  "autostart": true
+}

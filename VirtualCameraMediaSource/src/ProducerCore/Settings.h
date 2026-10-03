@@ -41,6 +41,7 @@ struct CameraSection {
 };
 
 struct EffectsSection {
+    bool enabled = true;    // мастер-выключатель: false = хост скипает ApplyFx целиком
     bool mirror = false;    // зеркало по горизонтали
     bool grayscale = false; // Ч/Б (Rec.709 luma, исполнитель — GPUPixel)
     // Аналоговые помехи (исполнитель — CPU в GpuEffects.cpp, после GPU):
@@ -63,7 +64,8 @@ struct EffectsSection {
 
     bool operator==(const EffectsSection& o) const
     {
-        return mirror == o.mirror && grayscale == o.grayscale &&
+        return enabled == o.enabled && mirror == o.mirror &&
+                grayscale == o.grayscale &&
                noise == o.noise && scanlines == o.scanlines &&
                rgbSplit == o.rgbSplit && tracking == o.tracking &&
                vhs == o.vhs && noiseLevel == o.noiseLevel &&

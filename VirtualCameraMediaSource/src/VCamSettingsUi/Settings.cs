@@ -14,11 +14,11 @@ namespace VCamSettingsUi;
 //     "camera": { "id": "<MF symbolic link>", "name": "<friendly name>",
 ///                "capture": "max" | "720p" | "1080p" },
 //     "quality": "source" | "fixed720p",
-//     "effects": { "mirror": bool, "grayscale": bool, "noise": bool,
-//                "scanlines": bool, "rgbsplit": bool, "tracking": bool,
-//                "vhs": bool, "noiseLevel": int 0-100, "scanlinesLevel": int,
-//                "rgbsplitLevel": int, "trackingLevel": int,
-//                "backend": "cpu" | "frei0r" },
+//     "effects": { "enabled": bool, "mirror": bool, "grayscale": bool,
+//                "noise": bool, "scanlines": bool, "rgbsplit": bool,
+//                "tracking": bool, "vhs": bool, "noiseLevel": int 0-100,
+//                "scanlinesLevel": int, "rgbsplitLevel": int,
+//                "trackingLevel": int, "backend": "cpu" | "frei0r" },
 //     "autostart": bool }
 // Empty camera section (id and name both "") -> host shows NO SIGNAL until a
 // device is chosen. Load also accepts the legacy flat format
@@ -88,8 +88,10 @@ public sealed class Settings
     public Quality Quality { get; set; } = Quality.Source;
 
     // Section "effects" (host post-fx): mirrors EffectsSection on the C++ side.
-    // Legacy files without the section migrate to all-false.
+    // Legacy files without the section migrate to enabled + all-false.
+    // enabled = master switch (host skips ApplyFx entirely when false).
     // vhs = VHS preset (host ORs all four interferences at once).
+    public bool FxEnabled { get; set; } = true;
     public bool FxMirror { get; set; }
     public bool FxGrayscale { get; set; }
     public bool FxNoise { get; set; }
@@ -203,6 +205,7 @@ public sealed class Settings
 
                 if (root.TryGetProperty("effects", out var fx) && fx.ValueKind == JsonValueKind.Object)
                 {
+                    s.FxEnabled = GetBoolDefaultTrue(fx, "enabled");
                     s.FxMirror = GetBool(fx, "mirror");
                     s.FxGrayscale = GetBool(fx, "grayscale");
                     s.FxNoise = GetBool(fx, "noise");
@@ -292,6 +295,7 @@ public sealed class Settings
             ["quality"] = Quality == Quality.Fixed720p ? "fixed720p" : "source",
             ["effects"] = new Dictionary<string, object>
             {
+                ["enabled"] = FxEnabled,
                 ["mirror"] = FxMirror,
                 ["grayscale"] = FxGrayscale,
                 ["noise"] = FxNoise,
@@ -326,6 +330,11 @@ public sealed class Settings
 
     private static bool GetBool(JsonElement obj, string name) =>
         obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.True;
+
+    // Mirrors C++ JsonGetBool(..., default true) exactly: missing key or a
+    // non-bool token -> true; only an explicit false disables.
+    private static bool GetBoolDefaultTrue(JsonElement obj, string name) =>
+        !obj.TryGetProperty(name, out var v) || v.ValueKind != JsonValueKind.False;
 
     // Mirrors the C++ ClampLevel exactly: missing/non-numeric -> 100,
     // out-of-range -> clamp 0-100.

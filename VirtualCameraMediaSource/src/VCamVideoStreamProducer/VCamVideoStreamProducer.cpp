@@ -612,6 +612,7 @@ bool WriteOne(Machine& m)
 // false = fail-open: кадр без изменений.
 void ApplyFx(Machine& m)
 {
+    if (!m.fx.enabled) return; // мастер-выключатель: эффекты скипаются целиком
     vcam::effects::FxFlags f;
     f.mirror = m.fx.mirror;
     f.grayscale = m.fx.grayscale;
@@ -835,8 +836,8 @@ DWORD WINAPI WorkerProc(LPVOID)
             if (s.fx != m.fx) {
                 if (s.fx.backend != m.fx.backend) m.fxFreiLogged = false;
                 m.fx = s.fx;
-                Log(L"[host] effects: mirror=%d grayscale=%d noise=%d(%d) scanlines=%d(%d) rgbsplit=%d(%d) tracking=%d(%d) vhs=%d backend=%s",
-                    (int)m.fx.mirror, (int)m.fx.grayscale, (int)m.fx.noise,
+                Log(L"[host] effects: enabled=%d mirror=%d grayscale=%d noise=%d(%d) scanlines=%d(%d) rgbsplit=%d(%d) tracking=%d(%d) vhs=%d backend=%s",
+                    (int)m.fx.enabled, (int)m.fx.mirror, (int)m.fx.grayscale, (int)m.fx.noise,
                     m.fx.noiseLevel, (int)m.fx.scanlines, m.fx.scanlinesLevel,
                     (int)m.fx.rgbSplit, m.fx.rgbSplitLevel, (int)m.fx.tracking,
                     m.fx.trackingLevel, (int)m.fx.vhs, m.fx.backend.c_str());

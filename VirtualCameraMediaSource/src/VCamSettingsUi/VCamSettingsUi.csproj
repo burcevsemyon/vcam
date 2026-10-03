@@ -12,4 +12,22 @@
     <ApplicationIcon>vcam.ico</ApplicationIcon>
   </PropertyGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="profiles-seed\clean.json">
+      <LogicalName>profiles.seed.clean</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="profiles-seed\vhs.json">
+      <LogicalName>profiles.seed.vhs</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="profiles-seed\retro-bw.json">
+      <LogicalName>profiles.seed.retro-bw</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="profiles-seed\mirror.json">
+      <LogicalName>profiles.seed.mirror</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="profiles-seed\tracking.json">
+      <LogicalName>profiles.seed.tracking</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
 </Project>

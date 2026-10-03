@@ -53,6 +53,21 @@ public sealed class MainForm : Form
     private readonly ComboBox _fxBackend = new();
     private readonly Label _fxBackendLabel = new();
 
+    // Effects master switch (header row of the effects group): false = the
+    // host skips ApplyFx entirely. Unchecked grays out the rows below.
+    private readonly CheckBox _fxEnabled = new();
+
+    // Settings profiles (header row of the effects group): named snapshots
+    // (source + static/video/camera + effects + quality) stored as plain
+    // Settings files in %APPDATA%\VCam\profiles\. Apply = atomic write to
+    // settings.json (host hot-reload picks it up); the ComboBox selection
+    // alone never writes (explicit "Применить" only).
+    private readonly Label _profileLabel = new();
+    private readonly ComboBox _profileCombo = new();
+    private readonly Button _profileApply = new();
+    private readonly Button _profileSave = new();
+    private readonly Button _profileDelete = new();
+
     // Effects section container: GroupBox "Эффекты" with a header row (backend
     // switch) and a TableLayoutPanel (row = checkbox + slider + value).
     // Table layout (AutoSize checkbox/value columns) keeps all 7 checkboxes +
@@ -156,8 +171,8 @@ public sealed class MainForm : Form
         MaximizeBox = true;
         MinimizeBox = true;
         StartPosition = FormStartPosition.CenterScreen;
-        ClientSize = new Size(880, 910);
-        MinimumSize = new Size(900, 960);
+        ClientSize = new Size(880, 946);
+        MinimumSize = new Size(900, 996);
         Font = new Font("Segoe UI", 9f);
         try
         {
@@ -246,7 +261,7 @@ public sealed class MainForm : Form
 
         // Manual reload from settings.json (always available; also the way out
         // when the file changed externally while the form is dirty).
-        _reloadButton.Location = new Point(566, 860);
+        _reloadButton.Location = new Point(566, 896);
         _reloadButton.Size = new Size(116, 40);
         _reloadButton.Text = "Обновить";
         _reloadButton.Name = "reloadButton";
@@ -282,14 +297,14 @@ public sealed class MainForm : Form
         // sliders stretch (Dock Fill) — nothing overlaps at 100%/125% DPI.
         SetupFxGroup();
 
-        _hintLabel.Location = new Point(12, 862);
+        _hintLabel.Location = new Point(12, 898);
         _hintLabel.Size = new Size(548, 38);
         _hintLabel.ForeColor = Color.DimGray;
         _hintLabel.Text = $"Настройки: {Settings.FilePath} — хост VCam подхватит их автоматически (~1 с).";
         _hintLabel.Name = "hintLabel";
         _hintLabel.Anchor = AnchorStyles.Left | AnchorStyles.Bottom;
 
-        _helpButton.Location = new Point(688, 860);
+        _helpButton.Location = new Point(688, 896);
         _helpButton.Size = new Size(180, 40);
         _helpButton.Text = "Справка…";
         _helpButton.Name = "helpButton";
@@ -316,6 +331,8 @@ public sealed class MainForm : Form
 
         SubscribeDirtyTracking();
         LoadCurrentSettings();
+        RefreshProfileList();
+        UpdateFxEnabledState();
         UpdateLayout();
         InitSettingsSync();
     }
@@ -449,28 +466,72 @@ public sealed class MainForm : Form
     private void SetupFxGroup()
     {
         _fxGroup.Location = new Point(12, 592);
-        _fxGroup.Size = new Size(856, 262);
+        _fxGroup.Size = new Size(856, 298);
         _fxGroup.Text = "Эффекты";
         _fxGroup.Name = "fxGroup";
         _fxGroup.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
 
         _fxHeader.Dock = DockStyle.Top;
-        _fxHeader.Height = 34;
+        _fxHeader.Height = 70;
         _fxHeader.Name = "fxHeader";
 
+        // Row 1: profile picker (label + combo + apply/save/delete). The
+        // combo stretches; the buttons keep fixed widths on the right.
+        _profileLabel.AutoSize = true;
+        _profileLabel.Location = new Point(10, 9);
+        _profileLabel.Text = "Профиль:";
+        _profileLabel.Name = "profileLabel";
+
+        _profileCombo.Location = new Point(80, 5);
+        _profileCombo.Size = new Size(430, 28);
+        _profileCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+        _profileCombo.Name = "profileCombo";
+        _profileCombo.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+
+        _profileApply.Location = new Point(516, 4);
+        _profileApply.Size = new Size(100, 30);
+        _profileApply.Text = "Применить";
+        _profileApply.Name = "profileApply";
+        _profileApply.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        _profileApply.Click += OnProfileApplyClicked;
+
+        _profileSave.Location = new Point(622, 4);
+        _profileSave.Size = new Size(118, 30);
+        _profileSave.Text = "Сохранить…";
+        _profileSave.Name = "profileSave";
+        _profileSave.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        _profileSave.Click += OnProfileSaveClicked;
+
+        _profileDelete.Location = new Point(746, 4);
+        _profileDelete.Size = new Size(96, 30);
+        _profileDelete.Text = "Удалить";
+        _profileDelete.Name = "profileDelete";
+        _profileDelete.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        _profileDelete.Click += OnProfileDeleteClicked;
+
+        // Row 2: master switch + backend. Everything below grays out while
+        // the master is off (see UpdateFxEnabledState).
+        _fxEnabled.AutoSize = true;
+        _fxEnabled.Location = new Point(10, 41);
+        _fxEnabled.Text = "Эффекты включены";
+        _fxEnabled.Checked = true;
+        _fxEnabled.Name = "fxEnabled";
+
         _fxBackendLabel.AutoSize = true;
-        _fxBackendLabel.Location = new Point(10, 9);
+        _fxBackendLabel.Location = new Point(220, 43);
         _fxBackendLabel.Text = "Backend:";
         _fxBackendLabel.Name = "fxBackendLabel";
 
-        _fxBackend.Location = new Point(80, 5);
+        _fxBackend.Location = new Point(290, 39);
         _fxBackend.Size = new Size(110, 28);
         _fxBackend.DropDownStyle = ComboBoxStyle.DropDownList;
         _fxBackend.Items.AddRange(FxBackendNames);
         _fxBackend.SelectedIndex = 0;
         _fxBackend.Name = "fxBackend";
         _fxBackend.Anchor = AnchorStyles.Top | AnchorStyles.Left;
-        _fxHeader.Controls.AddRange(new Control[] { _fxBackendLabel, _fxBackend });
+        _fxHeader.Controls.AddRange(new Control[] { _profileLabel, _profileCombo,
+            _profileApply, _profileSave, _profileDelete,
+            _fxEnabled, _fxBackendLabel, _fxBackend });
 
         _fxTable.Dock = DockStyle.Fill;
         _fxTable.Name = "fxTable";
@@ -506,6 +567,19 @@ public sealed class MainForm : Form
 
         _fxGroup.Controls.Add(_fxTable);
         _fxGroup.Controls.Add(_fxHeader);
+    }
+
+    // Master switch gray-out: while the effects are disabled the rows below
+    // (and the backend picker) are read-only. Only sets Enabled (no Checked
+    // changes), so it never dirties the form and is safe under _suppressDirty.
+    private void UpdateFxEnabledState()
+    {
+        var on = _fxEnabled.Checked;
+        foreach (var c in new Control[] { _fxMirror, _fxGrayscale, _fxNoise,
+            _fxScanlines, _fxRgbSplit, _fxTracking, _fxVhs,
+            _fxNoiseLevel, _fxScanlinesLevel, _fxRgbSplitLevel, _fxTrackingLevel,
+            _fxBackend })
+            c.Enabled = on;
     }
 
     private static void SetupFxCheck(CheckBox box, string text, string name)
@@ -570,6 +644,9 @@ public sealed class MainForm : Form
         foreach (var c in new[] { _fxMirror, _fxGrayscale, _fxNoise, _fxScanlines,
                                   _fxRgbSplit, _fxTracking, _fxVhs, _cropKeepAspect })
             c.CheckedChanged += (_, _) => MarkDirty();
+        // Master switch: user edits set the dirty flag (suppressed during
+        // Load/reload); the gray-out below always follows the checkbox.
+        _fxEnabled.CheckedChanged += (_, _) => { UpdateFxEnabledState(); MarkDirty(); };
         // TrackBars are covered in SetupFxLevel (ValueChanged).
         _mode.SelectedIndexChanged += (_, _) => MarkDirty();
         _mediaCombo.SelectedIndexChanged += (_, _) => MarkDirty();
@@ -972,6 +1049,7 @@ public sealed class MainForm : Form
             _ => 0,
         };
         _qualityCombo.SelectedIndex = s.Quality == Quality.Fixed720p ? 1 : 0;
+        _fxEnabled.Checked = s.FxEnabled;
         _fxMirror.Checked = s.FxMirror;
         _fxGrayscale.Checked = s.FxGrayscale;
         _fxNoise.Checked = s.FxNoise;
@@ -1000,6 +1078,23 @@ public sealed class MainForm : Form
         if (!string.IsNullOrEmpty(s.StaticPath) && File.Exists(s.StaticPath))
         {
             SetSource(s.StaticPath, new Rectangle(s.CropX, s.CropY, s.CropW, s.CropH));
+        }
+        else
+        {
+            // Missing file (or an applied profile pointing at one): remember
+            // the path anyway so a later save writes exactly what is on disk,
+            // and drop the stale picture so the preview never lies.
+            _sourcePath = s.StaticPath ?? "";
+            _cropView.Image = null;
+            if (_sourceImage is not null)
+            {
+                _sourceImage.Dispose();
+                _sourceImage = null;
+            }
+            var oldPreview = _preview.Image;
+            _preview.Image = null;
+            oldPreview?.Dispose();
+            _fullSizeButton.Enabled = false;
         }
 
         // External change may rename the remembered camera: re-select by id
@@ -1416,10 +1511,20 @@ public sealed class MainForm : Form
 
     private void OnSaveClicked(object? sender, EventArgs e)
     {
-        // Start from what is on disk: autostart and the section that is not being
-        // edited right now stay untouched; "Сохранить" writes both sections + type.
-        // Effects checkboxes apply to every branch (host picks them up hot).
+        var built = CollectSettingsFromControls();
+        if (built is null) return;
+        TrySave(built.Value.Settings, built.Value.OkText, built.Value.Warn);
+    }
+
+    // Builds Settings from the controls (old OnSaveClicked body, unchanged
+    // mapping): starts from what is on disk so autostart and the section
+    // that is not being edited stay untouched; overwrites the edited
+    // section + type + effects + quality. Shared by "Сохранить настройки"
+    // and "Сохранить…" (profile). Null = validation failed (shown already).
+    private (Settings Settings, string OkText, bool Warn)? CollectSettingsFromControls()
+    {
         var settings = Settings.Load();
+        settings.FxEnabled = _fxEnabled.Checked;
         settings.FxMirror = _fxMirror.Checked;
         settings.FxGrayscale = _fxGrayscale.Checked;
         settings.FxNoise = _fxNoise.Checked;
@@ -1439,21 +1544,21 @@ public sealed class MainForm : Form
             {
                 MessageBox.Show(this, "Сначала выберите видеоролик.", Text,
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
+                return null;
             }
             if (!File.Exists(_videoPath))
             {
                 MessageBox.Show(this, "Файл ролика не найден — выберите его заново.", Text,
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
+                return null;
             }
 
             settings.VideoPath = _videoPath;
             settings.SourceType = SourceType.Video;
             settings.Quality = CurrentQuality;
-            TrySave(settings,
-                $"Сохранено: {Settings.FilePath} — хост подхватит source.type/video.path (~1 с).");
-            return;
+            return (settings,
+                $"Сохранено: {Settings.FilePath} — хост подхватит source.type/video.path (~1 с).",
+                false);
         }
 
         if (CurrentSourceType == SourceType.Camera)
@@ -1466,23 +1571,20 @@ public sealed class MainForm : Form
             settings.Quality = CurrentQuality;
             if (cam is null)
             {
-                TrySave(settings,
+                return (settings,
                     $"Сохранено: {Settings.FilePath} — камера НЕ выбрана, хост будет показывать NO SIGNAL, пока вы не выберете устройство.",
-                    warn: true);
+                    true);
             }
-            else
-            {
-                TrySave(settings,
-                    $"Сохранено: {Settings.FilePath} — хост подхватит source.type/camera (~1 с): {cam.Name}.");
-            }
-            return;
+            return (settings,
+                $"Сохранено: {Settings.FilePath} — хост подхватит source.type/camera (~1 с): {cam.Name}.",
+                false);
         }
 
         if (string.IsNullOrEmpty(_sourcePath))
         {
             MessageBox.Show(this, "Сначала выберите картинку.", Text,
                 MessageBoxButtons.OK, MessageBoxIcon.Information);
-            return;
+            return null;
         }
 
         settings.StaticPath = _sourcePath;
@@ -1499,8 +1601,9 @@ public sealed class MainForm : Form
         settings.SourceType = SourceType.Static;
         settings.Quality = CurrentQuality;
 
-        TrySave(settings,
-            $"Сохранено: {Settings.FilePath} — хост подхватит source.type/static (~1 с).");
+        return (settings,
+            $"Сохранено: {Settings.FilePath} — хост подхватит source.type/static (~1 с).",
+            false);
     }
 
     private void TrySave(Settings settings, string okText, bool warn = false)
@@ -1523,6 +1626,205 @@ public sealed class MainForm : Form
             MessageBox.Show(this, $"Не удалось сохранить настройки:\n{ex.Message}", Text,
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
+    }
+
+    // Rebuilds the profile ComboBox (seeded on first launch). Keeps the
+    // requested selection when possible, otherwise the previous one. Never
+    // writes settings.json, never dirties the form.
+    private void RefreshProfileList(string? select = null)
+    {
+        string? keep = select ?? _profileCombo.SelectedItem as string;
+        List<string> names;
+        try
+        {
+            Profiles.EnsureSeeded();
+            names = Profiles.List();
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"MainForm: profiles unavailable: {ex.Message}");
+            return;
+        }
+
+        var prev = _suppressDirty;
+        _suppressDirty = true;
+        try
+        {
+            _profileCombo.Items.Clear();
+            foreach (var n in names)
+                _profileCombo.Items.Add(n);
+            if (keep is not null && names.Contains(keep, StringComparer.Ordinal))
+                _profileCombo.SelectedItem = keep;
+            else if (names.Count > 0)
+                _profileCombo.SelectedIndex = 0;
+        }
+        finally
+        {
+            _suppressDirty = prev;
+        }
+    }
+
+    // Apply = atomic write of the profile file to settings.json (the host
+    // picks it up via hot-reload as usual), then the same control mapping
+    // as startup/reload. A corrupt profile aborts with a message and never
+    // touches the live settings.
+    private void OnProfileApplyClicked(object? sender, EventArgs e)
+    {
+        var name = _profileCombo.SelectedItem as string;
+        if (string.IsNullOrEmpty(name))
+        {
+            MessageBox.Show(this, "Нет профилей — сохраните текущий кнопкой «Сохранить…».", Text,
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        Settings s;
+        try
+        {
+            s = Profiles.LoadProfile(name);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Не удалось прочитать профиль «{name}»:\n{ex.Message}", Text,
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+
+        try
+        {
+            s.Save();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Не удалось применить профиль «{name}»:\n{ex.Message}", Text,
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+
+        _suppressDirty = true;
+        try
+        {
+            ApplySettingsToControls(s);
+            UpdateFxEnabledState();
+        }
+        finally
+        {
+            _suppressDirty = false;
+        }
+        _dirty = false;
+        _syncRetries = 0;
+        _reloadButton.Text = "Обновить";
+        _lastAppliedText = ReadSettingsText();
+        UpdateLayout();
+
+        var warn = (s.SourceType == SourceType.Static &&
+                    (string.IsNullOrEmpty(s.StaticPath) || !File.Exists(s.StaticPath)))
+                || (s.SourceType == SourceType.Video &&
+                    (string.IsNullOrEmpty(s.VideoPath) || !File.Exists(s.VideoPath)))
+                || (s.SourceType == SourceType.Camera &&
+                    string.IsNullOrEmpty(s.CameraId));
+        _hintLabel.ForeColor = warn ? Color.DarkGoldenrod : Color.ForestGreen;
+        _hintLabel.Text = warn
+            ? $"Профиль «{name}» применён, но его источник пуст — выберите файл/камеру и сохраните."
+            : $"Профиль «{name}» применён — хост подхватит его автоматически (~1 с).";
+    }
+
+    private void OnProfileSaveClicked(object? sender, EventArgs e)
+    {
+        var current = _profileCombo.SelectedItem as string ?? "";
+        var name = PromptProfileName(current);
+        if (name is null) return; // cancelled
+
+        var built = CollectSettingsFromControls();
+        if (built is null) return;
+
+        if (Profiles.Exists(name) &&
+            MessageBox.Show(this, $"Профиль «{name}» уже есть. Перезаписать?", Text,
+                MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+            return;
+
+        try
+        {
+            Profiles.SaveProfile(name, built.Value.Settings);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Не удалось сохранить профиль «{name}»:\n{ex.Message}", Text,
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+
+        RefreshProfileList(name);
+        _hintLabel.ForeColor = Color.ForestGreen;
+        _hintLabel.Text = $"Профиль «{name}» сохранён. Применение — кнопкой «Применить».";
+    }
+
+    private void OnProfileDeleteClicked(object? sender, EventArgs e)
+    {
+        var name = _profileCombo.SelectedItem as string;
+        if (string.IsNullOrEmpty(name)) return;
+        if (MessageBox.Show(this, $"Удалить профиль «{name}»?", Text,
+                MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+            return;
+
+        try
+        {
+            Profiles.DeleteProfile(name);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Не удалось удалить профиль «{name}»:\n{ex.Message}", Text,
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+
+        RefreshProfileList();
+        _hintLabel.ForeColor = Color.DimGray;
+        _hintLabel.Text = $"Профиль «{name}» удалён.";
+    }
+
+    // Minimal name prompt (WinForms has no built-in input box): modal dialog
+    // with a TextBox, OK/Cancel. Null = cancelled.
+    private string? PromptProfileName(string initial)
+    {
+        using var dlg = new Form
+        {
+            Text = "Сохранить профиль",
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            StartPosition = FormStartPosition.CenterParent,
+            ClientSize = new Size(360, 110),
+            MaximizeBox = false,
+            MinimizeBox = false,
+            ShowInTaskbar = false,
+        };
+        var box = new TextBox
+        {
+            Location = new Point(12, 12),
+            Size = new Size(336, 28),
+            Text = initial,
+            MaxLength = 80,
+        };
+        box.SelectAll();
+        var ok = new Button
+        {
+            Location = new Point(192, 56),
+            Size = new Size(75, 32),
+            Text = "OK",
+            DialogResult = DialogResult.OK,
+        };
+        var cancel = new Button
+        {
+            Location = new Point(273, 56),
+            Size = new Size(75, 32),
+            Text = "Отмена",
+            DialogResult = DialogResult.Cancel,
+        };
+        dlg.Controls.AddRange(new Control[] { box, ok, cancel });
+        dlg.AcceptButton = ok;
+        dlg.CancelButton = cancel;
+        if (dlg.ShowDialog(this) != DialogResult.OK) return null;
+        var clean = Profiles.Sanitize(box.Text);
+        return string.IsNullOrEmpty(clean) ? null : clean;
     }
 
     protected override void OnFormClosed(FormClosedEventArgs e)
