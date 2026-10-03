@@ -185,6 +185,10 @@ public sealed class MainForm : Form
     private readonly System.Windows.Forms.Timer _syncTimer = new();
     private bool _dirty;            // user edited controls after Load/Save
     private bool _suppressDirty;    // programmatic control updates (Load/reload)
+    // В3: трогал ли пользователь выбор медиа после последнего Apply.
+    // Нужен, чтобы Save не схлопывал неизвестный будущий source.type в
+    // "static", когда комбо показывает fallback-вид (см. Collect).
+    private bool _mediaChangedByUser;
     private string _lastAppliedText = ""; // file snapshot the controls reflect
     private int _syncRetries;
 
@@ -367,7 +371,11 @@ public sealed class MainForm : Form
         UpdateHostStatus();
 
         _mode.SelectedIndexChanged += (_, _) => UpdateLayout();
-        _mediaCombo.SelectedIndexChanged += (_, _) => UpdateLayout();
+        _mediaCombo.SelectedIndexChanged += (_, _) =>
+        {
+            if (!_suppressDirty) _mediaChangedByUser = true; // В3: явный выбор медиа
+            UpdateLayout();
+        };
         _cameraCombo.SelectedIndexChanged += (_, _) => UpdateCameraPanel();
         _cameraRefresh.Click += OnCameraRefreshClicked;
         _controlsPanel.StatusMessage += UpdateCameraStatus;
@@ -657,6 +665,9 @@ public sealed class MainForm : Form
         _recPathText.Size = new Size(512, 24);
         _recPathText.Name = "recPathText";
         _recPathText.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+        // В4: пусто = дефолт хоста (Videos\VCam_*.mp4 в момент старта);
+        // пример виден серым до первого ApplySettingsToControls.
+        _recPathText.PlaceholderText = DefaultRecPath();
         _recPathText.TextChanged += (_, _) => MarkDirty();
 
         _recBrowse.Location = new Point(587, 25);
@@ -1060,7 +1071,9 @@ public sealed class MainForm : Form
         UpdateRecStatus(); // опрос transient состояния записи (1 с)
     }
 
-    private void OnHostButtonClicked(object? sender, EventArgs e)
+    // В1: ожидание graceful-выхода (до 5 с) — в Task.Run, форму не вешает:
+    // кнопка disabled + «перезапускается…», продолжение на UI-потоке.
+    private async void OnHostButtonClicked(object? sender, EventArgs e)
     {
         if (IsHostRunning())
         {
@@ -1085,11 +1098,18 @@ public sealed class MainForm : Form
 
             // Перезапуск: дождаться graceful-выхода (обычно ~0.2 с), иначе новый
             // экземпляр упрётся в single-instance мьютекс и покажет «уже запущен».
+            _hostButton.Enabled = false;
             _hostStatusLabel.Text = "Хост: перезапускается…";
-            var deadline = Environment.TickCount64 + 5000;
-            while (IsHostRunning() && Environment.TickCount64 < deadline)
-                Thread.Sleep(100);
-            if (IsHostRunning())
+            var exited = await Task.Run(() =>
+            {
+                var deadline = Environment.TickCount64 + 5000;
+                while (IsHostRunning() && Environment.TickCount64 < deadline)
+                    Thread.Sleep(100);
+                return !IsHostRunning();
+            });
+            if (IsDisposed) return;
+            _hostButton.Enabled = true;
+            if (!exited)
             {
                 MessageBox.Show(this, "Хост не завершился за 5 с — перезапуск отменён.", Text,
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -1142,10 +1162,17 @@ public sealed class MainForm : Form
     // reload. Must run under _suppressDirty (programmatic sets, not edits).
     private void ApplySettingsToControls(Settings s)
     {
+        // В3: программная синхронизация — не пользовательский выбор.
+        _mediaChangedByUser = false;
         _cropKeepAspect.Checked = s.CropKeepAspect;
         UpdateHotkeyHint(s);
         UpdateHotkeyBorrowLabel();
-        _recPathText.Text = string.IsNullOrEmpty(s.RecordPath) ? DefaultRecPath() : s.RecordPath;
+        // В4: пустой record.path показываем пустым боксом (имя-файл генерится
+        // только в момент старта записи хостом), пример — серым плейсхолдером.
+        // Раньше сюда подставлялся DefaultRecPath() с текущим timestamp и он
+        // же сохранялся в settings — файл запоминал мусорное имя.
+        _recPathText.Text = s.RecordPath ?? "";
+        _recPathText.PlaceholderText = DefaultRecPath();
         UpdateRecHint(s);
         _mode.SelectedIndex = s.ScaleMode switch
         {
@@ -1182,8 +1209,11 @@ public sealed class MainForm : Form
         _fxBackend.SelectedIndex = s.FxBackend == "frei0r" ? 1 : 0;
         _mediaCombo.SelectedIndex = s.SourceType switch
         {
-            SourceType.Video => 1,
-            SourceType.Camera => 2,
+            // В3: неизвестный будущий токен показываем как static (комбо его
+            // не умеет), но в файл он вернётся verbatim (см. Collect +
+            // _mediaChangedByUser) — как C++ хранит verbatim.
+            SourceTypes.Video => 1,
+            SourceTypes.Camera => 2,
             _ => 0,
         };
 
@@ -1225,11 +1255,11 @@ public sealed class MainForm : Form
         _ => ScaleMode.Fit,
     };
 
-    private SourceType CurrentSourceType => _mediaCombo.SelectedIndex switch
+    private string CurrentSourceType => _mediaCombo.SelectedIndex switch
     {
-        1 => SourceType.Video,
-        2 => SourceType.Camera,
-        _ => SourceType.Static,
+        1 => SourceTypes.Video,
+        2 => SourceTypes.Camera,
+        _ => SourceTypes.Static,
     };
 
     private Quality CurrentQuality => _qualityCombo.SelectedIndex == 1 ? Quality.Fixed720p : Quality.Source;
@@ -1248,8 +1278,8 @@ public sealed class MainForm : Form
     // Single source of truth for control visibility (media mode x scale mode).
     private void UpdateLayout()
     {
-        bool video = CurrentSourceType == SourceType.Video;
-        bool camera = CurrentSourceType == SourceType.Camera;
+        bool video = CurrentSourceType == SourceTypes.Video;
+        bool camera = CurrentSourceType == SourceTypes.Camera;
         bool crop = !video && !camera && CurrentMode == ScaleMode.Crop;
 
         _videoPanel.Visible = video;
@@ -1383,11 +1413,13 @@ public sealed class MainForm : Form
     }
 
     // Always-visible hotkey line: current combination + what it does.
+    // В5: автовозврат — и по концу ролика, и при обрыве (битый файл уводит
+    // хост в fallback — borrow снимается там же, а не висит вечно).
     private void UpdateHotkeyHint(Settings s)
     {
         _hotkeyHint.Text = "Горячая клавиша: " + HotkeyDisplay(s) +
             " — показать видео один раз (повторно — вернуться сразу; " +
-            "после конца ролика — автовозврат). Комбинация — в settings.json (hotkey).";
+            "после конца ролика — автовозврат, при битом файле — возврат сразу). Комбинация — в settings.json (hotkey).";
     }
 
     // Borrowed-video indicator, polled (host timer tick + panel updates): while
@@ -1474,6 +1506,9 @@ public sealed class MainForm : Form
     // Default record path (mirrors the host DefaultRecordPath): Videos folder
     // + VCam_yyyyMMdd_HHmmss.mp4. The host generates the same when the box
     // (and settings record.path) is empty.
+    // В7: единый резолв — Environment.SpecialFolder.MyVideos это и есть
+    // SHGetKnownFolderPath(FOLDERID_Videos) (как теперь в хосте); fallback
+    // %USERPROFILE%\Videos — та же цепочка, что у хоста.
     private static string DefaultRecPath()
     {
         string videos;
@@ -1607,12 +1642,11 @@ public sealed class MainForm : Form
             UpdateHostStatus();
             return;
         }
+        // В4: пустой бокс = пустая строка (дефолт хоста), имя генерится только
+        // в момент старта записи (хост StartRecording резолвит пусто в
+        // Videos\VCam_*.mp4 и сам дописывает его в settings). Раньше UI тут
+        // изобретал timestamp-имя и клал его в бокс+settings заранее.
         var path = _recPathText.Text.Trim();
-        if (string.IsNullOrEmpty(path))
-        {
-            path = DefaultRecPath();
-            _recPathText.Text = path;
-        }
         // Лёгкий Save только record.path поверх диска (без валидации
         // source-секций из CollectSettingsFromControls — старт записи не
         // должен упираться в незаполненный источник).
@@ -1665,78 +1699,105 @@ public sealed class MainForm : Form
 
     // First switch to the camera source (also at startup when the saved type is
     // "camera"): run the CLI enumeration once; failures never crash the form.
+    // В1: запуск — fire-and-forget (форма не висит, список подъедет сам).
     private void EnsureCameraList()
     {
         if (_cameraListLoaded) return;
-        LoadCameraList();
+        _cameraListLoaded = true;
+        _ = LoadCameraListAsync();
     }
+
+    private bool _cameraLoading; // реентрантность кнопки «Обновить список»
 
     // "VCamProducerCli list-devices": stdout = rows "<id>\t<name>" (UTF-8),
     // the header goes to stderr and is ignored by the parser. Exit code is
     // always 0 (including zero devices).
-    private void LoadCameraList()
+    // В1: было синхронно в UI-потоке (WaitForExit 8 с вешал форму).
+    // Теперь CLI крутится в Task.Run, форма жива: кнопка disabled + статус
+    // «получение…», результат применяется обратно на UI-потоке.
+    private async Task LoadCameraListAsync()
     {
-        _cameraListLoaded = true;
-        _cameraItems.Clear();
-        string status;
-
-        _cliExe ??= FindCliExe();
-        if (_cliExe is null)
+        if (_cameraLoading) return;
+        _cameraLoading = true;
+        _cameraRefresh.Enabled = false;
+        _cameraListStatus = "Получение списка камер…";
+        UpdateCameraStatus(null);
+        try
         {
-            status = "VCamProducerCli.exe не найден: искал рядом с VCamSettingsUi.exe и в " +
-                     "<корень репозитория>\\build\\x64\\Release — список камер недоступен, выберите «Обновить список» после установки.";
-        }
-        else
-        {
-            try
+            _cliExe ??= FindCliExe();
+            if (_cliExe is null)
             {
-                using var proc = Process.Start(new ProcessStartInfo(_cliExe)
+                _cameraListStatus = "VCamProducerCli.exe не найден: искал рядом с VCamSettingsUi.exe и в " +
+                    "<корень репозитория>\\build\\x64\\Release — список камер недоступен, выберите «Обновить список» после установки.";
+            }
+            else
+            {
+                var cli = _cliExe;
+                var (ok, stdout, stderr, fail) = await Task.Run(() => RunListDevices(cli));
+                if (IsDisposed) return;
+                if (!ok)
                 {
-                    Arguments = "list-devices",
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    StandardOutputEncoding = Encoding.UTF8,
-                    StandardErrorEncoding = Encoding.UTF8,
-                    CreateNoWindow = true,
-                    WorkingDirectory = Path.GetDirectoryName(_cliExe) ?? AppContext.BaseDirectory,
-                });
-                if (proc is null)
-                {
-                    status = "Не удалось запустить VCamProducerCli — список камер недоступен.";
+                    _cameraListStatus = fail;
                 }
                 else
                 {
-                    // Drain both pipes on background tasks so a full stderr buffer
-                    // cannot deadlock the wait below.
-                    var outTask = proc.StandardOutput.ReadToEndAsync();
-                    var errTask = proc.StandardError.ReadToEndAsync();
-                    var exited = proc.WaitForExit(8000);
-                    if (!exited)
-                    {
-                        try { proc.Kill(); } catch { /* already gone */ }
-                        status = "VCamProducerCli list-devices не завершился за 8 с — список не получен.";
-                    }
-                    else
-                    {
-                        ParseListDevices(outTask.Result);
-                        var err = errTask.Result.Trim();
-                        status = _cameraItems.Count > 0
-                            ? $"Камер найдено: {_cameraItems.Count}."
-                            : "Камеры не найдены (0)." + (err.Length > 0 ? $" {err}" : "");
-                    }
+                    _cameraItems.Clear();
+                    ParseListDevices(stdout);
+                    var err = stderr.Trim();
+                    _cameraListStatus = _cameraItems.Count > 0
+                        ? $"Камер найдено: {_cameraItems.Count}."
+                        : "Камеры не найдены (0)." + (err.Length > 0 ? $" {err}" : "");
                 }
             }
-            catch (Exception ex)
+        }
+        finally
+        {
+            _cameraLoading = false;
+            if (!IsDisposed)
             {
-                status = $"Не удалось получить список камер: {ex.Message}";
+                _cameraRefresh.Enabled = true;
+                FillCameraCombo();
+                UpdateCameraStatus(null);
+                UpdateCameraPanel();
             }
         }
+    }
 
-        FillCameraCombo();
-        _cameraListStatus = status;
-        UpdateCameraStatus(null);
-        UpdateCameraPanel();
+    // Синхронный прогон CLI (только из Task.Run, НЕ из UI-потока):
+    // дренаж обоих пайпов + WaitForExit(8 с) как раньше.
+    private static (bool Ok, string Stdout, string Stderr, string Fail) RunListDevices(string cliExe)
+    {
+        try
+        {
+            using var proc = Process.Start(new ProcessStartInfo(cliExe)
+            {
+                Arguments = "list-devices",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8,
+                CreateNoWindow = true,
+                WorkingDirectory = Path.GetDirectoryName(cliExe) ?? AppContext.BaseDirectory,
+            });
+            if (proc is null)
+                return (false, "", "", "Не удалось запустить VCamProducerCli — список камер недоступен.");
+            // Drain both pipes on background tasks so a full stderr buffer
+            // cannot deadlock the wait below.
+            var outTask = proc.StandardOutput.ReadToEndAsync();
+            var errTask = proc.StandardError.ReadToEndAsync();
+            var exited = proc.WaitForExit(8000);
+            if (!exited)
+            {
+                try { proc.Kill(); } catch { /* already gone */ }
+                return (false, "", "", "VCamProducerCli list-devices не завершился за 8 с — список не получен.");
+            }
+            return (true, outTask.Result, errTask.Result, "");
+        }
+        catch (Exception ex)
+        {
+            return (false, "", "", $"Не удалось получить список камер: {ex.Message}");
+        }
     }
 
     private void ParseListDevices(string stdout)
@@ -1822,22 +1883,15 @@ public sealed class MainForm : Form
         help.ShowDialog(this);
     }
 
-    private void OnCameraRefreshClicked(object? sender, EventArgs e)
+    // В1: асинхронно (см. LoadCameraListAsync) — форму не вешает.
+    private async void OnCameraRefreshClicked(object? sender, EventArgs e)
     {
-        _cameraRefresh.Enabled = false;
-        try
-        {
-            LoadCameraList();
-        }
-        finally
-        {
-            _cameraRefresh.Enabled = true;
-        }
+        await LoadCameraListAsync();
     }
 
     private void OnOpenClicked(object? sender, EventArgs e)
     {
-        if (CurrentSourceType == SourceType.Video)
+        if (CurrentSourceType == SourceTypes.Video)
         {
             using var dlg = new OpenFileDialog
             {
@@ -2031,7 +2085,7 @@ public sealed class MainForm : Form
         settings.FxTrackingLevel = _fxTrackingLevel.Value;
         settings.FxBackend = CurrentBackend;
 
-        if (CurrentSourceType == SourceType.Video)
+        if (CurrentSourceType == SourceTypes.Video)
         {
             if (string.IsNullOrEmpty(_videoPath))
             {
@@ -2047,20 +2101,20 @@ public sealed class MainForm : Form
             }
 
             settings.VideoPath = _videoPath;
-            settings.SourceType = SourceType.Video;
+            settings.SourceType = SourceTypes.Video;
             settings.Quality = CurrentQuality;
             return (settings,
                 $"Сохранено: {Settings.FilePath} — хост подхватит source.type/video.path (~1 с).",
                 false);
         }
 
-        if (CurrentSourceType == SourceType.Camera)
+        if (CurrentSourceType == SourceTypes.Camera)
         {
             var cam = _cameraCombo.SelectedItem as CameraItem;
             settings.CameraId = cam?.Id ?? "";
             settings.CameraName = cam?.Name ?? "";
             settings.Capture = CurrentCapture;
-            settings.SourceType = SourceType.Camera;
+            settings.SourceType = SourceTypes.Camera;
             settings.Quality = CurrentQuality;
             if (cam is null)
             {
@@ -2091,7 +2145,13 @@ public sealed class MainForm : Form
             settings.CropH = sel.Height;
             settings.CropKeepAspect = _cropKeepAspect.Checked;
         }
-        settings.SourceType = SourceType.Static;
+        // В3: комбо показывает static и для неизвестного будущего токена.
+        // Пока пользователь явно не трогал выбор медиа — храним токен verbatim
+        // (как C++), иначе любой Save схлопнул бы будущее в "static".
+        // Явный выбор (в т.ч. возврат на «статичная картинка») пишет выбор.
+        if (CurrentSourceType != SourceTypes.Static || _mediaChangedByUser ||
+            SourceTypes.IsKnown(settings.SourceType))
+            settings.SourceType = CurrentSourceType;
         settings.Quality = CurrentQuality;
 
         return (settings,

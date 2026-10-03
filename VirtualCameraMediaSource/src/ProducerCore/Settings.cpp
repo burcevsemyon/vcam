@@ -43,15 +43,52 @@ bool ReadUtf8File(const std::wstring& path, std::string& out)
     return ok && read == out.size();
 }
 
+// B6: атомарная запись через tmp+move (как host WriteRecordCommand):
+// конкурентный читатель (UI/host-рид) видит старый или новый файл целиком,
+// рваного truncate-read нет. Плюс retry при sharing-violation — вторая
+// сторона (C# Save тоже tmp+move) может держать файл в момент move.
 bool WriteUtf8FileNoBom(const std::wstring& path, const std::string& content)
 {
-    HANDLE raw = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
-        CREATE_ALWAYS, 0, nullptr);
-    if (raw == INVALID_HANDLE_VALUE) return false;
-    ATL::CHandle h(raw);
-    DWORD written = 0;
-    BOOL ok = WriteFile(h, content.data(), (DWORD)content.size(), &written, nullptr);
-    return ok && written == content.size();
+    // Уникальный tmp на запись (хост vs UI пишут одновременно; плюс
+    // g_settingsCs сериализует только потоки хоста): общий фиксированный tmp
+    // сталкивал писателей sharing-violation.
+    wchar_t uniq[48];
+    swprintf(uniq, 48, L".%lu.%llu.tmp", GetCurrentProcessId(),
+             (unsigned long long)GetTickCount64());
+    std::wstring tmp = path + uniq;
+    for (int attempt = 0;; ++attempt) {
+        HANDLE raw = CreateFileW(tmp.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+            CREATE_ALWAYS, 0, nullptr);
+        if (raw == INVALID_HANDLE_VALUE) {
+            DWORD e = GetLastError();
+            if (attempt >= 2 || (e != ERROR_SHARING_VIOLATION &&
+                                 e != ERROR_ACCESS_DENIED && e != ERROR_LOCK_VIOLATION))
+                return false;
+            Sleep(50);
+            continue;
+        }
+        ATL::CHandle h(raw);
+        DWORD written = 0;
+        BOOL ok = WriteFile(h, content.data(), (DWORD)content.size(), &written, nullptr);
+        h.Close();
+        if (!ok || written != content.size()) {
+            DeleteFileW(tmp.c_str());
+            return false;
+        }
+        break;
+    }
+    for (int attempt = 0;; ++attempt) {
+        if (MoveFileWithProgressW(tmp.c_str(), path.c_str(), nullptr, nullptr,
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+            return true;
+        DWORD e = GetLastError();
+        if (attempt >= 2 || (e != ERROR_SHARING_VIOLATION &&
+                             e != ERROR_ACCESS_DENIED && e != ERROR_LOCK_VIOLATION)) {
+            DeleteFileW(tmp.c_str());
+            return false;
+        }
+        Sleep(50);
+    }
 }
 
 void SkipWs(const std::string& json, size_t& p)

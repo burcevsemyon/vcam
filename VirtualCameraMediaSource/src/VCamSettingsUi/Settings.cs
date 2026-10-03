@@ -37,11 +37,21 @@ public enum ScaleMode
 }
 
 // Which section feeds the camera: source.type in settings.json.
-public enum SourceType
+// В3: raw-строка (как FxBackend строкой, а не enum) — C++ хранит токен
+// verbatim (Settings.cpp ParseNewSchema), хост по неизвестному уходит в
+// fallback, но токен живёт. Известные — канон нижнего регистра
+// (insensitive как раньше); будущие неизвестные — verbatim обратно в Save,
+// чтобы текущий UI их не схлопывал в "static". Пусто = "static" (как C++).
+public static class SourceTypes
 {
-    Static,
-    Video,
-    Camera,
+    public const string Static = "static";
+    public const string Video = "video";
+    public const string Camera = "camera";
+
+    public static bool IsKnown(string? token) =>
+        string.Equals(token, Static, StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(token, Video, StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(token, Camera, StringComparison.OrdinalIgnoreCase);
 }
 
 // v2 frame quality (phase vcam-quality-v2): Source = native size of the
@@ -83,8 +93,10 @@ public sealed class Settings
     public string CameraId { get; set; } = "";
     public string CameraName { get; set; } = "";
 
-    // Section "source".
-    public SourceType SourceType { get; set; } = SourceType.Static;
+    // Section "source": raw token, see SourceTypes. UI maps unknown future
+    // tokens to the static view, but saves them back verbatim (MainForm keeps
+    // the token while the media combo is untouched by the user).
+    public string SourceType { get; set; } = SourceTypes.Static;
 
     // Root "quality" (v2): mirrors Settings::ParseQuality on the C++ side —
     // only "fixed720p" passes, anything else (incl. missing) is Source.
@@ -193,13 +205,8 @@ public sealed class Settings
                 if (root.TryGetProperty("source", out var src) && src.ValueKind == JsonValueKind.Object &&
                     src.TryGetProperty("type", out var type) && type.ValueKind == JsonValueKind.String)
                 {
-                    // Unknown tokens map to Static for editing; the host keeps them verbatim.
-                    var typeToken = type.GetString();
-                    s.SourceType = string.Equals(typeToken, "video", StringComparison.OrdinalIgnoreCase)
-                        ? SourceType.Video
-                        : string.Equals(typeToken, "camera", StringComparison.OrdinalIgnoreCase)
-                            ? SourceType.Camera
-                            : SourceType.Static;
+                    // В3: raw-строка как C++ (verbatim для будущих типов).
+                    s.SourceType = NormalizeSourceType(type.GetString() ?? "");
                 }
 
                 if (root.TryGetProperty("static", out var st) && st.ValueKind == JsonValueKind.Object)
@@ -268,7 +275,7 @@ public sealed class Settings
                 // mediaPath -> video.path, mediaMode=="video" -> source.type=video.
                 var mediaMode = GetString(root, "mediaMode");
                 var isVideo = string.Equals(mediaMode, "video", StringComparison.OrdinalIgnoreCase);
-                s.SourceType = isVideo ? SourceType.Video : SourceType.Static;
+                s.SourceType = isVideo ? SourceTypes.Video : SourceTypes.Static;
                 s.StaticPath = GetString(root, "imagePath");
                 if (string.IsNullOrEmpty(s.StaticPath) && !isVideo)
                     s.StaticPath = GetString(root, "mediaPath");
@@ -287,18 +294,19 @@ public sealed class Settings
     }
 
     // Writes ONLY the new schema, UTF-8 without BOM (see SerializerOptions).
+    // В6: атомарно через tmp+move (как host WriteRecordCommand): конкурентный
+    // читатель (хост) видит либо старый, либо новый файл целиком — рваного
+    // truncate-read нет. Плюс retry при sharing-violation (хост в этот момент
+    // пишет свою копию).
     public void Save(string? filePath = null)
     {
         var payload = new Dictionary<string, object>
         {
             ["source"] = new Dictionary<string, object>
             {
-                ["type"] = SourceType switch
-                {
-                    SourceType.Video => "video",
-                    SourceType.Camera => "camera",
-                    _ => "static",
-                },
+                // В3: пишем токен verbatim (неизвестный будущий переживает
+                // round-trip как в C++); пусто = "static".
+                ["type"] = string.IsNullOrEmpty(SourceType) ? SourceTypes.Static : SourceType,
             },
             ["static"] = new Dictionary<string, object>
             {
@@ -367,7 +375,32 @@ public sealed class Settings
         var path = filePath ?? FilePath;
         var dir = Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-        File.WriteAllText(path, JsonSerializer.Serialize(payload, SerializerOptions), new UTF8Encoding(false));
+        var text = JsonSerializer.Serialize(payload, SerializerOptions);
+        // Уникальный tmp на запись (UI vs host пишут одновременно): общий
+        // фиксированный tmp сталкивал писателей sharing-violation.
+        var tmp = Path.Combine(dir ?? "", Path.GetRandomFileName());
+        try
+        {
+            File.WriteAllText(tmp, text, new UTF8Encoding(false));
+            for (var attempt = 0; ; attempt++)
+            {
+                try
+                {
+                    File.Move(tmp, path, true);
+                    return;
+                }
+                // Конкурентный move второго писателя surfaces как
+                // UnauthorizedAccess (а не IOException) — тоже retry.
+                catch (Exception ex) when ((ex is IOException || ex is UnauthorizedAccessException) && attempt < 3)
+                {
+                    Thread.Sleep(50);
+                }
+            }
+        }
+        finally
+        {
+            try { if (File.Exists(tmp)) File.Delete(tmp); } catch { /* best-effort */ }
+        }
     }
 
     private static string GetString(JsonElement obj, string name) =>
@@ -395,12 +428,34 @@ public sealed class Settings
 
     // Mirrors the C++ ClampLevel exactly: missing/non-numeric -> 100,
     // out-of-range -> clamp 0-100.
+    // В2: дробные числа C++ JsonGetInt читает как truncate (50.5→50 — цифры
+    // до '.'), а TryGetInt32 на них проваливается. Поэтому fallback — double
+    // с Truncate (к нулю, как разбор цифр C++), затем clamp.
     private static int GetLevel(JsonElement obj, string name)
     {
-        if (obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number &&
-            v.TryGetInt32(out var n))
-            return Math.Clamp(n, 0, 100);
+        if (obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number)
+        {
+            if (v.TryGetInt32(out var n))
+                return Math.Clamp(n, 0, 100);
+            if (v.TryGetDouble(out var d) && double.IsFinite(d))
+                return Math.Clamp((int)Math.Truncate(d), 0, 100);
+        }
         return 100;
+    }
+
+    // В3: известные токены — канон нижнего регистра (insensitive, как раньше
+    // и как C++ K4-нормализация scaleMode); неизвестные будущие — verbatim;
+    // пусто/нет — "static" (как C++ fallback).
+    private static string NormalizeSourceType(string token)
+    {
+        if (string.Equals(token, SourceTypes.Video, StringComparison.OrdinalIgnoreCase))
+            return SourceTypes.Video;
+        if (string.Equals(token, SourceTypes.Camera, StringComparison.OrdinalIgnoreCase))
+            return SourceTypes.Camera;
+        if (string.Equals(token, SourceTypes.Static, StringComparison.OrdinalIgnoreCase) ||
+            string.IsNullOrEmpty(token))
+            return SourceTypes.Static;
+        return token;
     }
 
     // К4: insensitive как C++ ParseScaleMode/EqCI (обе стороны) — "FIT"/"Cover"

@@ -1,8 +1,10 @@
 #include <windows.h>
 #include <shellapi.h>
+#include <shlobj.h> // B7: SHGetKnownFolderPath(FOLDERID_Videos)
 #include <tlhelp32.h>
 #include <atlbase.h>
 
+#include <cctype> // B7: граница токена true/false в TryReadRecordState
 #include <cstdarg>
 #include <cstdio>
 #include <ctime>
@@ -75,6 +77,22 @@ CRITICAL_SECTION g_hotkeyCs;
 HotkeySection g_hotkey; // последний зарегистрированный (дефолт = Ctrl+Alt+V)
 std::wstring g_hotkeyReturnType = L"static"; // куда вернуться после borrowed video
 bool g_hotkeyBorrowed = false;               // video сейчас заимствовано хоткеем
+// B5: backstop-таймаут borrow — Ended не fires при битом файле, а fallback
+// теперь тоже возвращает (ниже); тик страхует от вечного «идёт видео» при
+// залипшем источнике, который не падает и не кончается.
+ULONGLONG g_hotkeyBorrowTickMs = 0; // GetTickCount64 в момент borrow, 0 = нет borrow
+constexpr ULONGLONG kBorrowMaxMs = 30ULL * 60 * 1000; // 30 мин одного borrow достаточно
+
+// B6: сериализация всех мутаций settings.json внутри хоста: main-поток
+// (хоткей WM_HOTKEY, трей ToggleAutostart) vs worker (StartRecording,
+// auto-return). Без неё Load→Save из двух потоков теряли обновления друг
+// друга. UI-гонка (внешний процесс) остаётся last-writer-wins — снапшоты
+// полные, приемлемо; рваные чтения закрыты атомарным Save (tmp+move).
+CRITICAL_SECTION g_settingsCs;
+struct SettingsFileGuard {
+    SettingsFileGuard() { EnterCriticalSection(&g_settingsCs); }
+    ~SettingsFileGuard() { LeaveCriticalSection(&g_settingsCs); }
+};
 
 std::wstring HotkeyStatePath()
 {
@@ -167,19 +185,33 @@ std::wstring RecordCommandPath()
     return std::wstring(appdata) + L"\\VCam\\record_command.json";
 }
 
-// Путь записи по умолчанию: %USERPROFILE%\Videos\VCam_ГГГГММДД_ЧЧММСС.mp4.
+// -- BEGIN FIXMAJ-BLOCK-RECORDPATH (мини-тест вырезает до END FIXMAJ-BLOCK-RECORDPATH) --
+// Путь записи по умолчанию: <Videos>\VCam_ГГГГММДД_ЧЧММСС.mp4.
+// B7: единый резолв через SHGetKnownFolderPath(FOLDERID_Videos) — то же, что
+// C# Environment.SpecialFolder.MyVideos в UI. %USERPROFILE%\Videos может не
+// совпадать с перенаправленной папкой; fallback — та же цепочка, что в UI.
 std::wstring DefaultRecordPath()
 {
-    wchar_t up[MAX_PATH] = {};
-    DWORD n = GetEnvironmentVariableW(L"USERPROFILE", up, MAX_PATH);
-    if (n == 0 || n >= MAX_PATH) return {};
+    std::wstring videos;
+    wchar_t* known = nullptr;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Videos, 0, nullptr, &known)) && known) {
+        videos = known;
+        CoTaskMemFree(known);
+    }
+    if (videos.empty()) {
+        wchar_t up[MAX_PATH] = {};
+        DWORD n = GetEnvironmentVariableW(L"USERPROFILE", up, MAX_PATH);
+        if (n == 0 || n >= MAX_PATH) return {};
+        videos = std::wstring(up) + L"\\Videos";
+    }
     SYSTEMTIME st = {};
     GetLocalTime(&st);
     wchar_t name[64];
     swprintf_s(name, L"VCam_%04u%02u%02u_%02u%02u%02u.mp4",
                st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
-    return std::wstring(up) + L"\\Videos\\" + name;
+    return videos + L"\\" + name;
 }
+// -- END FIXMAJ-BLOCK-RECORDPATH --
 
 // wide → UTF-8 + экранирование для JSON-строки.
 std::string EscapeJsonUtf8(const std::wstring& w)
@@ -239,23 +271,52 @@ void ClearRecordState()
     if (!sp.empty()) DeleteFileW(sp.c_str()); // нет файла — норма
 }
 
-// Плоский скан JSON-кавыченной строки после ключа (с \" \\ \n \r \t \uXXXX).
-// Возвращает false если ключа/строки нет.
-bool ScanJsonString(const std::string& json, const char* key, std::wstring& value)
+// -- BEGIN FIXMAJ-BLOCK-JSON (мини-тест вырезает до END FIXMAJ-BLOCK-JSON) --
+// Плоский скан JSON-кавыченной строки после ключа
+// (с \" \\ \/ \b \f \n \r \t \uXXXX). Возвращает false если ключа/строки нет.
+// B7: строгая позиция ключа — "key" за которым (через ws) идёт ':'
+// (как FindKeyPos в Settings.cpp): плоский find ловил совпадения внутри
+// значений ("recordingX" для ключа "recording", "true" внутри path).
+static void SkipScanWs(const std::string& json, size_t& p)
+{
+    while (p < json.size() && (json[p] == ' ' || json[p] == '\t' ||
+                               json[p] == '\r' || json[p] == '\n'))
+        p++;
+}
+
+// B7: строгая позиция ключа (как FindKeyPos в Settings.cpp).
+static size_t ScanKeyPos(const std::string& json, const char* key, size_t from = 0)
 {
     std::string k = std::string("\"") + key + "\"";
-    size_t p = json.find(k);
-    if (p == std::string::npos) return false;
-    p = json.find(':', p + k.size());
+    size_t p = json.find(k, from);
+    while (p != std::string::npos) {
+        size_t c = p + k.size();
+        SkipScanWs(json, c);
+        if (c < json.size() && json[c] == ':') return p;
+        p = json.find(k, p + 1);
+    }
+    return std::string::npos;
+}
+
+bool ScanJsonString(const std::string& json, const char* key, std::wstring& value)
+{
+    size_t kp = ScanKeyPos(json, key);
+    if (kp == std::string::npos) return false;
+    size_t p = json.find(':', kp);
     if (p == std::string::npos) return false;
     p++;
-    while (p < json.size() && (json[p] == ' ' || json[p] == '\t')) p++;
+    SkipScanWs(json, p);
     if (p >= json.size() || json[p] != '"') return false;
     std::string val;
     for (p++; p < json.size() && json[p] != '"'; p++) {
         if (json[p] == '\\' && p + 1 < json.size()) {
             char c = json[++p];
             switch (c) {
+            case '"': val += '"'; break;
+            case '\\': val += '\\'; break;
+            case '/': val += '/'; break; // B7: был default, явно как в JSON
+            case 'b': val += '\b'; break; // B7: не хватало
+            case 'f': val += '\f'; break; // B7: не хватало
             case 'n': val += '\n'; break;
             case 'r': val += '\r'; break;
             case 't': val += '\t'; break;
@@ -280,13 +341,12 @@ bool ScanJsonString(const std::string& json, const char* key, std::wstring& valu
 
 bool ScanJsonInt(const std::string& json, const char* key, long long& value)
 {
-    std::string k = std::string("\"") + key + "\"";
-    size_t p = json.find(k);
-    if (p == std::string::npos) return false;
-    p = json.find(':', p + k.size());
+    size_t kp = ScanKeyPos(json, key);
+    if (kp == std::string::npos) return false;
+    size_t p = json.find(':', kp);
     if (p == std::string::npos) return false;
     p++;
-    while (p < json.size() && (json[p] == ' ' || json[p] == '\t')) p++;
+    SkipScanWs(json, p);
     if (p >= json.size() || json[p] < '0' || json[p] > '9') return false;
     long long v = 0;
     for (; p < json.size() && json[p] >= '0' && json[p] <= '9'; p++) {
@@ -320,15 +380,31 @@ bool TryReadRecordState(std::wstring& path, long long& started)
     if (sp.empty()) return false;
     std::string json;
     if (!ReadSmallFile(sp, json)) return false;
-    if (json.find("\"recording\"") == std::string::npos) return false;
-    size_t p = json.find(':');
+    // B7: строгий bool по ключу. Было: первый ':' файла + find("true") где
+    // угодно — путь "C:\true\x.mp4" при recording:false давал ложное true,
+    // а "recordingX":true перекрывал настоящий ключ. Теперь — позиция ключа
+    // (ScanKeyPos) + точный токен true/false с границей.
+    size_t kp = ScanKeyPos(json, "recording");
+    if (kp == std::string::npos) return false;
+    size_t p = json.find(':', kp);
     if (p == std::string::npos) return false;
-    size_t t = json.find("true", p);
-    if (t == std::string::npos) return false;
+    p++;
+    SkipScanWs(json, p);
+    bool rec;
+    if (json.compare(p, 4, "true") == 0 &&
+        (p + 4 >= json.size() || (!isalnum((unsigned char)json[p + 4]) && json[p + 4] != '_')))
+        rec = true;
+    else if (json.compare(p, 5, "false") == 0 &&
+             (p + 5 >= json.size() || (!isalnum((unsigned char)json[p + 5]) && json[p + 5] != '_')))
+        rec = false;
+    else
+        return false;
+    if (!rec) return false;
     ScanJsonString(json, "path", path);
     ScanJsonInt(json, "started", started);
     return true;
 }
+// -- END FIXMAJ-BLOCK-JSON --
 
 // Команда UI/хоткея → worker: {"cmd":"start","path":"..."} / {"cmd":"stop"}.
 // Писатель — UI и main-поток хоткея; атомарно через tmp+move.
@@ -412,8 +488,56 @@ void ApplyHotkeyRegistration()
     }
 }
 
+// B5: единый автовозврат заимствованного video (конец ролика, fallback при
+// битом файле, backstop-таймаут) через settings.json — watcher подхватит как
+// обычное переключение. Семантика Load-неудач как раньше: settings биты =
+// retry позже (borrow жив), уже ушли вручную = просто снять borrow.
+// Возвращает true если borrow снят (или его не было). Вызывать БЕЗ g_hotkeyCs.
+bool AutoReturnBorrowedVideo(const std::wstring& settingsPath, const wchar_t* why)
+{
+    EnterCriticalSection(&g_hotkeyCs);
+    bool borrowed = g_hotkeyBorrowed;
+    std::wstring ret = g_hotkeyReturnType;
+    LeaveCriticalSection(&g_hotkeyCs);
+    if (!borrowed) return true;
+    if (ret.empty()) ret = L"static";
+    Settings back;
+    bool loaded = !settingsPath.empty() && back.Load(settingsPath);
+    if (!loaded) {
+        Log(L"[host] hotkey: %s, settings unreadable - retry later", why);
+        return false;
+    }
+    if (back.sourceType != L"video") {
+        // Уже ушли вручную: просто снять borrow.
+        EnterCriticalSection(&g_hotkeyCs);
+        g_hotkeyBorrowed = false;
+        g_hotkeyBorrowTickMs = 0;
+        LeaveCriticalSection(&g_hotkeyCs);
+        ClearHotkeyState();
+        return true;
+    }
+    back.sourceType = ret;
+    bool saved;
+    {
+        SettingsFileGuard fsg; // B6: vs StartRecording/concurrent main
+        saved = back.Save(settingsPath);
+    }
+    if (!saved) {
+        Log(L"[host] hotkey: %s, auto-return save failed - retry later", why);
+        return false;
+    }
+    EnterCriticalSection(&g_hotkeyCs);
+    g_hotkeyBorrowed = false;
+    g_hotkeyBorrowTickMs = 0;
+    LeaveCriticalSection(&g_hotkeyCs);
+    ClearHotkeyState();
+    Log(L"[host] hotkey: %s, auto-return to %s", why, ret.c_str());
+    return true;
+}
+
 // Нажатие хоткея (main-поток, WM_HOTKEY): переключение — через settings.json,
 // чтобы watcher хоста и UI остались согласованы.
+// B6: весь Load→Save под g_settingsCs (vs worker StartRecording/auto-return).
 void OnHotkeyPressed()
 {
     std::wstring path = DefaultSettingsPath();
@@ -421,6 +545,7 @@ void OnHotkeyPressed()
         Log(L"[host] hotkey: settings path is empty");
         return;
     }
+    SettingsFileGuard fsg;
     Settings s;
     if (!s.Load(path)) {
         Log(L"[host] hotkey: settings unreadable - ignored");
@@ -439,11 +564,13 @@ void OnHotkeyPressed()
             EnterCriticalSection(&g_hotkeyCs);
             g_hotkeyReturnType = from;
             g_hotkeyBorrowed = true;
+            g_hotkeyBorrowTickMs = GetTickCount64(); // B5: старт backstop-таймаута
             LeaveCriticalSection(&g_hotkeyCs);
             s.sourceType = L"video";
             if (!s.Save(path)) {
                 EnterCriticalSection(&g_hotkeyCs);
                 g_hotkeyBorrowed = false;
+                g_hotkeyBorrowTickMs = 0;
                 LeaveCriticalSection(&g_hotkeyCs);
                 Log(L"[host] hotkey %s: settings save failed - borrow cancelled",
                     display.c_str());
@@ -465,6 +592,7 @@ void OnHotkeyPressed()
     }
 
     // Borrowed video в эфире: досрочный возврат на запомненное.
+    // B5: та же семантика через helper (тиk сбрасывается внутри).
     std::wstring back = retType.empty() ? L"static" : retType;
     s.sourceType = back;
     if (!s.Save(path)) {
@@ -473,6 +601,7 @@ void OnHotkeyPressed()
     }
     EnterCriticalSection(&g_hotkeyCs);
     g_hotkeyBorrowed = false;
+    g_hotkeyBorrowTickMs = 0;
     LeaveCriticalSection(&g_hotkeyCs);
     ClearHotkeyState();
     Log(L"[host] hotkey %s: early return video -> %s", display.c_str(), back.c_str());
@@ -963,9 +1092,17 @@ void ToggleAutostart()
         return;
     }
     s.autostart = want;
-    if (!s.Save(path)) {
-        Log(L"[host] toggle autostart: settings save failed (task already changed)");
-        return;
+    // B6: перечитать под замком и писать свежее — иначе Load→schtasks→Save
+    // (секунды UAC-диалога) затирает чужие правки worker/UI за это время.
+    {
+        SettingsFileGuard fsg;
+        Settings fresh;
+        if (!fresh.Load(path)) fresh = s; // файл пропал — пишем что помним
+        fresh.autostart = want;
+        if (!fresh.Save(path)) {
+            Log(L"[host] toggle autostart: settings save failed (task already changed)");
+            return;
+        }
     }
     Log(L"[host] autostart -> %s", want ? L"on" : L"off");
 }
@@ -1088,12 +1225,18 @@ void StartRecording(Machine& m, const std::wstring& requested)
     m.recErrLogged = false;
     m.recLastDropped = 0;
     WriteRecordState(path);
-    if (haveSettings && cur.record.path != path) {
-        cur.record.path = path;
-        if (cur.Save(settingsPath))
-            Log(L"[host] record: default path saved to settings");
-        else
-            Log(L"[host] record: settings save failed (recording continues)");
+    // B6: дефолт дописываем свежим под замком (cur загружен до Start — за это
+    // время хоткей мог сменить sourceType; писать stale-копию нельзя).
+    {
+        SettingsFileGuard fsg;
+        Settings fresh;
+        if (!settingsPath.empty() && fresh.Load(settingsPath) && fresh.record.path != path) {
+            fresh.record.path = path;
+            if (fresh.Save(settingsPath))
+                Log(L"[host] record: default path saved to settings");
+            else
+                Log(L"[host] record: settings save failed (recording continues)");
+        }
     }
     Log(L"[host] record started: %s", path.c_str());
 }
@@ -1418,6 +1561,7 @@ DWORD WINAPI WorkerProc(LPVOID)
             if (borrowed && want.type != L"video") {
                 EnterCriticalSection(&g_hotkeyCs);
                 g_hotkeyBorrowed = false;
+                g_hotkeyBorrowTickMs = 0; // B5
                 LeaveCriticalSection(&g_hotkeyCs);
                 ClearHotkeyState();
                 Log(L"[host] hotkey: manual switch away from borrowed video - borrow dropped");
@@ -1454,34 +1598,23 @@ DWORD WINAPI WorkerProc(LPVOID)
         timeout = Step(m);
         // Конец заимствованного ролика: авто-возврат на запомненный источник
         // через settings.json (watcher подхватит как обычное переключение).
+        // B5: раньше — только Ended(). Битый ролик уходит в Fallback (open/
+        // render fail), Ended не fires — borrow висел вечно и UI врал
+        // «идёт видео». Теперь возврат и из Fallback + backstop-таймаут.
         EnterCriticalSection(&g_hotkeyCs);
         bool borrowedNow = g_hotkeyBorrowed;
-        std::wstring retNow = g_hotkeyReturnType;
+        ULONGLONG borrowTick = g_hotkeyBorrowTickMs;
         LeaveCriticalSection(&g_hotkeyCs);
-        if (borrowedNow && m.src && m.src->Ended()) {
-            if (retNow.empty()) retNow = L"static";
-            Settings back;
-            bool loaded = !settingsPath.empty() && back.Load(settingsPath);
-            if (!loaded) {
-                Log(L"[host] hotkey: video ended, settings unreadable - retry later");
-            } else if (back.sourceType != L"video") {
-                // Уже ушли вручную: просто снять borrow.
-                EnterCriticalSection(&g_hotkeyCs);
-                g_hotkeyBorrowed = false;
-                LeaveCriticalSection(&g_hotkeyCs);
-                ClearHotkeyState();
-            } else {
-                back.sourceType = retNow;
-                if (back.Save(settingsPath)) {
-                    EnterCriticalSection(&g_hotkeyCs);
-                    g_hotkeyBorrowed = false;
-                    LeaveCriticalSection(&g_hotkeyCs);
-                    ClearHotkeyState();
-                    Log(L"[host] hotkey: video ended, auto-return to %s", retNow.c_str());
-                } else {
-                    Log(L"[host] hotkey: video ended, auto-return save failed - retry later");
-                }
-            }
+        if (borrowedNow) {
+            bool ended = m.src && m.src->Ended();
+            ULONGLONG nowBorrow = GetTickCount64();
+            bool timedOut = borrowTick != 0 && nowBorrow - borrowTick > kBorrowMaxMs;
+            if (ended)
+                AutoReturnBorrowedVideo(settingsPath, L"video ended");
+            else if (m.phase == Phase::Fallback)
+                AutoReturnBorrowedVideo(settingsPath, L"fallback during borrowed video");
+            else if (timedOut)
+                AutoReturnBorrowedVideo(settingsPath, L"borrow timeout");
         }
     }
 
@@ -1656,6 +1789,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     g_dirty.Attach(CreateEventW(nullptr, FALSE, FALSE, nullptr));
     InitializeCriticalSection(&g_statusCs);
     InitializeCriticalSection(&g_hotkeyCs);
+    InitializeCriticalSection(&g_settingsCs); // B6
 
     ApplyAutostartFromSettings();
 
@@ -1676,6 +1810,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                              0, 0, 0, 0, nullptr, nullptr, g_inst, nullptr);
     if (!g_hwnd) {
         Log(L"[host] CreateWindowEx failed: %lu", GetLastError());
+        DeleteCriticalSection(&g_settingsCs); // B6
         DeleteCriticalSection(&g_hotkeyCs);
         DeleteCriticalSection(&g_statusCs);
         g_dirty.Close();
@@ -1757,6 +1892,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
 
     g_dirty.Close();
     g_stop.Close();
+    DeleteCriticalSection(&g_settingsCs); // B6
     DeleteCriticalSection(&g_hotkeyCs);
     DeleteCriticalSection(&g_statusCs);
     ReleaseMutex(g_mutex);
