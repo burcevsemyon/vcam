@@ -2,15 +2,16 @@ using System.Diagnostics;
 
 namespace VCamSettingsUi;
 
-// Named settings snapshots (source + static/video/camera sections + effects +
-// quality). Storage is a plain directory — %APPDATA%\VCam\profiles\*.json —
-// where each file is an ordinary Settings serialization (Settings.Load/Save
-// with an explicit path), so the C++ side needs no profile parser at all.
-// Applying a profile (MainForm.ApplyProfile) writes ONLY its effects section
-// + root quality into the live settings.json — source sections stay untouched,
-// so the current source keeps streaming; the host picks the change up via
-// hot-reload as usual. The profile display name is the file name
-// without ".json" (Cyrillic names are fine on NTFS and share by plain copy).
+// Named settings snapshots: FULL copies of settings.json (source +
+// static/video/camera sections + effects + quality + the rest), stored as
+// plain files in %APPDATA%\VCam\profiles\*.json — each file is an ordinary
+// Settings serialization (Settings.Load/Save with an explicit path), so the
+// C++ side needs no profile parser at all.
+// Applying a profile (MainForm.ApplyProfile) replaces the live settings.json
+// with the profile file byte-for-byte (validated by parsing first) — source
+// included; the host picks the change up via hot-reload as usual. The profile
+// display name is the file name without ".json" (Cyrillic names are fine on
+// NTFS and share by plain copy).
 public static class Profiles
 {
     public static string DefaultDirectoryPath => Path.Combine(Settings.DirectoryPath, "profiles");
@@ -34,10 +35,19 @@ public static class Profiles
     // (including same-named edits) are never clobbered. Seed names go through
     // PathFor/Sanitize like any other name (e.g. "Ретро Ч/Б" lands on disk
     // with a fullwidth solidus).
+    // The shipped seeds carry an empty source (static path="") — applying one
+    // verbatim would show NO SIGNAL — so a fresh seed inherits everything but
+    // the preset from the user's current settings.json: source/static/video/
+    // camera sections as they are, plus hotkeys/record path/autostart
+    // (presets must not reset those); only the effects section + root
+    // quality come from the seed. When the live file is missing or
+    // unreadable the seed lands as shipped (its hint warns about the empty
+    // source, as before).
     public static void EnsureSeeded(string? dir = null)
     {
         var target = dir ?? DefaultDirectoryPath;
         Directory.CreateDirectory(target);
+        var live = TryLoadLive();
         var asm = typeof(Profiles).Assembly;
         foreach (var (resource, fileName) in Seeds)
         {
@@ -54,13 +64,57 @@ public static class Profiles
                 using var reader = new StreamReader(stream);
                 var text = reader.ReadToEnd();
                 // Validate before writing: a broken seed must never land on disk.
-                var s = Settings.LoadFromText(text);
-                s.Save(path);
+                var seed = Settings.LoadFromText(text);
+                if (live is null)
+                {
+                    seed.Save(path);
+                    continue;
+                }
+                // A full-snapshot profile whose source is the user's own: the
+                // whole effects section + root quality are the preset, the
+                // rest stays live. Every effects field is assigned (no leak
+                // from the previous seed through the shared live instance).
+                live.FxEnabled = seed.FxEnabled;
+                live.FxMirror = seed.FxMirror;
+                live.FxGrayscale = seed.FxGrayscale;
+                live.FxNoise = seed.FxNoise;
+                live.FxScanlines = seed.FxScanlines;
+                live.FxRgbSplit = seed.FxRgbSplit;
+                live.FxTracking = seed.FxTracking;
+                live.FxVhs = seed.FxVhs;
+                live.FxNoiseLevel = seed.FxNoiseLevel;
+                live.FxScanlinesLevel = seed.FxScanlinesLevel;
+                live.FxRgbSplitLevel = seed.FxRgbSplitLevel;
+                live.FxTrackingLevel = seed.FxTrackingLevel;
+                live.FxBackend = seed.FxBackend;
+                live.Quality = seed.Quality;
+                live.Save(path);
             }
             catch (Exception ex)
             {
                 Debug.WriteLine($"Profiles: seed {fileName} failed: {ex.Message}");
             }
+        }
+    }
+
+    // The live settings.json for first-time seeding: null = missing/blank/
+    // unreadable, the seed then lands as shipped. The fail-soft Load() is
+    // wrong here — its defaults would pose as the user's source; only a
+    // successfully parsed file counts.
+    private static Settings? TryLoadLive()
+    {
+        try
+        {
+            var path = Settings.FilePath;
+            if (!File.Exists(path)) return null;
+            var text = File.ReadAllText(path);
+            if (string.IsNullOrWhiteSpace(text)) return null;
+            return Settings.LoadFromText(text);
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"Profiles: live settings unreadable, seeding as shipped: {ex.Message}");
+            return null;
         }
     }
 

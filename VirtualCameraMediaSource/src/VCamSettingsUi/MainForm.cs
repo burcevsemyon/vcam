@@ -57,13 +57,15 @@ public sealed class MainForm : Form
     // host skips ApplyFx entirely. Unchecked grays out the rows below.
     private readonly CheckBox _fxEnabled = new();
 
-    // Settings profiles (header row of the effects group): named snapshots
-    // stored as plain Settings files in %APPDATA%\VCam\profiles\. Apply
-    // writes ONLY the effects section + root quality into the live
-    // settings.json (source/static/video/camera sections stay untouched —
-    // the source switches by hand only); the host picks the change up via
-    // hot-reload. Choosing the ComboBox applies immediately (explicit user
-    // action, dirty is reset); "Применить" re-applies the same profile.
+    // Settings profiles (header row of the effects group): named FULL snapshots
+    // stored as plain Settings files in %APPDATA%\VCam\profiles\. "Сохранить…"
+    // writes the current settings as-is under a name; choosing the ComboBox
+    // (or "Применить") replaces settings.json with the profile file
+    // byte-for-byte — source, effects, everything — so a source switch
+    // re-opens the source (~1 s, normal and predictable). The host picks the
+    // change up via hot-reload as usual. Choosing the ComboBox applies
+    // immediately (explicit user action, dirty is reset); "Применить"
+    // re-applies the same profile.
     // Programmatic selection (RefreshProfileList/startup) runs under
     // _refreshingProfiles and never applies.
     private readonly Label _profileLabel = new();
@@ -2128,13 +2130,11 @@ public sealed class MainForm : Form
         ApplyProfile(name);
     }
 
-    // Apply = effects-only: read the live settings.json, replace its
-    // effects section + root quality from the profile, write back
-    // atomically. Source sections (source/static/video/camera) are never
-    // touched, so the current source keeps streaming; the host picks the
-    // new effects up via hot-reload. A corrupt profile aborts with a
-    // message and never touches the live settings; an unreadable live
-    // file also aborts (fail-soft defaults would nuke the source).
+    // Apply = FULL snapshot: the profile file's bytes (validated by parsing
+    // first) replace settings.json entirely — source, effects, everything.
+    // The host picks the change up via hot-reload; a source switch re-opens
+    // the source (~1 s — normal and predictable). A corrupt profile aborts
+    // with a message and never touches the live settings.
     private void OnProfileApplyClicked(object? sender, EventArgs e)
     {
         var name = _profileCombo.SelectedItem as string;
@@ -2149,10 +2149,15 @@ public sealed class MainForm : Form
 
     private void ApplyProfile(string name)
     {
-        Settings profile;
+        string profilePath;
+        string text;
         try
         {
-            profile = Profiles.LoadProfile(name);
+            profilePath = Profiles.PathFor(name);
+            text = File.ReadAllText(profilePath);
+            // Validate before writing: a broken profile must never land in
+            // the live settings (LoadFromText throws on malformed JSON).
+            _ = Settings.LoadFromText(text);
         }
         catch (Exception ex)
         {
@@ -2161,39 +2166,10 @@ public sealed class MainForm : Form
             return;
         }
 
-        Settings live;
         try
         {
-            var text = ReadSettingsText();
-            live = string.IsNullOrWhiteSpace(text)
-                ? Settings.Load()
-                : Settings.LoadFromText(text);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(this, $"Не удалось прочитать {Settings.FilePath} — профиль не применён:\n{ex.Message}", Text,
-                MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return;
-        }
-
-        live.FxEnabled = profile.FxEnabled;
-        live.FxMirror = profile.FxMirror;
-        live.FxGrayscale = profile.FxGrayscale;
-        live.FxNoise = profile.FxNoise;
-        live.FxScanlines = profile.FxScanlines;
-        live.FxRgbSplit = profile.FxRgbSplit;
-        live.FxTracking = profile.FxTracking;
-        live.FxVhs = profile.FxVhs;
-        live.FxNoiseLevel = profile.FxNoiseLevel;
-        live.FxScanlinesLevel = profile.FxScanlinesLevel;
-        live.FxRgbSplitLevel = profile.FxRgbSplitLevel;
-        live.FxTrackingLevel = profile.FxTrackingLevel;
-        live.FxBackend = profile.FxBackend;
-        live.Quality = profile.Quality;
-
-        try
-        {
-            live.Save();
+            // Byte-for-byte: the live file becomes the profile file exactly.
+            File.Copy(profilePath, Settings.FilePath, overwrite: true);
         }
         catch (Exception ex)
         {
@@ -2202,48 +2178,15 @@ public sealed class MainForm : Form
             return;
         }
 
-        _suppressDirty = true;
-        try
-        {
-            ApplyFxToControls(live);
-            UpdateFxEnabledState();
-        }
-        finally
-        {
-            _suppressDirty = false;
-        }
-        _dirty = false;
-        _syncRetries = 0;
-        _reloadButton.Text = "Обновить";
-        _lastAppliedText = ReadSettingsText();
+        // Full control refresh (same mapping as startup/reload, source panels
+        // included — the profile may have switched source/camera/video).
+        // The validated text is applied directly (no TOCTOU re-read); the
+        // watcher recognises the copy as our own write via _lastAppliedText.
+        ApplySettingsText(text);
+        UpdateFxEnabledState();
 
         _hintLabel.ForeColor = Color.ForestGreen;
-        _hintLabel.Text = $"Профиль «{name}» применён (эффекты + качество) — источник не тронут, хост подхватит (~1 с).";
-    }
-
-    // Effects+quality mapping file -> controls, shared by profile apply.
-    // Must run under _suppressDirty (programmatic sets, not edits).
-    // Source sections are deliberately NOT touched here.
-    private void ApplyFxToControls(Settings s)
-    {
-        _qualityCombo.SelectedIndex = s.Quality == Quality.Fixed720p ? 1 : 0;
-        _fxEnabled.Checked = s.FxEnabled;
-        _fxMirror.Checked = s.FxMirror;
-        _fxGrayscale.Checked = s.FxGrayscale;
-        _fxNoise.Checked = s.FxNoise;
-        _fxScanlines.Checked = s.FxScanlines;
-        _fxRgbSplit.Checked = s.FxRgbSplit;
-        _fxTracking.Checked = s.FxTracking;
-        _fxVhs.Checked = s.FxVhs;
-        _fxNoiseLevel.Value = Math.Clamp(s.FxNoiseLevel, 0, 100);
-        _fxNoiseLevelVal.Text = _fxNoiseLevel.Value.ToString();
-        _fxScanlinesLevel.Value = Math.Clamp(s.FxScanlinesLevel, 0, 100);
-        _fxScanlinesLevelVal.Text = _fxScanlinesLevel.Value.ToString();
-        _fxRgbSplitLevel.Value = Math.Clamp(s.FxRgbSplitLevel, 0, 100);
-        _fxRgbSplitLevelVal.Text = _fxRgbSplitLevel.Value.ToString();
-        _fxTrackingLevel.Value = Math.Clamp(s.FxTrackingLevel, 0, 100);
-        _fxTrackingLevelVal.Text = _fxTrackingLevel.Value.ToString();
-        _fxBackend.SelectedIndex = s.FxBackend == "frei0r" ? 1 : 0;
+        _hintLabel.Text = $"Профиль «{name}» применён целиком — все настройки заменены из профиля (включая источник), хост подхватит (~1 с).";
     }
 
     private void OnProfileSaveClicked(object? sender, EventArgs e)
@@ -2273,7 +2216,7 @@ public sealed class MainForm : Form
 
         RefreshProfileList(name);
         _hintLabel.ForeColor = Color.ForestGreen;
-        _hintLabel.Text = $"Профиль «{name}» сохранён (снимок всех настроек). Выбор в списке применяет его эффекты сразу.";
+        _hintLabel.Text = $"Профиль «{name}» сохранён (полный снимок всех настроек). Выбор в списке заменяет все настройки целиком.";
     }
 
     private void OnProfileDeleteClicked(object? sender, EventArgs e)
