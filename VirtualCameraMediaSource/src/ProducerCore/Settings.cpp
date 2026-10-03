@@ -326,10 +326,16 @@ void ParseNewSchema(const std::string& json, Settings& s)
         s.fx.rgbSplit = JsonGetBool(sec, "rgbsplit", false);
         s.fx.tracking = JsonGetBool(sec, "tracking", false);
         s.fx.vhs = JsonGetBool(sec, "vhs", false);
+        s.fx.gateweave = JsonGetBool(sec, "gateweave", false);
+        s.fx.glow = JsonGetBool(sec, "glow", false);
+        s.fx.denoise = JsonGetBool(sec, "denoise", false);
         s.fx.noiseLevel = ClampLevel(JsonGetInt(sec, "noiseLevel", 100));
         s.fx.scanlinesLevel = ClampLevel(JsonGetInt(sec, "scanlinesLevel", 100));
         s.fx.rgbSplitLevel = ClampLevel(JsonGetInt(sec, "rgbsplitLevel", 100));
         s.fx.trackingLevel = ClampLevel(JsonGetInt(sec, "trackingLevel", 100));
+        s.fx.gateweaveLevel = ClampLevel(JsonGetInt(sec, "gateweaveLevel", 100));
+        s.fx.glowLevel = ClampLevel(JsonGetInt(sec, "glowLevel", 100));
+        s.fx.denoiseLevel = ClampLevel(JsonGetInt(sec, "denoiseLevel", 100));
         std::wstring be;
         // backend: только "frei0r" проходит, всё остальное (включая
         // отсутствие ключа) → "cpu" (default без DLL).
@@ -401,10 +407,16 @@ void ParseLegacySchema(const std::string& json, Settings& s)
     s.fx.rgbSplit = false;
     s.fx.tracking = false;
     s.fx.vhs = false;
+    s.fx.gateweave = false;
+    s.fx.glow = false;
+    s.fx.denoise = false;
     s.fx.noiseLevel = 100; // legacy без секции effects: були false, уровни
     s.fx.scanlinesLevel = 100; // нейтральные (не влияют, но round-trip стабилен)
     s.fx.rgbSplitLevel = 100;
     s.fx.trackingLevel = 100;
+    s.fx.gateweaveLevel = 100;
+    s.fx.glowLevel = 100;
+    s.fx.denoiseLevel = 100;
     s.fx.backend = L"cpu"; // legacy без секции effects -> CPU без DLL
     s.autostart = JsonGetBool(json, "autostart", true);
 }
@@ -476,10 +488,19 @@ std::string Settings::Serialize() const
     out += fx.tracking ? "true" : "false";
     out += ", \"vhs\": ";
     out += fx.vhs ? "true" : "false";
+    out += ", \"gateweave\": ";
+    out += fx.gateweave ? "true" : "false";
+    out += ", \"glow\": ";
+    out += fx.glow ? "true" : "false";
+    out += ", \"denoise\": ";
+    out += fx.denoise ? "true" : "false";
     out += ", \"noiseLevel\": " + std::to_string(fx.noiseLevel);
     out += ", \"scanlinesLevel\": " + std::to_string(fx.scanlinesLevel);
     out += ", \"rgbsplitLevel\": " + std::to_string(fx.rgbSplitLevel);
     out += ", \"trackingLevel\": " + std::to_string(fx.trackingLevel);
+    out += ", \"gateweaveLevel\": " + std::to_string(fx.gateweaveLevel);
+    out += ", \"glowLevel\": " + std::to_string(fx.glowLevel);
+    out += ", \"denoiseLevel\": " + std::to_string(fx.denoiseLevel);
     out += ", \"backend\": \"" + WideToUtf8(fx.backend == L"frei0r" ? L"frei0r" : L"cpu") + "\"";
     out += " },\n";
     out += "  \"autostart\": ";

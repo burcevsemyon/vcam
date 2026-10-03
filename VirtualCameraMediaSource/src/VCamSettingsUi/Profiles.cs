@@ -86,10 +86,16 @@ public static class Profiles
                 live.FxRgbSplit = seed.FxRgbSplit;
                 live.FxTracking = seed.FxTracking;
                 live.FxVhs = seed.FxVhs;
+                live.FxGateweave = seed.FxGateweave;
+                live.FxGlow = seed.FxGlow;
+                live.FxDenoise = seed.FxDenoise;
                 live.FxNoiseLevel = seed.FxNoiseLevel;
                 live.FxScanlinesLevel = seed.FxScanlinesLevel;
                 live.FxRgbSplitLevel = seed.FxRgbSplitLevel;
                 live.FxTrackingLevel = seed.FxTrackingLevel;
+                live.FxGateweaveLevel = seed.FxGateweaveLevel;
+                live.FxGlowLevel = seed.FxGlowLevel;
+                live.FxDenoiseLevel = seed.FxDenoiseLevel;
                 live.FxBackend = seed.FxBackend;
                 live.Quality = seed.Quality;
                 live.Save(path);

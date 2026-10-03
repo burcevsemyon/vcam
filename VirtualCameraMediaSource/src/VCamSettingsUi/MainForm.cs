@@ -26,6 +26,7 @@ public sealed class MainForm : Form
 
     // Host post-fx (phase vcam-effects + analog): mirror + grayscale +
     // analog interferences (noise/scanlines/rgbsplit/tracking/vhs),
+    // trio (gateweave/glow/denoise — только backend frei0r),
     // section "effects". Two rows of checkboxes (y=600/622).
     private readonly CheckBox _fxMirror = new();
     private readonly CheckBox _fxGrayscale = new();
@@ -33,6 +34,9 @@ public sealed class MainForm : Form
     private readonly CheckBox _fxScanlines = new();
     private readonly CheckBox _fxRgbSplit = new();
     private readonly CheckBox _fxTracking = new();
+    private readonly CheckBox _fxGateweave = new();
+    private readonly CheckBox _fxGlow = new();
+    private readonly CheckBox _fxDenoise = new();
     private readonly CheckBox _fxVhs = new();
 
     // Analog interference intensity sliders (TrackBar 0-100) next to the
@@ -42,10 +46,20 @@ public sealed class MainForm : Form
     private readonly TrackBar _fxScanlinesLevel = new();
     private readonly TrackBar _fxRgbSplitLevel = new();
     private readonly TrackBar _fxTrackingLevel = new();
+    private readonly TrackBar _fxGateweaveLevel = new();
+    private readonly TrackBar _fxGlowLevel = new();
+    private readonly TrackBar _fxDenoiseLevel = new();
     private readonly Label _fxNoiseLevelVal = new();
     private readonly Label _fxScanlinesLevelVal = new();
     private readonly Label _fxRgbSplitLevelVal = new();
     private readonly Label _fxTrackingLevelVal = new();
+    private readonly Label _fxGateweaveLevelVal = new();
+    private readonly Label _fxGlowLevelVal = new();
+    private readonly Label _fxDenoiseLevelVal = new();
+
+    // Trio-hint: виден при backend CPU — объясняет серые строки
+    // (без молчаливых no-op: на CPU трио пропускается хостом).
+    private readonly Label _fxTrioHint = new();
 
     // Analog interference backend (ComboBox in the effects group header):
     // CPU (default, no DLLs) | frei0r (frei0r plugin chain, falls back to
@@ -207,8 +221,8 @@ public sealed class MainForm : Form
         MaximizeBox = true;
         MinimizeBox = true;
         StartPosition = FormStartPosition.CenterScreen;
-        ClientSize = new Size(880, 1082);
-        MinimumSize = new Size(900, 1132);
+        ClientSize = new Size(880, 1184);
+        MinimumSize = new Size(900, 1234);
         Font = new Font("Segoe UI", 9f);
         try
         {
@@ -567,14 +581,14 @@ public sealed class MainForm : Form
               _cameraIdLabel, _controlsPanel, _cameraHint, _cameraStatus });
     }
 
-    // Effects GroupBox + table: header (backend switch) on top, 7 rows
+    // Effects GroupBox + table: header (backend switch) on top, 10 rows
     // (checkbox + slider + value) below. All checkbox/value cells are AutoSize
     // so longer labels at 125% DPI widen their column instead of overlapping
     // the neighbour (the old fixed-X layout clipped/overlapped).
     private void SetupFxGroup()
     {
         _fxGroup.Location = new Point(12, 614);
-        _fxGroup.Size = new Size(856, 298);
+        _fxGroup.Size = new Size(856, 400);
         _fxGroup.Text = "Эффекты";
         _fxGroup.Name = "fxGroup";
         _fxGroup.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
@@ -651,7 +665,15 @@ public sealed class MainForm : Form
         _fxBackend.SelectedIndex = 0;
         _fxBackend.Name = "fxBackend";
         _fxBackend.Margin = new Padding(0, 2, 4, 4);
-        fxRow2.Controls.AddRange(new Control[] { _fxEnabled, _fxBackendLabel, _fxBackend });
+
+        // Хинт про CPU-ограничение трио: виден только при backend CPU
+        // (см. UpdateFxEnabledState). Серый — как соседние хинты формы.
+        _fxTrioHint.AutoSize = true;
+        _fxTrioHint.Text = "Плёнка/Свечение/Шумодав — только frei0r";
+        _fxTrioHint.ForeColor = Color.DimGray;
+        _fxTrioHint.Name = "fxTrioHint";
+        _fxTrioHint.Margin = new Padding(8, 6, 4, 4);
+        fxRow2.Controls.AddRange(new Control[] { _fxEnabled, _fxBackendLabel, _fxBackend, _fxTrioHint });
         _fxHeader.Controls.AddRange(new Control[] { _profileLabel, _profileCombo,
             _profileApply, _profileSave, _profileDelete });
         _fxHeader.Controls.Add(fxRow2);
@@ -659,12 +681,12 @@ public sealed class MainForm : Form
         _fxTable.Dock = DockStyle.Fill;
         _fxTable.Name = "fxTable";
         _fxTable.ColumnCount = 3;
-        _fxTable.RowCount = 7;
+        _fxTable.RowCount = 10;
         _fxTable.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         _fxTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
         _fxTable.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        for (var r = 0; r < 7; r++)
-            _fxTable.RowStyles.Add(new RowStyle(SizeType.Percent, 100f / 7f));
+        for (var r = 0; r < 10; r++)
+            _fxTable.RowStyles.Add(new RowStyle(SizeType.Percent, 100f / 10f));
 
         SetupFxCheck(_fxMirror, "Зеркало", "fxMirror");
         SetupFxCheck(_fxGrayscale, "Ч/Б", "fxGrayscale");
@@ -672,21 +694,31 @@ public sealed class MainForm : Form
         SetupFxCheck(_fxScanlines, "Сканлайны", "fxScanlines");
         SetupFxCheck(_fxRgbSplit, "RGB-сдвиг", "fxRgbSplit");
         SetupFxCheck(_fxTracking, "Трекинг", "fxTracking");
+        SetupFxCheck(_fxGateweave, "Плёнка", "fxGateweave");
+        SetupFxCheck(_fxGlow, "Свечение", "fxGlow");
+        SetupFxCheck(_fxDenoise, "Шумодав", "fxDenoise");
         SetupFxCheck(_fxVhs, "VHS (пресет)", "fxVhs");
 
         SetupFxLevel(_fxNoiseLevel, _fxNoiseLevelVal, "fxNoiseLevel");
         SetupFxLevel(_fxScanlinesLevel, _fxScanlinesLevelVal, "fxScanlinesLevel");
         SetupFxLevel(_fxRgbSplitLevel, _fxRgbSplitLevelVal, "fxRgbSplitLevel");
         SetupFxLevel(_fxTrackingLevel, _fxTrackingLevelVal, "fxTrackingLevel");
+        SetupFxLevel(_fxGateweaveLevel, _fxGateweaveLevelVal, "fxGateweaveLevel");
+        SetupFxLevel(_fxGlowLevel, _fxGlowLevelVal, "fxGlowLevel");
+        SetupFxLevel(_fxDenoiseLevel, _fxDenoiseLevelVal, "fxDenoiseLevel");
 
-        // Rows: mirror / grayscale / noise / scanlines / rgbsplit / tracking / vhs.
+        // Rows: mirror / grayscale / noise / scanlines / rgbsplit /
+        // tracking / gateweave / glow / denoise / vhs.
         AddFxRow(0, _fxMirror, null, null);
         AddFxRow(1, _fxGrayscale, null, null);
         AddFxRow(2, _fxNoise, _fxNoiseLevel, _fxNoiseLevelVal);
         AddFxRow(3, _fxScanlines, _fxScanlinesLevel, _fxScanlinesLevelVal);
         AddFxRow(4, _fxRgbSplit, _fxRgbSplitLevel, _fxRgbSplitLevelVal);
         AddFxRow(5, _fxTracking, _fxTrackingLevel, _fxTrackingLevelVal);
-        AddFxRow(6, _fxVhs, null, null);
+        AddFxRow(6, _fxGateweave, _fxGateweaveLevel, _fxGateweaveLevelVal);
+        AddFxRow(7, _fxGlow, _fxGlowLevel, _fxGlowLevelVal);
+        AddFxRow(8, _fxDenoise, _fxDenoiseLevel, _fxDenoiseLevelVal);
+        AddFxRow(9, _fxVhs, null, null);
 
         // М1 (продолжение): таб-порядок внутри шапки и таблицы — по визуали:
         // профиль → мастер → backend → строки сверху вниз (чекбокс → слайдер).
@@ -700,7 +732,9 @@ public sealed class MainForm : Form
         {
             _fxMirror, _fxGrayscale,
             _fxNoise, _fxNoiseLevel, _fxScanlines, _fxScanlinesLevel,
-            _fxRgbSplit, _fxRgbSplitLevel, _fxTracking, _fxTrackingLevel, _fxVhs,
+            _fxRgbSplit, _fxRgbSplitLevel, _fxTracking, _fxTrackingLevel,
+            _fxGateweave, _fxGateweaveLevel, _fxGlow, _fxGlowLevel,
+            _fxDenoise, _fxDenoiseLevel, _fxVhs,
         };
         for (var fi = 0; fi < fxTab.Length; fi++) fxTab[fi].TabIndex = fi;
 
@@ -711,6 +745,9 @@ public sealed class MainForm : Form
     // Master switch gray-out: while the effects are disabled the rows below
     // (and the backend picker) are read-only. Only sets Enabled (no Checked
     // changes), so it never dirties the form and is safe under _suppressDirty.
+    // Trio (gateweave/glow/denoise) — только backend frei0r: при CPU их строки
+    // серые + хинт в шапке (хост такие пропускает с one-shot логом —
+    // молчаливых no-op нет ни через UI, ни через ручной settings.json).
     private void UpdateFxEnabledState()
     {
         var on = _fxEnabled.Checked;
@@ -719,13 +756,18 @@ public sealed class MainForm : Form
             _fxNoiseLevel, _fxScanlinesLevel, _fxRgbSplitLevel, _fxTrackingLevel,
             _fxBackend })
             c.Enabled = on;
+        var trioOn = on && CurrentBackend == "frei0r";
+        foreach (var c in new Control[] { _fxGateweave, _fxGlow, _fxDenoise,
+            _fxGateweaveLevel, _fxGlowLevel, _fxDenoiseLevel })
+            c.Enabled = trioOn;
+        _fxTrioHint.Visible = on && CurrentBackend != "frei0r";
     }
 
     // Ether recording group: file path + browse + start/stop + REC line +
     // record-hotkey hint. Below the effects group (fx bottom = 912).
     private void SetupRecGroup()
     {
-        _recGroup.Location = new Point(12, 916);
+        _recGroup.Location = new Point(12, 1018);
         _recGroup.Size = new Size(856, 110);
         _recGroup.Text = "Запись эфира";
         _recGroup.Name = "recGroup";
@@ -841,7 +883,9 @@ public sealed class MainForm : Form
     private void SubscribeDirtyTracking()
     {
         foreach (var c in new[] { _fxMirror, _fxGrayscale, _fxNoise, _fxScanlines,
-                                  _fxRgbSplit, _fxTracking, _fxVhs, _cropKeepAspect })
+                                   _fxRgbSplit, _fxTracking,
+                                   _fxGateweave, _fxGlow, _fxDenoise,
+                                   _fxVhs, _cropKeepAspect })
             c.CheckedChanged += (_, _) => MarkDirty();
         // Master switch: user edits set the dirty flag (suppressed during
         // Load/reload); the gray-out below always follows the checkbox.
@@ -850,7 +894,9 @@ public sealed class MainForm : Form
         _mode.SelectedIndexChanged += (_, _) => MarkDirty();
         _mediaCombo.SelectedIndexChanged += (_, _) => MarkDirty();
         _qualityCombo.SelectedIndexChanged += (_, _) => MarkDirty();
-        _fxBackend.SelectedIndexChanged += (_, _) => MarkDirty();
+        // Backend switch: кроме dirty — пересчёт серых строк трио
+        // (UpdateFxEnabledState сам dirty не ставит — безопасен).
+        _fxBackend.SelectedIndexChanged += (_, _) => { UpdateFxEnabledState(); MarkDirty(); };
         _captureCombo.SelectedIndexChanged += (_, _) => MarkDirty();
         _cameraCombo.SelectedIndexChanged += (_, _) => MarkDirty();
         // Crop fields: programmatic sync runs under _updatingCropFields.
@@ -1277,6 +1323,9 @@ public sealed class MainForm : Form
         _fxScanlines.Checked = s.FxScanlines;
         _fxRgbSplit.Checked = s.FxRgbSplit;
         _fxTracking.Checked = s.FxTracking;
+        _fxGateweave.Checked = s.FxGateweave;
+        _fxGlow.Checked = s.FxGlow;
+        _fxDenoise.Checked = s.FxDenoise;
         _fxVhs.Checked = s.FxVhs;
         _fxNoiseLevel.Value = Math.Clamp(s.FxNoiseLevel, 0, 100);
         _fxNoiseLevelVal.Text = _fxNoiseLevel.Value.ToString();
@@ -1286,7 +1335,17 @@ public sealed class MainForm : Form
         _fxRgbSplitLevelVal.Text = _fxRgbSplitLevel.Value.ToString();
         _fxTrackingLevel.Value = Math.Clamp(s.FxTrackingLevel, 0, 100);
         _fxTrackingLevelVal.Text = _fxTrackingLevel.Value.ToString();
+        _fxGateweaveLevel.Value = Math.Clamp(s.FxGateweaveLevel, 0, 100);
+        _fxGateweaveLevelVal.Text = _fxGateweaveLevel.Value.ToString();
+        _fxGlowLevel.Value = Math.Clamp(s.FxGlowLevel, 0, 100);
+        _fxGlowLevelVal.Text = _fxGlowLevel.Value.ToString();
+        _fxDenoiseLevel.Value = Math.Clamp(s.FxDenoiseLevel, 0, 100);
+        _fxDenoiseLevelVal.Text = _fxDenoiseLevel.Value.ToString();
         _fxBackend.SelectedIndex = s.FxBackend == "frei0r" ? 1 : 0;
+        // Backend приехал из файла — серые строки трио пересчитать сразу
+        // (SelectedIndexChanged под _suppressDirty тоже стреляет, но
+        // прямой вызов — страховка при том же индексе).
+        UpdateFxEnabledState();
         _mediaCombo.SelectedIndex = s.SourceType switch
         {
             // В3: неизвестный будущий токен показываем как static (комбо его
@@ -2163,11 +2222,17 @@ public sealed class MainForm : Form
         settings.FxScanlines = _fxScanlines.Checked;
         settings.FxRgbSplit = _fxRgbSplit.Checked;
         settings.FxTracking = _fxTracking.Checked;
+        settings.FxGateweave = _fxGateweave.Checked;
+        settings.FxGlow = _fxGlow.Checked;
+        settings.FxDenoise = _fxDenoise.Checked;
         settings.FxVhs = _fxVhs.Checked;
         settings.FxNoiseLevel = _fxNoiseLevel.Value;
         settings.FxScanlinesLevel = _fxScanlinesLevel.Value;
         settings.FxRgbSplitLevel = _fxRgbSplitLevel.Value;
         settings.FxTrackingLevel = _fxTrackingLevel.Value;
+        settings.FxGateweaveLevel = _fxGateweaveLevel.Value;
+        settings.FxGlowLevel = _fxGlowLevel.Value;
+        settings.FxDenoiseLevel = _fxDenoiseLevel.Value;
         settings.FxBackend = CurrentBackend;
 
         if (CurrentSourceType == SourceTypes.Video)

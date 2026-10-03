@@ -750,17 +750,31 @@ bool ApplyEffects(uint8_t* bgrx, int stride, uint32_t w, uint32_t h,
     bool rgbSplit = fx.rgbSplit;
     bool tracking = fx.tracking;
     if (fx.vhs) noise = scanlines = rgbSplit = tracking = true;
+    // Тройка — отдельные тоглы, в VHS не входят.
+    const bool gateweave = fx.gateweave;
+    const bool glow = fx.glow;
+    const bool denoise = fx.denoise;
     // Уровни — индивидуальные (VHS отдельного уровня не имеет, берёт те же).
     // Уровень 0 при включённом тоггле ≈ эффект выключен (функции — no-op).
     const int noiseLevel = fx.noiseLevel;
     const int scanlinesLevel = fx.scanlinesLevel;
     const int rgbSplitLevel = fx.rgbSplitLevel;
     const int trackingLevel = fx.trackingLevel;
-    const bool wantCpu = (noise && noiseLevel > 0) ||
+    const int gateweaveLevel = fx.gateweaveLevel;
+    const int glowLevel = fx.glowLevel;
+    const int denoiseLevel = fx.denoiseLevel;
+    const bool wantOld = (noise && noiseLevel > 0) ||
                          (scanlines && scanlinesLevel > 0) ||
                          (rgbSplit && rgbSplitLevel > 0) ||
                          (tracking && trackingLevel > 0);
-    if (!needGpu && !wantCpu) return true;
+    // Тройка без CPU-аналогов: на backend cpu пропускается (хост логирует
+    // one-shot хинт, UI серит строки) — молчаливых no-op нет.
+    const bool wantTrio = (gateweave && gateweaveLevel > 0) ||
+                          (glow && glowLevel > 0) ||
+                          (denoise && denoiseLevel > 0);
+    const bool isFrei = (fx.backend == L"frei0r");
+    const bool wantFx = wantOld || (isFrei && wantTrio);
+    if (!needGpu && !wantFx) return true;
     if (stride != (int)(w * 4u)) return false; // только плотная упаковка
     const size_t pixels = (size_t)w * h;
     if (pixels == 0 || pixels > (size_t)16384 * 16384) return false;
@@ -779,10 +793,10 @@ bool ApplyEffects(uint8_t* bgrx, int stride, uint32_t w, uint32_t h,
     // Единственный сбой CPU-пути — OOM temp-буфера (кадр не тронут —
     // аллокации все ДО модификации); сами циклы не бросают.
     // М8 (designed, не менять функционально): g_analogFrame стоит при
-    // выключенном аналоге — счётчик крутится только внутри if (wantCpu),
+    // выключенном аналоге — счётчик крутится только внутри if (wantFx),
     // т.е. анимация шума/трекинга ставится на паузу вместо дрейфа фазы.
     // При повторном включении помехи продолжаются с того же кадра.
-    if (wantCpu) {
+    if (wantFx) {
         const uint64_t frame =
             g_analogFrame.fetch_add(1, std::memory_order_relaxed);
         auto runCpu = [&]() {
@@ -798,16 +812,22 @@ bool ApplyEffects(uint8_t* bgrx, int stride, uint32_t w, uint32_t h,
             }
             return true;
         };
-        if (fx.backend == L"frei0r") {
+        if (isFrei) {
             frei::AnalogRequest fr{};
             fr.noise = noise;
             fr.scanlines = scanlines;
             fr.rgbSplit = rgbSplit;
             fr.tracking = tracking;
+            fr.gateweave = gateweave;
+            fr.glow = glow;
+            fr.denoise = denoise;
             fr.noiseLevel = noiseLevel;
             fr.scanlinesLevel = scanlinesLevel;
             fr.rgbSplitLevel = rgbSplitLevel;
             fr.trackingLevel = trackingLevel;
+            fr.gateweaveLevel = gateweaveLevel;
+            fr.glowLevel = glowLevel;
+            fr.denoiseLevel = denoiseLevel;
             fr.timeSec = (double)frame / 30.0;
             const frei::FreiResult r = frei::ApplyAnalog(bgrx, w, h, fr);
             if (r == frei::FreiResult::kApplied) return true;

@@ -4,12 +4,17 @@
 #   (из каталога VirtualCameraMediaSource; повторный запуск = чистая пересборка)
 #
 # Почему не готовые .dll: у dyne/frei0r нет официальных Win64-бинарников
-# (releases — только исходники), поэтому собираем 4 нужных фильтра из
+# (releases — только исходники), поэтому собираем 7 нужных фильтров из
 # исходников апстрима клангом MSVC:
-#   rgbnoise   (шум)          <- src/filter/rgbnoise/rgbnoise.c
-#   scanline0r (сканлайны)    <- src/filter/scanline0r/scanline0r.cpp
-#   rgbsplit0r (RGB-сдвиг)    <- src/filter/rgbsplit0r/rgbsplit0r.c
-#   glitch0r   (трекинг-глитч)<- src/filter/glitch0r/glitch0r.c
+#   rgbnoise       (шум)            <- src/filter/rgbnoise/rgbnoise.c
+#   scanline0r     (сканлайны)      <- src/filter/scanline0r/scanline0r.cpp
+#   rgbsplit0r     (RGB-сдвиг)      <- src/filter/rgbsplit0r/rgbsplit0r.c
+#   glitch0r       (трекинг-глитч)  <- src/filter/glitch0r/glitch0r.c
+#   gateweave      (дрожание плёнки)<- src/filter/gateweave/gateweave.c
+#   glow           (свечение)       <- src/filter/glow/glow.c (+ include/frei0r/blur.h:
+#                                     header-only squareblur, доп. .c не надо)
+#   denoise_hqdn3d (шумодав hqdn3d) <- src/filter/denoise/denoise_hqdn3d.c
+# Имена DLL = CMake TARGET апстрима (см. src/filter/<name>/CMakeLists.txt).
 #
 # Что делает:
 #   1. Клонирует https://github.com/dyne/frei0r во временную папку
@@ -19,9 +24,9 @@
 #   3. Компилирует каждый в DLL: cl /O2 /MT /LD /DFREI0R_PLUGIN + сгенерённый
 #      .def (апстрим не ставит dllexport на определения f0r_* — без .def
 #      экспортов в DLL не будет; проверено dumpbin).
-#   4. Кладёт rgbnoise.dll, scanline0r.dll, rgbsplit0r.dll, glitch0r.dll в
-#      third_party/frei0r/bin/x64/ (игнор) + копию в build\x64\Release\frei0r\
-#      (рядом с хостом; build/ в игноре).
+#   4. Кладёт 7 DLL (rgbnoise, scanline0r, rgbsplit0r, glitch0r,
+#      gateweave, glow, denoise_hqdn3d) в third_party/frei0r/bin/x64/ (игнор)
+#      + копию в build\x64\Release\frei0r\ (рядом с хостом; build/ в игноре).
 #
 # Лицензия: плагины — GPL-2.0 (апстрим); DLL НЕ коммитятся, в инсталлятор
 # попадут как внешние бинарники с указанием исходников (см. NOTICE.txt).
@@ -70,18 +75,23 @@ try {
 $SrcDir = Join-Path $WorkDir "src"
 New-Item -ItemType Directory -Path (Join-Path $SrcDir "inc\frei0r") -Force | Out-Null
 $IncDir = Join-Path $SrcDir "inc"
-foreach ($h in @("include\frei0r.h", "include\frei0r.hpp", "include\frei0r\math.h")) {
+foreach ($h in @("include\frei0r.h", "include\frei0r.hpp", "include\frei0r\math.h", "include\frei0r\blur.h")) {
     $from = Join-Path $RepoDir $h
     if (-not (Test-Path $from)) { Fail "в исходниках нет $h (структура апстрима изменилась)." }
     $to = Join-Path $IncDir (Split-Path $h -Leaf)
-    if ($h -match "math\.h$") { $to = Join-Path $IncDir "frei0r\math.h" }
+    # math.h/blur.h живут в подкаталоге include/frei0r/ (так их инклудят
+    # исходники: "frei0r/math.h", "frei0r/blur.h") — повторяем раскладку.
+    if ($h -match "\\frei0r\\[^\\]+$") { $to = Join-Path $IncDir ("frei0r\" + (Split-Path $h -Leaf)) }
     Copy-Item $from $to -Force
 }
 $Plugins = @(
-    @{ Name = "rgbnoise";   Src = "src\filter\rgbnoise\rgbnoise.c";       Lang = "c" },
-    @{ Name = "scanline0r"; Src = "src\filter\scanline0r\scanline0r.cpp"; Lang = "cpp" },
-    @{ Name = "rgbsplit0r"; Src = "src\filter\rgbsplit0r\rgbsplit0r.c";   Lang = "c" },
-    @{ Name = "glitch0r";   Src = "src\filter\glitch0r\glitch0r.c";       Lang = "c" }
+    @{ Name = "rgbnoise";       Src = "src\filter\rgbnoise\rgbnoise.c";         Lang = "c" },
+    @{ Name = "scanline0r";     Src = "src\filter\scanline0r\scanline0r.cpp";   Lang = "cpp" },
+    @{ Name = "rgbsplit0r";     Src = "src\filter\rgbsplit0r\rgbsplit0r.c";     Lang = "c" },
+    @{ Name = "glitch0r";       Src = "src\filter\glitch0r\glitch0r.c";         Lang = "c" },
+    @{ Name = "gateweave";      Src = "src\filter\gateweave\gateweave.c";      Lang = "c" },
+    @{ Name = "glow";           Src = "src\filter\glow\glow.c";               Lang = "c" },
+    @{ Name = "denoise_hqdn3d"; Src = "src\filter\denoise\denoise_hqdn3d.c";   Lang = "c" }
 )
 foreach ($p in $Plugins) {
     $from = Join-Path $RepoDir $p.Src
@@ -96,9 +106,9 @@ foreach ($p in $Plugins) {
 #   .def генерируем по факту: dumpbin /symbols объекта показывает, какие f0r_
 #   реально определены (C — undecorated, C++ frei0r.hpp — mangled ?f0r_*@@...;
 #   для mangled в .def пишем алиас "f0r_x = ?f0r_x@@...").
-# - C-плагины (rgbnoise/glitch0r/rgbsplit0r) определяют только f0r_update;
+# - C-плагины определяют только f0r_update (scanline0r — C++, update2 есть);
 #   недостающий f0r_update2 добиваем C-шимом (форвард на f0r_update) — тогда
-#   у всех 4 DLL единый интерфейс (хост предпочитает update2).
+#   у всех 7 DLL единый интерфейс (хост предпочитает update2).
 $dumpbin = $null
 foreach ($msvc in @(Get-ChildItem "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\MSVC" -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending)) {
     $cand = Join-Path $msvc.FullName "bin\Hostx64\x64\dumpbin.exe"
@@ -217,4 +227,4 @@ Copy-Item (Join-Path $BinOutDir "*.dll") $BuildFreiDir -Force
 Write-Host "Копия для хоста: $BuildFreiDir"
 
 $totalKb = ((Get-ChildItem $BinOutDir *.dll | Measure-Object Length -Sum).Sum / 1KB).ToString("0")
-Write-Host "ГОТОВО за $([int]$Sw.Elapsed.TotalSeconds) с: $BinOutDir ($totalKb KB, 4 x .dll). В git идут только build.ps1 + NOTICE.txt, .dll — игнорируются." -ForegroundColor Green
+Write-Host "ГОТОВО за $([int]$Sw.Elapsed.TotalSeconds) с: $BinOutDir ($totalKb KB, 7 x .dll). В git идут только build.ps1 + NOTICE.txt, .dll — игнорируются." -ForegroundColor Green
