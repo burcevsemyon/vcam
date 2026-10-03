@@ -270,6 +270,12 @@ void ParseNewSchema(const std::string& json, Settings& s)
         s.fx.scanlinesLevel = ClampLevel(JsonGetInt(sec, "scanlinesLevel", 100));
         s.fx.rgbSplitLevel = ClampLevel(JsonGetInt(sec, "rgbsplitLevel", 100));
         s.fx.trackingLevel = ClampLevel(JsonGetInt(sec, "trackingLevel", 100));
+        std::wstring be;
+        // backend: только "frei0r" проходит, всё остальное (включая
+        // отсутствие ключа) → "cpu" (default без DLL).
+        s.fx.backend = (JsonGetString(sec, "backend", be) && be == L"frei0r")
+                           ? L"frei0r"
+                           : L"cpu";
     }
     std::wstring q;
     if (JsonGetString(json, "quality", q)) ParseQuality(q, s.quality);
@@ -310,6 +316,7 @@ void ParseLegacySchema(const std::string& json, Settings& s)
     s.fx.scanlinesLevel = 100; // нейтральные (не влияют, но round-trip стабилен)
     s.fx.rgbSplitLevel = 100;
     s.fx.trackingLevel = 100;
+    s.fx.backend = L"cpu"; // legacy без секции effects -> CPU без DLL
     s.autostart = JsonGetBool(json, "autostart", true);
 }
 
@@ -377,6 +384,7 @@ std::string Settings::Serialize() const
     out += ", \"scanlinesLevel\": " + std::to_string(fx.scanlinesLevel);
     out += ", \"rgbsplitLevel\": " + std::to_string(fx.rgbSplitLevel);
     out += ", \"trackingLevel\": " + std::to_string(fx.trackingLevel);
+    out += ", \"backend\": \"" + WideToUtf8(fx.backend == L"frei0r" ? L"frei0r" : L"cpu") + "\"";
     out += " },\n";
     out += "  \"autostart\": ";
     out += autostart ? "true" : "false";

@@ -1,8 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 
-// Покадровые эффекты хоста: GPUPixel (зеркало + Ч/Б) + CPU-аналог помех.
+// Покадровые эффекты хоста: GPUPixel (зеркало + Ч/Б) + помехи (backend).
 // Контракт вызова прежний: in-place над BGRX-кадром после RenderOne,
 // перед WriteOne.
 namespace vcam::effects {
@@ -10,6 +11,8 @@ namespace vcam::effects {
 // Флаги эффектов — 1:1 с Settings::EffectsSection (Settings.h) и C# Settings.
 // Уровни 0–100 (default 100 = вид как без уровней; 0 при включённом тоггле
 // ≈ эффект выключен). VHS использует индивидуальные уровни четырёх помех.
+// backend: L"cpu" (default, без DLL) | L"frei0r" (цепочка frei0r-плагинов;
+// нет DLL/init fail → fail-open на CPU + one-shot лог хоста).
 struct FxFlags {
     bool mirror = false;
     bool grayscale = false;
@@ -22,6 +25,7 @@ struct FxFlags {
     int scanlinesLevel = 100;
     int rgbSplitLevel = 100;
     int trackingLevel = 100;
+    std::wstring backend = L"cpu";
 };
 
 // Применяет эффекты к кадру. Возвращает:
@@ -41,5 +45,10 @@ bool ApplyEffects(uint8_t* bgrx, int stride, uint32_t w, uint32_t h,
 // принадлежат библиотеке и живут до конца процесса (дизайн GPUPixel:
 // GPUPixelContext::Destroy — внутренний API, в публичных хедерах его нет).
 void ShutdownEffects();
+
+// One-shot флаг CPU-fallback frei0r (обмен со сбросом): true, если хотя бы
+// один кадр с прошлого чтения посчитан CPU из-за недоступных DLL.
+// Хост логирует один раз; CPU-путь при этом бит-в-бит как backend cpu.
+bool TakeFreiFallbackFlag();
 
 } // namespace vcam::effects

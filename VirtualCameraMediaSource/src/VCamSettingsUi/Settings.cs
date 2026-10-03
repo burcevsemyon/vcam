@@ -17,7 +17,8 @@ namespace VCamSettingsUi;
 //     "effects": { "mirror": bool, "grayscale": bool, "noise": bool,
 //                "scanlines": bool, "rgbsplit": bool, "tracking": bool,
 //                "vhs": bool, "noiseLevel": int 0-100, "scanlinesLevel": int,
-//                "rgbsplitLevel": int, "trackingLevel": int },
+//                "rgbsplitLevel": int, "trackingLevel": int,
+//                "backend": "cpu" | "frei0r" },
 //     "autostart": bool }
 // Empty camera section (id and name both "") -> host shows NO SIGNAL until a
 // device is chosen. Load also accepts the legacy flat format
@@ -104,6 +105,11 @@ public sealed class Settings
     public int FxScanlinesLevel { get; set; } = 100;
     public int FxRgbSplitLevel { get; set; } = 100;
     public int FxTrackingLevel { get; set; } = 100;
+
+    // Analog interference backend (mirrors EffectsSection.backend on the C++
+    // side): only "frei0r" passes, anything else (incl. missing) is "cpu".
+    // Legacy files without the key migrate to "cpu".
+    public string FxBackend { get; set; } = "cpu";
 
     // Section "camera" capture: mirrors Settings::ParseCapture on the C++ side —
     // only "720p"/"1080p" pass, anything else (incl. missing) is Max.
@@ -208,6 +214,7 @@ public sealed class Settings
                     s.FxScanlinesLevel = GetLevel(fx, "scanlinesLevel");
                     s.FxRgbSplitLevel = GetLevel(fx, "rgbsplitLevel");
                     s.FxTrackingLevel = GetLevel(fx, "trackingLevel");
+                    s.FxBackend = ParseBackend(GetString(fx, "backend"));
                 }
 
                 if (root.TryGetProperty("autostart", out var au))
@@ -296,6 +303,7 @@ public sealed class Settings
                 ["scanlinesLevel"] = FxScanlinesLevel,
                 ["rgbsplitLevel"] = FxRgbSplitLevel,
                 ["trackingLevel"] = FxTrackingLevel,
+                ["backend"] = FxBackend == "frei0r" ? "frei0r" : "cpu",
             },
             ["autostart"] = Autostart,
         };
@@ -339,6 +347,12 @@ public sealed class Settings
     private static Quality ParseQuality(string quality) =>
         string.Equals(quality, "fixed720p", StringComparison.Ordinal) ? Quality.Fixed720p
         : Quality.Source;
+
+    // Mirrors the C++ effects.backend parsing exactly: only "frei0r" passes
+    // (ordinal), everything else (missing/garbage/future tokens) is "cpu".
+    private static string ParseBackend(string backend) =>
+        string.Equals(backend, "frei0r", StringComparison.Ordinal) ? "frei0r"
+        : "cpu";
 
     // Mirrors the C++ ParseCapture exactly: only "720p"/"1080p" pass (ordinal),
     // everything else (missing/garbage/future tokens) is Max.

@@ -41,6 +41,8 @@
 
 #include "GpuEffects.h"
 
+#include "FreiEffects.h"
+
 #include <atomic>
 #include <condition_variable>
 #include <cstdio>
@@ -748,26 +750,50 @@ bool ApplyEffects(uint8_t* bgrx, int stride, uint32_t w, uint32_t h,
         return false;
     }
 
-    // CPU-аналог помех (после GPU; grayscale уже применён — цветной шум
-    // поверх Ч/Б задуман как chroma-noise, rgb-split даёт кромки и на сером).
-    // Единственный сбой здесь — OOM temp-буфера (кадр не тронут — аллокации
-    // все ДО модификации); сами циклы не бросают.
+    // Помехи: backend cpu (штатный путь, бит-в-бит как раньше) или frei0r
+    // (цепочка плагинов; недоступны → kNeedCpu → тот же CPU-путь + флаг
+    // для one-shot лога хоста). VHS на обоих — связка тех же четырёх.
+    // Единственный сбой CPU-пути — OOM temp-буфера (кадр не тронут —
+    // аллокации все ДО модификации); сами циклы не бросают.
     if (wantCpu) {
         const uint64_t frame =
             g_analogFrame.fetch_add(1, std::memory_order_relaxed);
-        try {
-            if (rgbSplit && rgbSplitLevel > 0) CpuRgbSplit(bgrx, w, h, rgbSplitLevel);
-            if (tracking && trackingLevel > 0)
-                CpuTracking(bgrx, w, h, frame, trackingLevel);
-            if (noise && noiseLevel > 0) CpuNoise(bgrx, pixels, frame, noiseLevel);
-            if (scanlines && scanlinesLevel > 0)
-                CpuScanlines(bgrx, w, h, scanlinesLevel);
-        } catch (...) {
-            return false;
+        auto runCpu = [&]() {
+            try {
+                if (rgbSplit && rgbSplitLevel > 0) CpuRgbSplit(bgrx, w, h, rgbSplitLevel);
+                if (tracking && trackingLevel > 0)
+                    CpuTracking(bgrx, w, h, frame, trackingLevel);
+                if (noise && noiseLevel > 0) CpuNoise(bgrx, pixels, frame, noiseLevel);
+                if (scanlines && scanlinesLevel > 0)
+                    CpuScanlines(bgrx, w, h, scanlinesLevel);
+            } catch (...) {
+                return false;
+            }
+            return true;
+        };
+        if (fx.backend == L"frei0r") {
+            frei::AnalogRequest fr{};
+            fr.noise = noise;
+            fr.scanlines = scanlines;
+            fr.rgbSplit = rgbSplit;
+            fr.tracking = tracking;
+            fr.noiseLevel = noiseLevel;
+            fr.scanlinesLevel = scanlinesLevel;
+            fr.rgbSplitLevel = rgbSplitLevel;
+            fr.trackingLevel = trackingLevel;
+            fr.timeSec = (double)frame / 30.0;
+            const frei::FreiResult r = frei::ApplyAnalog(bgrx, w, h, fr);
+            if (r == frei::FreiResult::kApplied) return true;
+            if (r == frei::FreiResult::kFailed) return false;
+            if (!runCpu()) return false; // kNeedCpu → fail-open на CPU
+        } else {
+            if (!runCpu()) return false;
         }
     }
     return true;
 }
+
+bool TakeFreiFallbackFlag() { return frei::TakeCpuFallbackFlag(); }
 
 void ShutdownEffects() {
     State& st = FxState();
@@ -779,6 +805,7 @@ void ShutdownEffects() {
     st.failStreak = 0;
     // warmedUp/disabled не сбрасываем: warmedUp одноразовый за процесс,
     // disabled — липкий (среда не чинится перезапуском пайпа).
+    frei::ShutdownFrei();
 }
 
 } // namespace vcam::effects

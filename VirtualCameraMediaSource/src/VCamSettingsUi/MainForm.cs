@@ -47,6 +47,11 @@ public sealed class MainForm : Form
     private readonly Label _fxRgbSplitLevelVal = new();
     private readonly Label _fxTrackingLevelVal = new();
 
+    // Analog interference backend (minimal ComboBox; full layout rework is the
+    // next subagent): CPU (default, no DLLs) | frei0r (frei0r plugin chain,
+    // falls back to CPU when the DLLs are missing).
+    private readonly ComboBox _fxBackend = new();
+
     // Info panel replacing the picture preview in video mode.
     private readonly Panel _videoPanel = new();
     private readonly Label _videoTitle = new();
@@ -130,6 +135,7 @@ public sealed class MainForm : Form
     private static readonly string[] MediaNames = { "статичная картинка", "видеоролик", "физическая камера" };
     private static readonly string[] QualityNames = { "натив (source)", "720p (fixed)" };
     private static readonly string[] CaptureNames = { "Максимум", "720p", "1080p" };
+    private static readonly string[] FxBackendNames = { "CPU", "frei0r" };
 
     public MainForm()
     {
@@ -304,6 +310,14 @@ public sealed class MainForm : Form
         _fxVhs.Text = "VHS";
         _fxVhs.Name = "fxVhs";
 
+        // Minimal backend switch (layout rework is a separate task).
+        _fxBackend.Location = new Point(620, 624);
+        _fxBackend.Size = new Size(110, 28);
+        _fxBackend.DropDownStyle = ComboBoxStyle.DropDownList;
+        _fxBackend.Items.AddRange(FxBackendNames);
+        _fxBackend.SelectedIndex = 0;
+        _fxBackend.Name = "fxBackend";
+
         _hintLabel.Location = new Point(12, 652);
         _hintLabel.Size = new Size(548, 50);
         _hintLabel.ForeColor = Color.DimGray;
@@ -322,7 +336,8 @@ public sealed class MainForm : Form
             _fxRgbSplit, _fxRgbSplitLevel, _fxRgbSplitLevelVal,
             _fxTracking, _fxTrackingLevel, _fxTrackingLevelVal, _fxVhs,
             _mode, _openButton, _fullSizeButton, _saveButton, _reloadButton, _hostStatusLabel, _hostButton, _helpButton,
-            _cropXLabel, _cropX, _cropYLabel, _cropY, _cropWLabel, _cropW, _cropHLabel, _cropH, _cropKeepAspect, _hintLabel });
+            _cropXLabel, _cropX, _cropYLabel, _cropY, _cropWLabel, _cropW, _cropHLabel, _cropH, _cropKeepAspect, _hintLabel,
+            _fxBackend });
 
         _previewExe = FindPreviewExe();
         _hostExe = FindHostExe();
@@ -506,6 +521,7 @@ public sealed class MainForm : Form
         _mode.SelectedIndexChanged += (_, _) => MarkDirty();
         _mediaCombo.SelectedIndexChanged += (_, _) => MarkDirty();
         _qualityCombo.SelectedIndexChanged += (_, _) => MarkDirty();
+        _fxBackend.SelectedIndexChanged += (_, _) => MarkDirty();
         _captureCombo.SelectedIndexChanged += (_, _) => MarkDirty();
         _cameraCombo.SelectedIndexChanged += (_, _) => MarkDirty();
         // Crop fields: programmatic sync runs under _updatingCropFields.
@@ -918,6 +934,7 @@ public sealed class MainForm : Form
         _fxRgbSplitLevelVal.Text = _fxRgbSplitLevel.Value.ToString();
         _fxTrackingLevel.Value = Math.Clamp(s.FxTrackingLevel, 0, 100);
         _fxTrackingLevelVal.Text = _fxTrackingLevel.Value.ToString();
+        _fxBackend.SelectedIndex = s.FxBackend == "frei0r" ? 1 : 0;
         _mediaCombo.SelectedIndex = s.SourceType switch
         {
             SourceType.Video => 1,
@@ -954,6 +971,9 @@ public sealed class MainForm : Form
     };
 
     private Quality CurrentQuality => _qualityCombo.SelectedIndex == 1 ? Quality.Fixed720p : Quality.Source;
+
+    // Backend ComboBox: index 1 = frei0r, anything else = cpu.
+    private string CurrentBackend => _fxBackend.SelectedIndex == 1 ? "frei0r" : "cpu";
 
     // DropDownList => index always 0..2; anything unexpected maps to Max.
     private CaptureMode CurrentCapture => _captureCombo.SelectedIndex switch
@@ -1358,6 +1378,7 @@ public sealed class MainForm : Form
         settings.FxScanlinesLevel = _fxScanlinesLevel.Value;
         settings.FxRgbSplitLevel = _fxRgbSplitLevel.Value;
         settings.FxTrackingLevel = _fxTrackingLevel.Value;
+        settings.FxBackend = CurrentBackend;
 
         if (CurrentSourceType == SourceType.Video)
         {

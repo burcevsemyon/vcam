@@ -14,3 +14,7 @@ memory.md
 # GPUPixel static libs: built locally via VirtualCameraMediaSource/third_party/gpupixel/build.ps1, not stored in git
 VirtualCameraMediaSource/third_party/gpupixel/lib/
 VirtualCameraMediaSource/third_party/**/*.lib
+# frei0r plugin DLLs + fetched upstream sources: built locally via VirtualCameraMediaSource/third_party/frei0r/build.ps1, not stored in git
+VirtualCameraMediaSource/third_party/frei0r/bin/
+VirtualCameraMediaSource/third_party/frei0r/src/
+VirtualCameraMediaSource/third_party/frei0r/*.dll

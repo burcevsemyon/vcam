@@ -1,0 +1,25 @@
+frei0r-плагины VCam (backend помех "frei0r").
+Сборка: build.ps1 (клонирует https://github.com/dyne/frei0r на пин
+5378516e73500c2d58a975eb85a305b3150475f3 и компилирует 4 фильтра в DLL).
+В git идут только build.ps1 и этот NOTICE.txt; *.dll/src/bin — игнорируются.
+
+Плагины (все — FILTER, вход/выход width*height uint32, pitch=width*4):
+  rgbnoise   — RGB-шум (1 double "noise" 0..1; 0.0 = no-op)
+  scanline0r — сканлайны (0 params; чётные строки как есть, нечётные ×0.5)
+  rgbsplit0r — RGB-разъезд (2 double: vertical c=0.5, horizontal c=0.5)
+  glitch0r   — трекинг-глитч (4 double: freq, block, shift, color)
+
+Цвет: rgbnoise/rgbsplit0r/glitch0r — RGBA8888 (byte0=R), наш кадр BGRX
+(byte0=B) → хост делает swap R<->B до/после; scanline0r — BGRA8888 (без swap).
+После каждого плагина 4-й байт принудительно 255 (X).
+
+Маппинг level 0–100 → параметры (см. FreiEffects.cpp):
+  noise:     rgbnoise[noise] = L/100
+  scanlines: без параметров (L>0 — применить, 0 — пропуск)
+  rgbsplit:  vert = 0.5, horiz = 0.5 + (L/100)*0.075 (dx=12px при 1280)
+  tracking:  glitch0r freq = L/100, block = 0.02+0.10*L/100,
+             shift = 0.02+0.08*L/100, color = L/100
+
+Лицензия плагинов: GPL-2.0 (апстрим dyne/frei0r). Хост VCam линкует только
+свой код, DLL грузятся динамически (LoadLibrary) с fail-open на CPU —
+в инсталлятор DLL кладутся как внешние бинарники с указанием исходников.

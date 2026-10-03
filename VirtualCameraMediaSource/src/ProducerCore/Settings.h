@@ -56,6 +56,10 @@ struct EffectsSection {
     int scanlinesLevel = 100;  // глубина затемнения нечётных строк
     int rgbSplitLevel = 100;   // dx сдвига (100 → 6/12/24 по ширине)
     int trackingLevel = 100;   // число/ширина полос (0 → нет полос)
+    // Исполнитель помех: L"cpu" (default, без DLL) | L"frei0r" (цепочка
+    // frei0r-плагинов, нет DLL → fail-open на CPU). Только эти два токена
+    // проходят, остальное (включая отсутствие) → cpu.
+    std::wstring backend = L"cpu";
 
     bool operator==(const EffectsSection& o) const
     {
@@ -65,7 +69,7 @@ struct EffectsSection {
                vhs == o.vhs && noiseLevel == o.noiseLevel &&
                scanlinesLevel == o.scanlinesLevel &&
                rgbSplitLevel == o.rgbSplitLevel &&
-               trackingLevel == o.trackingLevel;
+               trackingLevel == o.trackingLevel && backend == o.backend;
     }
     bool operator!=(const EffectsSection& o) const { return !(*this == o); }
 };

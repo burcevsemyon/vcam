@@ -558,7 +558,8 @@ struct Machine {
     // Эффекты (Settings.fx): применяются после RenderOne перед WriteOne;
     // смена только эффектов — без переоткрытия источника.
     EffectsSection fx;
-    bool fxGpuLogged = false; // one-shot лог fail-open эффектов
+    bool fxGpuLogged = false;  // one-shot лог fail-open эффектов
+    bool fxFreiLogged = false; // one-shot лог CPU-fallback backend frei0r
     Phase phase = Phase::Switch;
     ULONGLONG switchStart = 0;
     ULONGLONG nextAttempt = 0;
@@ -623,11 +624,18 @@ void ApplyFx(Machine& m)
     f.scanlinesLevel = m.fx.scanlinesLevel;
     f.rgbSplitLevel = m.fx.rgbSplitLevel;
     f.trackingLevel = m.fx.trackingLevel;
+    f.backend = m.fx.backend;
     const bool ok = vcam::effects::ApplyEffects(m.buf.data(), (int)(m.frameW * 4),
                                                 m.frameW, m.frameH, f);
     if (!ok && !m.fxGpuLogged) {
         m.fxGpuLogged = true;
         Log(L"[host] effects: сбой эффектов, кадры идут без них (fail-open)");
+    }
+    // frei0r недоступен (нет DLL/init fail) — помехи посчитаны CPU, кадр
+    // в эфире; логируем один раз (флаг сбрасывается при смене backend).
+    if (ok && vcam::effects::TakeFreiFallbackFlag() && !m.fxFreiLogged) {
+        m.fxFreiLogged = true;
+        Log(L"[host] effects: backend frei0r недоступен, помехи на CPU (fail-open)");
     }
 }
 
@@ -825,12 +833,13 @@ DWORD WINAPI WorkerProc(LPVOID)
             // Смена только эффектов — без переоткрытия источника: флаги
             // подхватываются на лету (вотчер шлёт dirty через operator== с fx).
             if (s.fx != m.fx) {
+                if (s.fx.backend != m.fx.backend) m.fxFreiLogged = false;
                 m.fx = s.fx;
-                Log(L"[host] effects: mirror=%d grayscale=%d noise=%d(%d) scanlines=%d(%d) rgbsplit=%d(%d) tracking=%d(%d) vhs=%d",
+                Log(L"[host] effects: mirror=%d grayscale=%d noise=%d(%d) scanlines=%d(%d) rgbsplit=%d(%d) tracking=%d(%d) vhs=%d backend=%s",
                     (int)m.fx.mirror, (int)m.fx.grayscale, (int)m.fx.noise,
                     m.fx.noiseLevel, (int)m.fx.scanlines, m.fx.scanlinesLevel,
                     (int)m.fx.rgbSplit, m.fx.rgbSplitLevel, (int)m.fx.tracking,
-                    m.fx.trackingLevel, (int)m.fx.vhs);
+                    m.fx.trackingLevel, (int)m.fx.vhs, m.fx.backend.c_str());
             }
         }
         timeout = Step(m);
