@@ -14,6 +14,7 @@
 
 #include "CameraControls.h"
 #include "SharedMemoryContract.h"
+#include "WinUtil.h"
 
 #pragma comment(lib, "advapi32.lib")
 
@@ -22,12 +23,7 @@ namespace {
 constexpr DWORD kPipeTimeoutMs = 5000;
 constexpr size_t kMaxLine = 256 * 1024;
 
-std::wstring WinErr(DWORD e)
-{
-    wchar_t buf[64];
-    swprintf(buf, 64, L"win32 %lu", (unsigned long)e);
-    return std::wstring(buf);
-}
+using vcam::WinErr;
 
 // --- UTF-8 <-> wide (только для id/domain/flags из запроса) ---
 
@@ -271,40 +267,39 @@ HRESULT ControlServer::Start(CameraControls* controls)
     }
     // Единственный сервер в системе (иначе два держателя камеры делили бы
     // один pipe — клиенты ходили бы к случайному).
-    HANDLE m = CreateMutexW(nullptr, FALSE, kMutexName);
+    // Локалы в CHandle: ранние return не текут, в члены — Detach при успехе.
+    ATL::CHandle m(CreateMutexW(nullptr, FALSE, kMutexName));
     if (!m) {
         DWORD e = GetLastError();
         LeaveCriticalSection(&cs_);
         return HRESULT_FROM_WIN32(e);
     }
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
-        CloseHandle(m);
         LeaveCriticalSection(&cs_);
         return HRESULT_FROM_WIN32(ERROR_PIPE_BUSY);
     }
-    HANDLE stop = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    ATL::CHandle stop(CreateEventW(nullptr, TRUE, FALSE, nullptr));
     if (!stop) {
         DWORD e = GetLastError();
-        CloseHandle(m);
         LeaveCriticalSection(&cs_);
         return HRESULT_FROM_WIN32(e);
     }
     controls_ = controls;
-    mutex_ = m;
-    stopEvent_ = stop;
+    mutex_ = m.Detach();
+    stopEvent_ = stop.Detach();
     stopping_ = false;
-    HANDLE t = CreateThread(nullptr, 0, AcceptProc, this, 0, nullptr);
+    ATL::CHandle t(CreateThread(nullptr, 0, AcceptProc, this, 0, nullptr));
     if (!t) {
         DWORD e = GetLastError();
-        CloseHandle(stop);
-        CloseHandle(m);
+        CloseHandle(stopEvent_);
+        CloseHandle(mutex_);
         stopEvent_ = nullptr;
         mutex_ = nullptr;
         controls_ = nullptr;
         LeaveCriticalSection(&cs_);
         return HRESULT_FROM_WIN32(e);
     }
-    acceptThread_ = t;
+    acceptThread_ = t.Detach();
     running_ = true;
     LeaveCriticalSection(&cs_);
     return S_OK;
@@ -389,10 +384,10 @@ void ControlServer::AcceptLoop()
         sa.lpSecurityDescriptor = psd;
         sa.bInheritHandle = FALSE;
 
-        HANDLE pipe = CreateNamedPipeW(
+        ATL::CHandle pipe(CreateNamedPipeW(
             kPipeName, PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
-            PIPE_UNLIMITED_INSTANCES, 8192, 8192, kPipeTimeoutMs, &sa);
+            PIPE_UNLIMITED_INSTANCES, 8192, 8192, kPipeTimeoutMs, &sa));
         if (psd) LocalFree(psd);
         if (pipe == INVALID_HANDLE_VALUE) {
             DWORD e = GetLastError();
@@ -414,17 +409,15 @@ void ControlServer::AcceptLoop()
         DWORD e = GetLastError();
         if (cc) e = ERROR_PIPE_CONNECTED; // редкий sync-успех
         if (!cc && e == ERROR_IO_PENDING) {
-            HANDLE w[2] = { stopEvent_, connEvent };
+            HANDLE w[2] = { stopEvent_, static_cast<HANDLE>(connEvent) };
             DWORD r = WaitForMultipleObjects(2, w, FALSE, INFINITE);
             if (r == WAIT_OBJECT_0) {
                 CancelIo(pipe); // будим ConnectNamedPipe
-                CloseHandle(pipe);
                 break;
             }
             e = ERROR_PIPE_CONNECTED;
         } else if (!cc && e != ERROR_PIPE_CONNECTED) {
             // Клиент подключился и сразу отвалился между Create и Connect.
-            CloseHandle(pipe);
             EnterCriticalSection(&cs_);
             bool stop = stopping_;
             LeaveCriticalSection(&cs_);
@@ -437,25 +430,25 @@ void ControlServer::AcceptLoop()
         LeaveCriticalSection(&cs_);
         if (stop) {
             DisconnectNamedPipe(pipe);
-            CloseHandle(pipe);
             break;
         }
 
-        auto* cp = new (std::nothrow) ClientParam{ this, pipe };
+        HANDLE rawPipe = pipe.Detach();
+        auto* cp = new (std::nothrow) ClientParam{ this, rawPipe };
         if (!cp) {
-            DisconnectNamedPipe(pipe);
-            CloseHandle(pipe);
+            DisconnectNamedPipe(rawPipe);
+            CloseHandle(rawPipe);
             continue;
         }
-        HANDLE t = CreateThread(nullptr, 0, ClientProc, cp, 0, nullptr);
+        ATL::CHandle t(CreateThread(nullptr, 0, ClientProc, cp, 0, nullptr));
         if (!t) {
             delete cp;
-            DisconnectNamedPipe(pipe);
-            CloseHandle(pipe);
+            DisconnectNamedPipe(rawPipe);
+            CloseHandle(rawPipe);
             continue;
         }
         EnterCriticalSection(&cs_);
-        clients_.push_back({ t, pipe });
+        clients_.push_back({ t.Detach(), rawPipe });
         LeaveCriticalSection(&cs_);
     }
 }
@@ -491,19 +484,20 @@ void ControlServer::HandleClient(HANDLE pipe)
     DisconnectNamedPipe(pipe);
     CloseHandle(pipe);
     // Убираем себя из учёта (Stop без нас закроет thread-хэндл; ждать себя нельзя).
-    HANDLE self = nullptr;
+    ATL::CHandle self;
     {
-        HANDLE me = nullptr;
+        HANDLE rawMe = nullptr;
         BOOL dup = DuplicateHandle(GetCurrentProcess(), GetCurrentThread(),
-                                   GetCurrentProcess(), &me, 0, FALSE,
+                                   GetCurrentProcess(), &rawMe, 0, FALSE,
                                    DUPLICATE_SAME_ACCESS);
+        ATL::CHandle me(rawMe);
         EnterCriticalSection(&cs_);
         for (auto it = clients_.begin(); it != clients_.end(); ++it) {
-            if (dup && me && it->thread) {
+            if (dup && static_cast<HANDLE>(me) != nullptr && it->thread) {
                 DWORD idIt = GetThreadId(it->thread);
                 DWORD idMe = GetCurrentThreadId();
                 if (idIt == idMe) {
-                    self = it->thread; // закроем сами
+                    self.Attach(it->thread); // закроем сами
                     it->thread = nullptr;
                     it->pipe = nullptr;
                     clients_.erase(it);
@@ -512,9 +506,7 @@ void ControlServer::HandleClient(HANDLE pipe)
             }
         }
         LeaveCriticalSection(&cs_);
-        if (me) CloseHandle(me);
     }
-    if (self) CloseHandle(self);
 }
 
 std::string ControlServer::ProcessLine(const std::string& line)
@@ -570,7 +562,7 @@ std::string ControlServer::ProcessLine(const std::string& line)
             // Числовой id валидируем через таблицу (дыра procamp:6 отсекается).
             std::wstring nm;
             wchar_t tmp[32];
-            swprintf(tmp, 32, L"%ld", ij->num);
+            swprintf_s(tmp, L"%ld", ij->num);
             if (!ParseCameraControlId(dom, tmp, propId, nm))
                 return ErrorResponse(E_INVALIDARG, "unknown id");
         } else if (ij->isString) {

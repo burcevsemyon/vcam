@@ -30,8 +30,14 @@ struct VideoSection {
 struct CameraSection {
     std::wstring id;   // MF symlink (MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID)
     std::wstring name; // friendly name
+    // Разрешение захвата: L"max" (def, лучшее в cap — поведение quality-ветки) |
+    // L"720p" | L"1080p" (предпочесть высоту; смена = переоткрытие через ==).
+    std::wstring capture = L"max";
 
-    bool operator==(const CameraSection& o) const { return id == o.id && name == o.name; }
+    bool operator==(const CameraSection& o) const
+    {
+        return id == o.id && name == o.name && capture == o.capture;
+    }
 };
 
 struct Settings {
@@ -40,11 +46,15 @@ struct Settings {
     VideoSection video;
     CameraSection cam;
     bool autostart = true;
+    // Качество v2 (фаза vcam-quality-v2/sub1): L"source" (натив источника,
+    // default) | L"fixed720p" (v2 = 720p, лесенка только вниз).
+    // Cap натива — 4K константа (vcam::VCamNativeCapW/H), UI нет.
+    std::wstring quality = L"source";
 
     bool operator==(const Settings& o) const
     {
         return sourceType == o.sourceType && st == o.st && video == o.video &&
-               cam == o.cam && autostart == o.autostart;
+                cam == o.cam && autostart == o.autostart && quality == o.quality;
     }
     bool operator!=(const Settings& o) const { return !(*this == o); }
 

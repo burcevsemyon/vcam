@@ -12,6 +12,7 @@
 #include <strmif.h>
 
 #include "CameraDevices.h"
+#include "WinUtil.h"
 
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "mfplat.lib")
@@ -63,12 +64,7 @@ bool EqualsNoCase(const std::wstring& a, const std::wstring& b)
     return true;
 }
 
-std::wstring HrHex(HRESULT hr)
-{
-    wchar_t buf[16];
-    swprintf(buf, 16, L"0x%08X", (unsigned)hr);
-    return std::wstring(buf);
-}
+using vcam::HrHex;
 
 } // namespace
 

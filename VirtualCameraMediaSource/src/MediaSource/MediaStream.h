@@ -14,6 +14,7 @@
 #include <deque>
 #include <memory>
 #include "SharedMemoryFrameSource.h"
+#include "V2FrameReader.h"
 #include "AttrLogProxy.h"
 
 // Shared (cross-session) video sample allocator. Some desktop SDK partitions do
@@ -93,6 +94,13 @@ private:
     // writers (proxy / direct SetCurrentMediaType on the handler) are not
     // observable, so the resolved result itself must NOT be cached.
     void ResolveNegotiatedType(UINT32* pW, UINT32* pH, bool* pNv12) const;
+    // v2-доставка: AcquireV2Frame тянет свежий валидный v2-кадр в m_pV2Staging
+    // (realloc под диметры); DeliverFromV2 раскладывает его в pBits цели
+    // (натив 1:1, 720/640 letterbox-fit, NV12-720 через скретч). false в обоих —
+    // вызывающий идёт СТАРЫМ v1-путём бит-в-бит.
+    bool AcquireV2Frame(UINT32* pW, UINT32* pH, UINT32* pStride);
+    bool DeliverFromV2(BYTE* pBits, UINT32 w, UINT32 h, bool useNv12,
+                       UINT32 vw, UINT32 vh, UINT32 vstride);
 
     CMediaSource* m_pSource = nullptr;          // not owned (source owns stream)
     ATL::CComPtr<IMFMediaEventQueue> m_pEventQueue; // owned
@@ -101,10 +109,18 @@ private:
     ATL::CComPtr<IMFMediaType> m_pMediaType;          // owned (1280x720 RGB32)
     ATL::CComPtr<IMFMediaType> m_pMediaTypeNv12;      // owned (1280x720 NV12)
     ATL::CComPtr<IMFMediaType> m_pMediaType640;       // owned (640x480 RGB32)
+    // Натив v2 (w×h RGB32 из живого заголовка v2): только когда рекламируется
+    // (валиден и != 720p); иначе nullptr и лесенка = старые 3 типа.
+    ATL::CComPtr<IMFMediaType> m_pMediaTypeNative;    // owned (nullable)
+    UINT32 m_nativeW = 0; // рекламируемые натив-диметры (0 = не рекламируется)
+    UINT32 m_nativeH = 0;
     ATL::CComPtr<IMFAttributes> m_pStreamAttributes;  // owned
     ATL::CComPtr<CAttrLogProxy> m_pStreamAttrsProxy;  // owned (TEMP DIAGNOSTIC)
     ATL::CComPtr<IMFVideoSampleAllocator> m_pAllocator; // owned (shared cross-session allocator from SetDefaultAllocator)
     std::unique_ptr<BYTE[]> m_pNv12Scratch;       // owned, lazy (RGB32 staging buffer for NV12 conversion)
+    mutable vcam_v2::V2Reader m_v2;               // owned (read-only v2, Global->Local; mutable: resolve в const)
+    std::unique_ptr<BYTE[]> m_pV2Staging;          // owned, lazy (v2 frame, native stride)
+    SIZE_T m_cbV2Staging = 0;
     UINT32 m_selectedWidth = vcam::VCamWidth;        // negotiated width
     UINT32 m_selectedHeight = vcam::VCamHeight;      // negotiated height
     bool m_selectedNv12 = false;                     // NV12 negotiated (SetMediaType / SD handler)

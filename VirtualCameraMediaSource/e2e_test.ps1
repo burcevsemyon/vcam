@@ -3,6 +3,19 @@
 #   A) run --type video --path test_video.mp4 (CLI overrides) -> moving frames
 #      + status "frames are being written", BMP must be 640x480 with letterbox
 #   B) run (no overrides) + settings.json writes -> hot-switch static -> video
+#   G) dual-write v1+v2 (vcam-quality-v2): v1 header ver=1 1280x720 slots=8 +
+#      v2 header ver=2 slots=4, seq grows in BOTH sections, status shows
+#      quality + v2; v1 pixels keep moving/letterboxed (video source).
+#      v1 bit-notes: 720p-matched static input is a memcpy (bit-exact); video
+#      input is native-decode + our downscale (Sub1 risk: within tolerance).
+#   H) ladder with a >720p source (vcam-quality-v2): generated 1080p static
+#      (ffmpeg testsrc2, fallback System.Drawing) -> CLI log "native 1920x1080",
+#      v2 dims == 1920x1080, static frames identical, `inspect` lists 4 media
+#      types incl. size=1920x1080; then quality fixed720p hot-switch (no
+#      restart) -> v2 == 720p -> back to source -> v2 == 1920x1080.
+#      Temp file e2e_1080p.bmp lives in OUTDIR and is removed in `finally`.
+#      (Physical Brio on this machine is 640x480 <720p — ladder-up is covered
+#      by the generated static, not by phase C.)
 #   C) list-devices + run --type camera --device <id> (+ negative check with a
 #      nonexistent id -> NO SIGNAL). No camera device -> SKIP, exit stays 0.
 #   D/E) device mode (FrameServer proxy path): 1280x720 then 640x480 RGB32 -
@@ -24,6 +37,7 @@ $OutDir = Join-Path $Root "e2e_output"
 $TestVideo = Join-Path $OutDir "test_video.mp4"
 $TestImage = Join-Path $Root "test_input.bmp"
 $SettingsPath = Join-Path $env:APPDATA "VCam\settings.json"
+$TestImage1080 = Join-Path $OutDir "e2e_1080p.bmp" # generated 1080p static (phase H), removed in finally
 $SettingsBackup = Join-Path $env:TEMP "vcam_e2e_settings_backup.json"
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $VCamClsid = "{B2B674D4-9CF0-461C-BDCE-3D56FBB41356}"
@@ -37,14 +51,16 @@ $script:Failures = New-Object System.Collections.Generic.List[string]
 function Fail([string]$msg) { $script:Failures.Add($msg); Write-Host "FAIL: $msg" -ForegroundColor Red }
 function Pass([string]$msg) { Write-Host "PASS: $msg" -ForegroundColor Green }
 
-function Write-TestSettings([string]$type) {
-    $img = $TestImage -replace '\\', '\\'
+function Write-TestSettings([string]$type, [string]$quality = "source", [string]$staticPath = "") {
+    if ($staticPath -eq "") { $staticPath = $TestImage }
+    $img = $staticPath -replace '\\', '\\'
     $vid = $TestVideo -replace '\\', '\\'
     $json = @"
 {
   "source": { "type": "$type" },
   "static": { "path": "$img", "scaleMode": "fit", "cropX": 0, "cropY": 0, "cropW": 0, "cropH": 0, "cropKeepAspect": false },
   "video": { "path": "$vid" },
+  "quality": "$quality",
   "autostart": false
 }
 "@
@@ -194,6 +210,86 @@ function Find-VCamDevice {
         elseif ($line -match "type\[\d+\].*size=640x480") { $has640 = $true }
     }
     if ($idx -ge 0 -and $mt -eq 3 -and $has720 -and $has640) { if ($found -lt 0) { $found = $idx } }
+    if ($found -ge 0) { return $found }
+    return $null
+}
+
+# Reads a v1/v2 section header read-only (Global -> Local, like the readers):
+# 9xUINT32 (magic..frameWriteIndex) + seq int64 at offset 36. Returns $null
+# when neither prefix exists. seq is sampled twice (300 ms) for growth.
+function Read-SectionHeader([string]$base) {
+    foreach ($pre in @("Global\", "Local\")) {
+        $name = $pre + $base
+        try {
+            $mmf = [IO.MemoryMappedFiles.MemoryMappedFile]::OpenExisting(
+                $name, [IO.MemoryMappedFiles.MemoryMappedFileRights]::Read)
+        } catch { continue }
+        try {
+            $acc = $mmf.CreateViewAccessor(0, 72, [IO.MemoryMappedFiles.MemoryMappedFileAccess]::Read)
+            try {
+                $seq1 = 0
+                try {
+                    $magic = $acc.ReadUInt32(0); $ver = $acc.ReadUInt32(4)
+                    $w = $acc.ReadUInt32(8); $h = $acc.ReadUInt32(12)
+                    $stride = $acc.ReadUInt32(16); $pix = $acc.ReadUInt32(20)
+                    $fsize = $acc.ReadUInt32(24); $slots = $acc.ReadUInt32(28)
+                    $seq1 = $acc.ReadInt64(36)
+                    Start-Sleep -Milliseconds 300
+                    $seq2 = $acc.ReadInt64(36)
+                } catch { continue }
+                return [pscustomobject]@{ Name = $name; Magic = $magic; Version = $ver;
+                    W = $w; H = $h; Stride = $stride; PixelFormat = $pix;
+                    FrameSize = $fsize; Slots = $slots;
+                    Seq1 = $seq1; Seq2 = $seq2; Grows = ($seq2 -ne $seq1) }
+            } finally { $acc.Dispose() }
+        } finally { $mmf.Dispose() }
+    }
+    return $null
+}
+
+# Phase G asserts (vcam-quality-v2 dual-write): v1 header frozen by contract
+# (ver=1 1280x720 stride=5120 slots=8) + v2 header (ver=2 slots=4, sane dims),
+# seq grows in BOTH sections while the producer runs.
+function Test-DualWriteHeaders {
+    $v1 = Read-SectionHeader "VCam.FrameBuffer.v1"
+    if ($null -eq $v1) { Fail "phase G: v1 section not open" }
+    else {
+        if ($v1.Magic -ne 0x5643414D) { Fail ("phase G: v1 BAD magic 0x{0:X8}" -f $v1.Magic) }
+        elseif ($v1.Version -ne 1 -or $v1.W -ne 1280 -or $v1.H -ne 720 -or $v1.Stride -ne 5120 -or $v1.Slots -ne 8) {
+            Fail "phase G: v1 header ver=$($v1.Version) $($v1.W)x$($v1.H) stride=$($v1.Stride) slots=$($v1.Slots) (want ver=1 1280x720 stride=5120 slots=8)"
+        } else { Pass "phase G: v1 header ver=1 1280x720 stride=5120 slots=8 ($($v1.Name))" }
+        if ($v1.Grows) { Pass "phase G: v1 seq grows ($($v1.Seq1) -> $($v1.Seq2))" }
+        else { Fail "phase G: v1 seq frozen ($($v1.Seq1))" }
+    }
+    $v2 = Read-SectionHeader "VCam.FrameBuffer.v2"
+    if ($null -eq $v2) { Fail "phase G: v2 section not open (dual-write regression?)" }
+    else {
+        if ($v2.Magic -ne 0x5643414D) { Fail ("phase G: v2 BAD magic 0x{0:X8}" -f $v2.Magic) }
+        elseif ($v2.Version -ne 2 -or $v2.Slots -ne 4) {
+            Fail "phase G: v2 header ver=$($v2.Version) slots=$($v2.Slots) (want ver=2 slots=4)"
+        } else { Pass "phase G: v2 header ver=2 slots=4 $($v2.W)x$($v2.H) stride=$($v2.Stride) ($($v2.Name))" }
+        if ($v2.W -le 0 -or $v2.H -le 0 -or $v2.W -gt 3840 -or $v2.H -gt 2160) {
+            Fail "phase G: v2 dims out of range ($($v2.W)x$($v2.H), cap 3840x2160)"
+        }
+        if ($v2.Grows) { Pass "phase G: v2 seq grows ($($v2.Seq1) -> $($v2.Seq2))" }
+        else { Fail "phase G: v2 seq frozen ($($v2.Seq1))" }
+    }
+}
+
+# Finds the VCam device index whose ladder includes a native type WxH
+# (vcam-quality-v2 phase H: mediaTypes=4 with size=1920x1080). Returns $null
+# when the native type is not advertised.
+function Find-VCamDeviceNative([int]$w, [int]$h) {
+    $logPath = Join-Path $OutDir "inspect_vcam_native.log"
+    $errPath = Join-Path $OutDir "inspect_vcam_native.err"
+    $p = Start-Process -FilePath $CaptureTest -ArgumentList @("inspect") `
+        -PassThru -WindowStyle Hidden -RedirectStandardOutput $logPath -RedirectStandardError $errPath -Wait
+    if ($p.ExitCode -ne 0) { return $null }
+    $idx = -1; $found = -1
+    foreach ($line in @(Get-Content -LiteralPath $logPath)) {
+        if ($line -match "device\[(\d+)\]") { $idx = [int]$Matches[1] }
+        elseif ($line -match "size=${w}x${h}") { if ($idx -ge 0 -and $found -lt 0) { $found = $idx } }
+    }
     if ($found -ge 0) { return $found }
     return $null
 }
@@ -376,6 +472,109 @@ try {
     $opened = @(Select-String -Path $logB -Pattern "\[cli\] source opened: type=video" -ErrorAction SilentlyContinue)
     if ($opened.Count -ge 1) { Pass "phase B: video source opened after settings change" }
     else { Fail "phase B: video source never opened" }
+
+    Write-Host "=== 5b. Phase G: dual-write v1+v2 (video, moving) ==="
+    # settings.json остался video/source из фазы B — отдельный CLI run без overrides.
+    $logG = Join-Path $OutDir "cli_phase_g2.log"
+    $errG = Join-Path $OutDir "cli_phase_g2.err"
+    $cliProc = Start-Process -FilePath $Cli -ArgumentList @("run") `
+        -PassThru -WindowStyle Hidden -RedirectStandardOutput $logG -RedirectStandardError $errG
+    Start-Sleep -Seconds 4
+    if ($cliProc.HasExited) {
+        Fail "phase G: CLI exited early with code $($cliProc.ExitCode)"
+    } else {
+        Pass "phase G: CLI is running (pid $($cliProc.Id))"
+    }
+    $stG = (& $Cli status | Out-String)
+    if ($stG -match "frames are being written") { Pass "phase G: status v1 - frames are being written (seq grows)" }
+    else { Fail "phase G: status v1 did not report writing: $($stG -replace '\r?\n', ' | ')" }
+    if ($stG -match "quality:\s*source") { Pass "phase G: status shows 'quality: source'" }
+    else { Fail "phase G: status has no 'quality: source': $($stG -replace '\r?\n', ' | ')" }
+    if ($stG -match "v2 section .* frames are being written") { Pass "phase G: status v2 - frames are being written (seq grows)" }
+    else { Fail "phase G: status v2 did not report writing: $($stG -replace '\r?\n', ' | ')" }
+    Test-DualWriteHeaders
+    Test-Frames "e2e_dual" $true
+    Stop-Cli $cliProc
+    $cliProc = $null
+
+    Write-Host "=== 5c. Phase H: ladder - native 1080p source advertises 4 types ==="
+    # Источник >720p для лесенки: генерируем 1080p-BMP в OUTDIR (ffmpeg testsrc2;
+    # fallback — System.Drawing заливка). Brio-камера машины 640x480 <720p и для
+    # лесенки вверх не годится — покрытие идёт generated-static (см. шапку).
+    $gen1080 = Test-Path -LiteralPath $TestImage1080
+    if (-not $gen1080) {
+        $ff = Get-Command ffmpeg -ErrorAction SilentlyContinue
+        if ($ff) {
+            & $ff.Source -y -loglevel error -f lavfi -i "testsrc2=size=1920x1080:rate=30:duration=1" -frames:v 1 $TestImage1080
+            $gen1080 = Test-Path -LiteralPath $TestImage1080
+            if ($gen1080) { Pass "phase H: 1080p test image generated via ffmpeg" }
+        }
+    }
+    if (-not $gen1080) {
+        try {
+            $gen = New-Object System.Drawing.Bitmap 1920, 1080
+            $gfx = [System.Drawing.Graphics]::FromImage($gen)
+            $gfx.Clear([System.Drawing.Color]::FromArgb(40, 120, 200))
+            $gfx.Dispose()
+            $gen.Save($TestImage1080, [System.Drawing.Imaging.ImageFormat]::Bmp)
+            $gen.Dispose()
+            $gen1080 = $true
+            Pass "phase H: 1080p test image generated via System.Drawing (ffmpeg missing/failed)"
+        } catch {
+            Fail "phase H: cannot generate 1080p test image ($_) - ladder uncovered"
+        }
+    }
+    if ($gen1080) {
+        Write-TestSettings "static" "source" $TestImage1080
+        $logH = Join-Path $OutDir "cli_phase_h.log"
+        $errH = Join-Path $OutDir "cli_phase_h.err"
+        $cliProc = Start-Process -FilePath $Cli -ArgumentList @("run") `
+            -PassThru -WindowStyle Hidden -RedirectStandardOutput $logH -RedirectStandardError $errH
+        Start-Sleep -Seconds 4
+        if ($cliProc.HasExited) {
+            Fail "phase H: CLI exited early with code $($cliProc.ExitCode)"
+        } else {
+            Pass "phase H: CLI is running (pid $($cliProc.Id))"
+        }
+        $nativeH = Select-String -Path $logH -Pattern "\[cli\] active:.*native 1920x1080" -ErrorAction SilentlyContinue
+        if ($nativeH) { Pass "phase H: host cycle renders native 1920x1080 (WriteFrameNative)" }
+        else { Fail "phase H: no '[cli] active: ... native 1920x1080' in $logH" }
+        $v2h = Read-SectionHeader "VCam.FrameBuffer.v2"
+        if ($null -eq $v2h) { Fail "phase H: v2 section not open" }
+        elseif ($v2h.W -ne 1920 -or $v2h.H -ne 1080) {
+            Fail "phase H: v2 dims $($v2h.W)x$($v2h.H) (want 1920x1080 = native of the 1080p static)"
+        } else { Pass "phase H: v2 dims 1920x1080 (native of the 1080p static)" }
+        Test-Frames "e2e_ladder" $false
+        $vcamNat = Find-VCamDeviceNative 1920 1080
+        if ($null -eq $vcamNat) {
+            Fail "phases H: ladder has no native 1920x1080 type (see inspect_vcam_native.log)"
+        } else {
+            Pass "phase H: ladder advertises native 1920x1080 (device index $vcamNat)"
+        }
+        # quality hot-switch без рестарта: fixed720p -> v2 == 720p -> source -> v2 == 1920x1080.
+        Write-TestSettings "static" "fixed720p" $TestImage1080
+        Start-Sleep -Seconds 3
+        $v2f = Read-SectionHeader "VCam.FrameBuffer.v2"
+        if ($null -eq $v2f) { Fail "phase H quality: v2 section not open after switch to fixed720p" }
+        elseif ($v2f.W -ne 1280 -or $v2f.H -ne 720) {
+            Fail "phase H quality: v2 dims $($v2f.W)x$($v2f.H) after fixed720p (want 1280x720)"
+        } else { Pass "phase H quality: fixed720p hot-switch -> v2 1280x720 (no restart)" }
+        $qswitch = @(Select-String -Path $logH -Pattern "\[cli\] switch:.*quality=fixed720p" -ErrorAction SilentlyContinue)
+        if ($qswitch.Count -ge 1) { Pass "phase H quality: '[cli] switch: ... quality=fixed720p' in log (reopen path)" }
+        else { Fail "phase H quality: no quality=fixed720p switch line in $logH" }
+        Write-TestSettings "static" "source" $TestImage1080
+        Start-Sleep -Seconds 3
+        $v2s = Read-SectionHeader "VCam.FrameBuffer.v2"
+        if ($null -eq $v2s) { Fail "phase H quality: v2 section not open after switch back to source" }
+        elseif ($v2s.W -ne 1920 -or $v2s.H -ne 1080) {
+            Fail "phase H quality: v2 dims $($v2s.W)x$($v2s.H) after back to source (want 1920x1080)"
+        } else { Pass "phase H quality: back to source -> v2 1920x1080" }
+        Stop-Cli $cliProc
+        $cliProc = $null
+        # Вернуть состояние конца фазы B (video/source): C использует overrides,
+        # D/E/F — run без overrides и ждут там то же, что раньше.
+        Write-TestSettings "video"
+    }
 
     Write-Host "=== 6. Phase C: camera source (list-devices + run --type camera) ==="
     $devLog = Join-Path $OutDir "cli_list_devices.log"
@@ -625,6 +824,8 @@ finally {
             Pass "settings.json did not exist before test - removed the test file"
         }
     }
+    # Phase H temp: 1080p-BMP regenerable — не захламляем OUTDIR.
+    Remove-Item -LiteralPath $TestImage1080 -Force -ErrorAction SilentlyContinue
 }
 
 Write-Host "=== 9. Result ==="

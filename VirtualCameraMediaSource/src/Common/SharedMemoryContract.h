@@ -44,4 +44,29 @@ constexpr const wchar_t* VCamReadyEventName = L"Global\\VCam.FrameReady.v1";
 constexpr const wchar_t* VCamDacSddl =
     L"D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;LS)(A;;GA;;;NS)(A;;GA;;;WD)";
 
+// ---- v2 (ADD, фаза vcam-quality-v2/sub1; блок v1 выше — frozen, ни байтом) ----
+// Новая секция нативного кадра. Продьюсер пишет ОБЕ: v1 (720p как раньше) +
+// v2 (натив источника до cap). Старые читатели v2 не видят.
+// Слоты фиксированного max-размера (cap 4K); валидные байты кадра — первые
+// header.frameSize байт слота при текущих header.width/height/stride.
+// Диметры меняются только внутри seqlock-публикации писателя (seq нечётный):
+// читатель обязан читать seq1 -> dims+slot -> seq2 и повторять при
+// несовпадении/нечётности (протокол читателя — Sub2).
+constexpr UINT32 VCamVersionV2 = 2;
+constexpr UINT32 VCamV2MaxWidth = 3840;
+constexpr UINT32 VCamV2MaxHeight = 2160;
+constexpr UINT32 VCamV2MaxStride = VCamV2MaxWidth * 4; // 15360
+constexpr UINT64 VCamV2MaxFrameSize = (UINT64)VCamV2MaxHeight * VCamV2MaxStride; // 33177600
+constexpr UINT32 VCamV2SlotCount = 4; // 8x33МБ жирно — 4 (итого ~126.6 МиБ)
+constexpr UINT64 VCamV2TotalSize =
+    (UINT64)sizeof(VCamSectionHeader) + (UINT64)VCamV2SlotCount * VCamV2MaxFrameSize;
+constexpr const wchar_t* VCamSectionNameV2 = L"Global\\VCam.FrameBuffer.v2";
+constexpr const wchar_t* VCamReadyEventNameV2 = L"Global\\VCam.FrameReady.v2";
+// Cap натива источника (рендер/писатель клампят fit'ом; константа, UI нет).
+constexpr UINT32 VCamNativeCapW = VCamV2MaxWidth;
+constexpr UINT32 VCamNativeCapH = VCamV2MaxHeight;
+static_assert(VCamV2MaxFrameSize == 33177600ULL, "v2 max frame math");
+static_assert(VCamV2SlotCount == 4, "v2 slot count");
+static_assert(sizeof(VCamSectionHeader) == 72, "v2 header layout");
+
 } // namespace vcam

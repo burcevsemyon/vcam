@@ -35,6 +35,8 @@ struct PreviewState {
     vcam::VCamSectionHeader* pHeader = nullptr;
     bool connected = false;
     UINT64 lastConnectTry = 0;
+    bool isV2 = false;       // v2-секция: слоты фиксированного питча MaxFrameSize
+    SIZE_T slotPitch = 0;    // байт на слот (v2: VCamV2MaxFrameSize, v1: frameSize)
 
     // frame staging (tightly packed rows: stride = width * 4)
     BYTE* pFrame = nullptr;
@@ -95,6 +97,8 @@ void Disconnect()
     g.hSection.Close();
     g.pHeader = nullptr;
     g.cbMapped = 0;
+    g.isV2 = false;
+    g.slotPitch = 0;
     g.connected = false;
     g.alive = false;
     // Keep lastSeq/lastSeqChange: reconnect must see that the old frame is stale
@@ -115,38 +119,100 @@ bool ValidateHeader(const vcam::VCamSectionHeader* h)
     return true;
 }
 
+// v2: диметры динамические (до cap 4K), слоты фиксированного питча
+// VCamV2MaxFrameSize. Маппинг всей секции ~126.6 МБ — отдельный лимит.
+constexpr UINT64 kMaxV2MappedBytes = 140ull * 1024 * 1024;
+
+bool ValidateHeaderV2(const vcam::VCamSectionHeader* h)
+{
+    if (h->magic != vcam::VCamMagic) return false;
+    if (h->version != vcam::VCamVersionV2) return false;
+    if (h->pixelFormat != (UINT32)vcam::VCamPixelFormat::RGB32) return false;
+    if (h->width == 0 || h->width > vcam::VCamV2MaxWidth) return false;
+    if (h->height == 0 || h->height > vcam::VCamV2MaxHeight) return false;
+    if (h->stride < h->width * vcam::VCamPixelSize || h->stride > vcam::VCamV2MaxStride) return false;
+    if (h->frameSize < (UINT64)h->stride * h->height ||
+        (UINT64)h->frameSize > vcam::VCamV2MaxFrameSize) return false;
+    if (h->slotCount == 0 || h->slotCount > vcam::VCamV2SlotCount) return false;
+    if ((UINT64)sizeof(vcam::VCamSectionHeader) +
+        (UINT64)h->slotCount * vcam::VCamV2MaxFrameSize > kMaxV2MappedBytes) return false;
+    return true;
+}
+
+bool MappedBoundOk()
+{
+    if (!g.pHeader) return false;
+    if (g.isV2) {
+        return (UINT64)sizeof(vcam::VCamSectionHeader) +
+               (UINT64)g.pHeader->slotCount * vcam::VCamV2MaxFrameSize <= g.cbMapped;
+    }
+    return (UINT64)sizeof(vcam::VCamSectionHeader) +
+           (UINT64)g.pHeader->slotCount * g.pHeader->frameSize <= g.cbMapped;
+}
+
 bool TryConnect(UINT64 now)
 {
     if (g.connected) return true;
     if (now - g.lastConnectTry < kConnectRetryMs) return false;
     g.lastConnectTry = now;
 
-    const wchar_t* names[] = { vcam::VCamSectionName, L"Local\\VCam.FrameBuffer.v1" };
+    // v2 вперёд (натив, резче), затем v1 как раньше. Только чтение
+    // (FILE_MAP_READ), писателя не открываем. Мусорная v2 — не приговор:
+    // идём дальше по кандидатам (фолбэк на v1).
+    struct Cand { const wchar_t* name; bool v2; };
+    const Cand cands[] = {
+        { vcam::VCamSectionNameV2, true },
+        { L"Local\\VCam.FrameBuffer.v2", true },
+        { vcam::VCamSectionName, false },
+        { L"Local\\VCam.FrameBuffer.v1", false },
+    };
     ATL::CHandle hSection;
-    for (const wchar_t* name : names) {
-        hSection.Attach(OpenFileMappingW(FILE_MAP_READ, FALSE, name));
-        if (hSection) break;
-        DWORD err = GetLastError();
-        if (err != ERROR_FILE_NOT_FOUND && err != ERROR_ACCESS_DENIED) break;
-    }
-    if (!hSection) return false;
-
-    BYTE* pRaw = (BYTE*)MapViewOfFile(hSection, FILE_MAP_READ, 0, 0, 0);
-    vcam::MappedViewOfFilePtr view(pRaw);
-    if (!view) return false;
-    BYTE* pBase = (BYTE*)view.Get();
-
-    MEMORY_BASIC_INFORMATION mbi = {};
+    vcam::MappedViewOfFilePtr view;
     SIZE_T cbMapped = 0;
-    if (VirtualQuery(pBase, &mbi, sizeof(mbi)) != 0) cbMapped = mbi.RegionSize;
-
-    vcam::VCamSectionHeader* pHeader = reinterpret_cast<vcam::VCamSectionHeader*>(pBase);
-    if (cbMapped < sizeof(vcam::VCamSectionHeader) || !ValidateHeader(pHeader)
-        || (UINT64)sizeof(vcam::VCamSectionHeader) + (UINT64)pHeader->slotCount * pHeader->frameSize > cbMapped) {
-        return false;
+    vcam::VCamSectionHeader* pHeader = nullptr;
+    bool candV2 = false;
+    SIZE_T slotPitch = 0;
+    for (const Cand& c : cands) {
+        hSection.Attach(OpenFileMappingW(FILE_MAP_READ, FALSE, c.name));
+        if (!hSection) {
+            DWORD err = GetLastError();
+            if (err != ERROR_FILE_NOT_FOUND && err != ERROR_ACCESS_DENIED) break;
+            continue;
+        }
+        BYTE* pRaw = (BYTE*)MapViewOfFile(hSection, FILE_MAP_READ, 0, 0, 0);
+        vcam::MappedViewOfFilePtr v(pRaw);
+        if (!v) { hSection.Close(); continue; }
+        BYTE* pBase = (BYTE*)v.Get();
+        MEMORY_BASIC_INFORMATION mbi = {};
+        SIZE_T cb = 0;
+        if (VirtualQuery(pBase, &mbi, sizeof(mbi)) != 0) cb = mbi.RegionSize;
+        vcam::VCamSectionHeader* h =
+            reinterpret_cast<vcam::VCamSectionHeader*>(pBase);
+        SIZE_T pitch = 0;
+        bool ok = (cb >= sizeof(vcam::VCamSectionHeader));
+        if (ok && c.v2) {
+            ok = ValidateHeaderV2(h);
+            pitch = (SIZE_T)vcam::VCamV2MaxFrameSize;
+        } else if (ok) {
+            ok = ValidateHeader(h);
+            pitch = h->frameSize;
+        }
+        if (ok) {
+            ok = ((UINT64)sizeof(vcam::VCamSectionHeader) +
+                  (UINT64)h->slotCount * pitch <= cb);
+        }
+        if (!ok) { hSection.Close(); continue; } // мусор — следующий кандидат
+        view.Attach(v.Detach());
+        cbMapped = cb;
+        pHeader = h;
+        candV2 = c.v2;
+        slotPitch = pitch;
+        break;
     }
+    if (!hSection || !view || !pHeader || slotPitch == 0) return false;
 
     UINT32 frameBytes = pHeader->stride * pHeader->height;
+    if (frameBytes == 0 || frameBytes > kMaxFrameBytes) return false;
     BYTE* pFrame = new (std::nothrow) BYTE[frameBytes];
     if (!pFrame) {
         return false;
@@ -155,6 +221,8 @@ bool TryConnect(UINT64 now)
     g.hSection.Attach(hSection.Detach());
     g.view.Attach(view.Detach());
     g.cbMapped = cbMapped;
+    g.isV2 = candV2;
+    g.slotPitch = slotPitch;
     g.pHeader = pHeader;
     g.pFrame = pFrame;
     g.frameW = pHeader->width;
@@ -182,7 +250,7 @@ bool ReadFrame(LONGLONG* outSeq)
 
         UINT32 idx = g.pHeader->frameWriteIndex;
         if (idx >= g.pHeader->slotCount) return false;
-        if (!ValidateHeader(g.pHeader)) return false;
+        if (g.isV2 ? !ValidateHeaderV2(g.pHeader) : !ValidateHeader(g.pHeader)) return false;
 
         LONGLONG seq2 = g.pHeader->seq;
         if (seq != seq2) continue;
@@ -204,7 +272,7 @@ bool ReadFrame(LONGLONG* outSeq)
             g.frameH = h;
         }
 
-        const BYTE* pSrc = (const BYTE*)g.view.Get() + sizeof(vcam::VCamSectionHeader) + (SIZE_T)idx * g.pHeader->frameSize;
+        const BYTE* pSrc = (const BYTE*)g.view.Get() + sizeof(vcam::VCamSectionHeader) + (SIZE_T)idx * g.slotPitch;
         if (dstStride != srcStride) {
             for (UINT32 y = 0; y < h; ++y)
                 memcpy(g.pFrame + (SIZE_T)y * dstStride, pSrc + (SIZE_T)y * srcStride, dstStride);
@@ -249,8 +317,7 @@ void Tick(HWND hwnd)
     }
 
     if (g.connected) {
-        if (!ValidateHeader(g.pHeader)
-            || (UINT64)sizeof(vcam::VCamSectionHeader) + (UINT64)g.pHeader->slotCount * g.pHeader->frameSize > g.cbMapped) {
+        if ((g.isV2 ? !ValidateHeaderV2(g.pHeader) : !ValidateHeader(g.pHeader)) || !MappedBoundOk()) {
             Disconnect();
         } else {
             LONGLONG seq = 0;

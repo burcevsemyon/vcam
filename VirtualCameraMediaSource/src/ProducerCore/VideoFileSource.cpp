@@ -13,6 +13,7 @@
 #include "FrameCopy.h"
 #include "ImageLayout.h"
 #include "SharedMemoryContract.h"
+#include "WinUtil.h"
 
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "mfplat.lib")
@@ -30,12 +31,7 @@ void LogVideo(const std::wstring& msg)
     OutputDebugStringW((L"[ProducerCore:video] " + msg + L"\n").c_str());
 }
 
-std::wstring HrHex(HRESULT hr)
-{
-    wchar_t buf[16];
-    swprintf(buf, 16, L"0x%08X", (unsigned)hr);
-    return std::wstring(buf);
-}
+using vcam::HrHex;
 
 struct VideoState {
     ATL::CComPtr<IMFSourceReader> reader;
@@ -52,9 +48,31 @@ void CloseVideo(VideoState& v)
     v.stride = 0;
 }
 
+// Нативный размер декода (кламп fit'ом к cap 4K): больше cap — просим у ридера
+// cap-fit (обычно отклоняет — тогда декодим натив и даунскейлим CPU в кадре).
+void FitCap(UINT w, UINT h, UINT& outW, UINT& outH)
+{
+    if (w <= vcam::VCamNativeCapW && h <= vcam::VCamNativeCapH) {
+        outW = w;
+        outH = h;
+        return;
+    }
+    double s = (double)vcam::VCamNativeCapW / w;
+    double s2 = (double)vcam::VCamNativeCapH / h;
+    if (s2 < s) s = s2;
+    outW = (UINT)llround(w * s);
+    outH = (UINT)llround(h * s);
+    if (outW < 1) outW = 1;
+    if (outH < 1) outH = 1;
+    if (outW > vcam::VCamNativeCapW) outW = vcam::VCamNativeCapW;
+    if (outH > vcam::VCamNativeCapH) outH = vcam::VCamNativeCapH;
+}
+
 // Selects the first video stream and negotiates an RGB32 output (перенос из
 // VideoProducer.cpp: без MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING ридер отклоняет
 // голый RGB32 — MF_E_INVALIDMEDIATYPE).
+// v2: предпочтение — НАТИВНЫЙ размер декода (cap-fit при переборе), 720p —
+// лишь fallback для привередливых ридеров (раньше 720p просили первым).
 bool ConfigureReader(IMFSourceReader* rdr, VideoState& out, std::wstring& err)
 {
     DWORD vid = MAXDWORD;
@@ -80,12 +98,8 @@ bool ConfigureReader(IMFSourceReader* rdr, VideoState& out, std::wstring& err)
         }
     }
 
-    bool aspectPreserved = false;
-    if (srcW > 0 && srcH > 0) {
-        double want = (double)vcam::VCamWidth / vcam::VCamHeight;
-        double have = (double)srcW / srcH;
-        aspectPreserved = fabs(have - want) <= want * 0.01;
-    }
+    UINT capW = srcW, capH = srcH;
+    if (srcW && srcH) FitCap(srcW, srcH, capW, capH);
 
     struct Candidate {
         GUID subtype;
@@ -95,19 +109,21 @@ bool ConfigureReader(IMFSourceReader* rdr, VideoState& out, std::wstring& err)
         const wchar_t* name;
     };
     const Candidate cands[] = {
-        { MFVideoFormat_RGB32,  vcam::VCamWidth, vcam::VCamHeight, false, L"RGB32 1280x720" },
+        { MFVideoFormat_RGB32,  capW, capH, true,  L"RGB32 cap-fit progressive" },
+        { MFVideoFormat_RGB32,  capW, capH, false, L"RGB32 cap-fit" },
         { MFVideoFormat_RGB32,  srcW, srcH, true,  L"RGB32 native progressive" },
         { MFVideoFormat_RGB32,  srcW, srcH, false, L"RGB32 native" },
         { MFVideoFormat_RGB32,  0,    0,    false, L"RGB32 no size" },
         { MFVideoFormat_ARGB32, srcW, srcH, false, L"ARGB32 native" },
+        { MFVideoFormat_RGB32,  vcam::VCamWidth, vcam::VCamHeight, false, L"RGB32 1280x720" },
     };
 
     HRESULT hrSet = E_FAIL;
     const wchar_t* usedCand = nullptr;
+    // Порядок = предпочтение: cap-fit натив -> натив -> без размера -> ARGB ->
+    // 720p-совместимость. Дубли (cap-fit == натив в пределах cap) безвредны:
+    // цикл рвётся на первом успехе.
     for (const Candidate& c : cands) {
-        if (c.w && !aspectPreserved &&
-            c.w == vcam::VCamWidth && c.h == vcam::VCamHeight) continue;
-        if (c.w && c.w != vcam::VCamWidth && (c.w != srcW || c.h != srcH)) continue;
         ATL::CComPtr<IMFMediaType> pOut;
         if (FAILED(MFCreateMediaType(&pOut)) || !pOut) continue;
         pOut->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
@@ -211,20 +227,35 @@ bool EnsureMfStarted(std::wstring& err)
 
 } // namespace
 
-void VideoFileSource::RenderToFrame(const BYTE* data, UINT w, UINT h, LONG stride, BYTE* dst)
+void VideoFileSource::RenderToFrame(const BYTE* data, UINT w, UINT h, LONG stride)
 {
-    if (w == vcam::VCamWidth && h == vcam::VCamHeight &&
-        stride == (LONG)vcam::VCamStride) {
+    if (frame_.empty() || frameW_ == 0 || frameH_ == 0) return;
+    BYTE* dst = frame_.data();
+    const LONG dstride = (LONG)(frameW_ * 4);
+    if (w == frameW_ && h == frameH_ && stride == dstride) {
         for (UINT y = 0; y < h; y++) {
-            memcpy(dst + (size_t)y * vcam::VCamStride, RowPtr(data, stride, h, y), vcam::VCamStride);
+            memcpy(dst + (size_t)y * dstride, RowPtr(data, stride, h, y), (size_t)dstride);
         }
         return;
     }
-    // Reader отдаёт RGB32 (кандидаты ConfigureReader — RGB32/ARGB32 native,
-    // layout идентичен): сначала Video Processor MFT, при false — CPU.
-    if (mftScaler_.Scale(data, w, h, stride, dst))
-        return;
-    LetterboxBilinear(data, w, h, stride, dst, (LONG)vcam::VCamStride);
+    // frame_ — aspect-fit декода к cap (см. DecodeLoop): точная растяжка CPU.
+    // Reader отдаёт RGB32/ARGB32 (layout идентичен).
+    vcam::StretchBilinearEx(data, w, h, stride, dst, frameW_, frameH_, dstride);
+}
+
+bool VideoFileSource::ScaleFrameTo720pLocked(BYTE* dst, LONG dstride)
+{
+    if (frameW_ == vcam::VCamWidth && frameH_ == vcam::VCamHeight &&
+        dstride == (LONG)vcam::VCamStride) {
+        vcam::CopyFrameRowwise(dst, (size_t)dstride, frame_.data(), vcam::VCamStride,
+                               vcam::VCamWidth, vcam::VCamHeight, vcam::VCamPixelSize);
+        return true;
+    }
+    if (mftScaler_.Scale(frame_.data(), frameW_, frameH_, (LONG)(frameW_ * 4), dst))
+        return true;
+    vcam::LetterboxBilinear(frame_.data(), frameW_, frameH_, (LONG)(frameW_ * 4),
+                             dst, dstride);
+    return true;
 }
 
 VideoFileSource::VideoFileSource()
@@ -268,16 +299,12 @@ bool VideoFileSource::Open(const SourceConfig& cfg, std::wstring& err)
 
     if (cfg.path.empty()) { err = L"empty media path"; return false; }
 
-    try {
-        frame_.resize(vcam::VCamFrameSize);
-    } catch (...) {
-        err = L"out of memory";
-        return false;
-    }
-    memset(frame_.data(), 0, frame_.size());
-
+    // frame_ аллоцируется в DecodeLoop, когда ридер согласует нативный размер:
+    // до первого кадра NativeSize=false, Render=false (нет данных).
     cfg_ = cfg;
     EnterCriticalSection(&cs_);
+    frame_.clear();
+    frameW_ = frameH_ = 0;
     frameReady_ = false;
     failed_ = false;
     failReason_.clear();
@@ -309,14 +336,48 @@ bool VideoFileSource::Render(uint8_t* bgrx, int stride, std::wstring& err)
     if (!open_) err = L"video source is not open";
     else if (failed_) err = failReason_;
     else if (!frameReady_) err = L"no frame decoded yet";
-    else ready = true;
+    else ready = ScaleFrameTo720pLocked(bgrx, (LONG)stride);
+    LeaveCriticalSection(&cs_);
+    return ready;
+}
 
-    if (ready) {
-        vcam::CopyFrameRowwise(bgrx, (size_t)stride, frame_.data(), vcam::VCamStride,
-                               vcam::VCamWidth, vcam::VCamHeight, vcam::VCamPixelSize);
+bool VideoFileSource::Render(uint8_t* dst, int stride, uint32_t w, uint32_t h,
+                             std::wstring& err)
+{
+    if (!dst || w == 0 || h == 0 || w > vcam::VCamNativeCapW || h > vcam::VCamNativeCapH ||
+        stride < (int)(w * 4)) {
+        err = L"invalid target buffer";
+        return false;
+    }
+
+    bool ready = false;
+    EnterCriticalSection(&cs_);
+    if (!open_) err = L"video source is not open";
+    else if (failed_) err = failReason_;
+    else if (!frameReady_) err = L"no frame decoded yet";
+    else if (w == frameW_ && h == frameH_) {
+        vcam::CopyFrameRowwise(dst, (size_t)stride, frame_.data(), (size_t)frameW_ * 4,
+                               frameW_, frameH_, vcam::VCamPixelSize);
+        ready = true;
+    } else if (w == vcam::VCamWidth && h == vcam::VCamHeight) {
+        ready = ScaleFrameTo720pLocked(dst, (LONG)stride);
+    } else {
+        vcam::LetterboxBilinearEx(frame_.data(), frameW_, frameH_, (LONG)(frameW_ * 4),
+                                  dst, w, h, (LONG)stride);
+        ready = true;
     }
     LeaveCriticalSection(&cs_);
     return ready;
+}
+
+bool VideoFileSource::NativeSize(uint32_t& w, uint32_t& h)
+{
+    EnterCriticalSection(&cs_);
+    bool ok = open_ && !failed_ && frameReady_ && frameW_ != 0 && frameH_ != 0;
+    w = ok ? frameW_ : vcam::VCamWidth;
+    h = ok ? frameH_ : vcam::VCamHeight;
+    LeaveCriticalSection(&cs_);
+    return ok;
 }
 
 void VideoFileSource::Close()
@@ -343,6 +404,7 @@ bool VideoFileSource::Shutdown(DWORD timeoutMs)
 
     frame_.clear();
     frame_.shrink_to_fit();
+    frameW_ = frameH_ = 0;
     cfg_ = SourceConfig();
     return true;
 }
@@ -415,8 +477,27 @@ void VideoFileSource::DecodeLoop()
                 DWORD maxLen = 0, curLen = 0;
                 if (SUCCEEDED(buf->Lock(&data, &maxLen, &curLen)) && data) {
                     EnterCriticalSection(&cs_);
+                    // Первый сэмпл фиксирует нативные размеры (кламп к cap);
+                    // frame_ дальше только перезаписывается (ридер размер не меняет).
+                    if (frameW_ == 0 || frameH_ == 0) {
+                        UINT fw = vs.outW, fh = vs.outH;
+                        FitCap(vs.outW, vs.outH, fw, fh);
+                        try {
+                            frame_.resize((size_t)fw * fh * 4);
+                        } catch (...) {
+                            frame_.clear();
+                            fw = fh = 0;
+                        }
+                        frameW_ = fw;
+                        frameH_ = fh;
+                        if (fw && fh) {
+                            LogVideo(L"native frame: " + std::to_wstring(vs.outW) + L"x" +
+                                     std::to_wstring(vs.outH) + L" -> " +
+                                     std::to_wstring(fw) + L"x" + std::to_wstring(fh));
+                        }
+                    }
                     if (!frame_.empty()) {
-                        RenderToFrame(data, vs.outW, vs.outH, vs.stride, frame_.data());
+                        RenderToFrame(data, vs.outW, vs.outH, vs.stride);
                         frameReady_ = true;
                     }
                     LeaveCriticalSection(&cs_);

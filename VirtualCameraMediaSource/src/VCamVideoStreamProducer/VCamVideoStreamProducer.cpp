@@ -43,13 +43,15 @@ constexpr DWORD kConsumerStaleMs = 3000; // heartbeat читателя стар�
 
 HINSTANCE g_inst = nullptr;
 HWND g_hwnd = nullptr;
-HANDLE g_mutex = nullptr;
-HANDLE g_stop = nullptr;
-HANDLE g_dirty = nullptr;
-HANDLE g_worker = nullptr;
+// Единый стиль: владение хендлами — ATL::CHandle (были raw HANDLE +
+// ручные CloseHandle). Сравнение через static_cast<HANDLE>, закрытие — .Close().
+ATL::CHandle g_mutex;
+ATL::CHandle g_stop;
+ATL::CHandle g_dirty;
+ATL::CHandle g_worker;
 SettingsWatcher g_watcher;
 NOTIFYICONDATAW g_nid = {};
-HANDLE g_logFile = INVALID_HANDLE_VALUE;
+ATL::CHandle g_logFile;
 
 CRITICAL_SECTION g_statusCs;
 std::wstring g_statusText = L"Нет сигнала (старт)";
@@ -96,12 +98,14 @@ void Log(const wchar_t* fmt, ...)
 
     fputws(line, stdout);
     fflush(stdout);
-    if (g_logFile != INVALID_HANDLE_VALUE) {
+    if (static_cast<HANDLE>(g_logFile) != INVALID_HANDLE_VALUE &&
+        static_cast<HANDLE>(g_logFile) != nullptr) {
         char utf8[2200];
         int n = WideCharToMultiByte(CP_UTF8, 0, line, -1, utf8, sizeof(utf8), nullptr, nullptr);
         if (n > 2) {
             DWORD written = 0;
-            WriteFile(g_logFile, utf8, (DWORD)(n - 1), &written, nullptr); // без '\0'
+            WriteFile(static_cast<HANDLE>(g_logFile), utf8, (DWORD)(n - 1), &written,
+                      nullptr); // без '\0'
         }
     }
 }
@@ -118,10 +122,11 @@ void InitLogging()
     std::wstring path = LogFilePath();
     if (!path.empty()) {
         RotateLog(path);
-        g_logFile = CreateFileW(path.c_str(), FILE_APPEND_DATA,
-                                FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
-                                FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (g_logFile == INVALID_HANDLE_VALUE) {
+        g_logFile.Attach(CreateFileW(path.c_str(), FILE_APPEND_DATA,
+                                     FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                     OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr));
+        if (static_cast<HANDLE>(g_logFile) == INVALID_HANDLE_VALUE) {
+            g_logFile.Detach();
             // каталог мог не создаться/нет прав — печать в файл просто выключена
         }
     }
@@ -526,9 +531,9 @@ std::wstring TargetLabel(const SourceConfig& cfg)
     return cfg.path;
 }
 
-std::wstring ActiveStatus(const SourceConfig& cfg)
+std::wstring ActiveStatus(const SourceConfig& cfg, const std::wstring& quality)
 {
-    return L"Источник: " + cfg.type + L" — " + TargetLabel(cfg);
+    return L"Источник: " + cfg.type + L" — " + TargetLabel(cfg) + L" (" + quality + L")";
 }
 
 std::wstring FallbackStatus(const std::wstring& reason)
@@ -548,10 +553,14 @@ struct Machine {
     std::unique_ptr<IFrameSource> src;
     SourceConfig target;
     bool hasTarget = false;
+    std::wstring quality = L"source"; // Settings.quality; смена -> переоткрытие
     Phase phase = Phase::Switch;
     ULONGLONG switchStart = 0;
     ULONGLONG nextAttempt = 0;
-    std::vector<uint8_t> buf;
+    std::vector<uint8_t> buf; // кадр frameW x frameH BGRX (stride frameW*4)
+    uint32_t frameW = vcam::VCamWidth;
+    uint32_t frameH = vcam::VCamHeight;
+    bool nativeKnown = false; // NativeSize отдавал размер (иначе 720p-путь)
 };
 
 void CloseSource(Machine& m)
@@ -560,6 +569,56 @@ void CloseSource(Machine& m)
         m.src->Close();
         m.src.reset();
     }
+}
+
+// Буфер под WxH BGRX (stride W*4). false = мусор размера / сверх cap / OOM.
+bool EnsureFrameBuf(Machine& m, uint32_t w, uint32_t h)
+{
+    if (w == 0 || h == 0 || w > vcam::VCamNativeCapW || h > vcam::VCamNativeCapH)
+        return false;
+    uint64_t need = (uint64_t)h * w * 4;
+    if (need == 0 || need > vcam::VCamV2MaxFrameSize) return false;
+    if (m.frameW != w || m.frameH != h || m.buf.size() < need) {
+        try {
+            m.buf.resize((size_t)need);
+        } catch (...) {
+            return false;
+        }
+        m.frameW = w;
+        m.frameH = h;
+    }
+    return true;
+}
+
+bool WriteOne(Machine& m)
+{
+    if (!m.writerOpen) return false;
+    if (m.nativeKnown)
+        return m.writer.WriteFrameNative(m.buf.data(), (int)(m.frameW * 4),
+                                         m.frameW, m.frameH);
+    return m.writer.WriteFrame(m.buf.data(), (int)vcam::VCamStride);
+}
+
+// Один кадр из src: натив при известном NativeSize, иначе legacy 720p-путь
+// (старт 720p, пока размер неизвестен — video до первого кадра; v2 при этом
+// зеркалит 720p). false = кадра сейчас нет (caller ждёт/уходит в fallback).
+bool RenderOne(IFrameSource* src, Machine& m, std::wstring& rerr)
+{
+    uint32_t nw = 0, nh = 0;
+    if (src->NativeSize(nw, nh) && nw != 0 && nh != 0 &&
+        nw <= vcam::VCamNativeCapW && nh <= vcam::VCamNativeCapH &&
+        EnsureFrameBuf(m, nw, nh)) {
+        if (!src->Render(m.buf.data(), (int)(nw * 4), nw, nh, rerr)) return false;
+        m.nativeKnown = true;
+        return true;
+    }
+    if (!EnsureFrameBuf(m, vcam::VCamWidth, vcam::VCamHeight)) {
+        rerr = L"frame buffer alloc failed";
+        return false;
+    }
+    if (!src->Render(m.buf.data(), (int)vcam::VCamStride, rerr)) return false;
+    m.nativeKnown = false;
+    return true;
 }
 
 void EnterFallback(Machine& m, const std::wstring& reason)
@@ -573,19 +632,25 @@ void EnterFallback(Machine& m, const std::wstring& reason)
 
 void SetActiveStatus(Machine& m)
 {
-    if (m.writerOpen) SetStatus(ActiveStatus(m.target));
+    if (m.writerOpen) SetStatus(ActiveStatus(m.target, m.quality));
     else SetStatus(FallbackStatus(m.writerErr));
 }
 
-void BeginSwitch(Machine& m, const SourceConfig& want)
+void BeginSwitch(Machine& m, const SourceConfig& want, const std::wstring& quality)
 {
     std::wstring wantLabel = TargetLabel(want);
-    Log(L"[host] switch: type=%s path=%s (was type=%s path=%s)",
-        want.type.c_str(), wantLabel.c_str(),
+    Log(L"[host] switch: type=%s path=%s quality=%s (was type=%s path=%s quality=%s)",
+        want.type.c_str(), wantLabel.c_str(), quality.c_str(),
         m.hasTarget ? m.target.type.c_str() : L"-",
-        m.hasTarget ? TargetLabel(m.target).c_str() : L"-");
+        m.hasTarget ? TargetLabel(m.target).c_str() : L"-",
+        m.hasTarget ? m.quality.c_str() : L"-");
     CloseSource(m);
     m.target = want;
+    // Нормализация как в FrameWriter::SetQuality/Settings::ParseQuality:
+    // только fixed720p проходит, остальное -> source.
+    m.quality = (quality == L"fixed720p") ? L"fixed720p" : L"source";
+    m.writer.SetQuality(m.quality);
+    m.nativeKnown = false; // размер нового источника неизвестен -> старт 720p
     m.hasTarget = true;
     m.phase = Phase::Switch;
     m.switchStart = GetTickCount64();
@@ -626,14 +691,15 @@ DWORD Step(Machine& m)
         }
 
         std::wstring rerr;
-        if (m.src->Render(m.buf.data(), (int)vcam::VCamStride, rerr)) {
-            bool written = m.writerOpen &&
-                           m.writer.WriteFrame(m.buf.data(), (int)vcam::VCamStride);
+        if (RenderOne(m.src.get(), m, rerr)) {
+            bool written = WriteOne(m);
             m.phase = Phase::Active;
             SetActiveStatus(m);
-            Log(L"[host] active: type=%s path=%s%s",
+            Log(L"[host] active: type=%s path=%s%s [%s %ux%u quality=%s]",
                 m.target.type.c_str(), TargetLabel(m.target).c_str(),
-                written ? L"" : L" (write failed)");
+                written ? L"" : L" (write failed)",
+                m.nativeKnown ? L"native" : L"720p",
+                m.frameW, m.frameH, m.quality.c_str());
             return 0;
         }
         if (now - m.switchStart >= kSwitchWindowMs) {
@@ -646,8 +712,8 @@ DWORD Step(Machine& m)
 
     case Phase::Active: {
         std::wstring rerr;
-        if (m.src && m.src->Render(m.buf.data(), (int)vcam::VCamStride, rerr)) {
-            if (m.writerOpen && m.writer.WriteFrame(m.buf.data(), (int)vcam::VCamStride))
+        if (m.src && RenderOne(m.src.get(), m, rerr)) {
+            if (WriteOne(m))
                 return 0;
             Sleep(kFrameMs);
             return 0;
@@ -664,14 +730,15 @@ DWORD Step(Machine& m)
                 std::wstring err;
                 if (cand->Open(m.target, err)) {
                     std::wstring rerr;
-                    if (cand->Render(m.buf.data(), (int)vcam::VCamStride, rerr)) {
+                    if (RenderOne(cand.get(), m, rerr)) {
                         m.src = std::move(cand);
-                        if (m.writerOpen)
-                            m.writer.WriteFrame(m.buf.data(), (int)vcam::VCamStride);
+                        WriteOne(m);
                         m.phase = Phase::Active;
                         SetActiveStatus(m);
-                        Log(L"[host] signal restored: type=%s path=%s",
-                            m.target.type.c_str(), TargetLabel(m.target).c_str());
+                        Log(L"[host] signal restored: type=%s path=%s [%s %ux%u quality=%s]",
+                            m.target.type.c_str(), TargetLabel(m.target).c_str(),
+                            m.nativeKnown ? L"native" : L"720p",
+                            m.frameW, m.frameH, m.quality.c_str());
                         return 0;
                     }
                 } else {
@@ -697,13 +764,17 @@ DWORD WINAPI WorkerProc(LPVOID)
     m.writerOpen = m.writer.Open(err);
     if (m.writerOpen) {
         Log(L"[host] shared memory writer ready (%s)", m.writer.SectionOpenedAs().c_str());
+        if (m.writer.IsV2Open())
+            Log(L"[host] v2 writer ready (%s)", m.writer.V2SectionOpenedAs().c_str());
+        else
+            Log(L"[host] v2 writer unavailable (v1-only mode)");
     } else {
         m.writerErr = err.empty() ? L"writer open failed" : err;
         Log(L"[host] writer open failed: %s", err.c_str());
         SetStatus(FallbackStatus(m.writerErr));
     }
 
-    HANDLE waits[2] = { g_stop, g_dirty };
+    HANDLE waits[2] = { static_cast<HANDLE>(g_stop), static_cast<HANDLE>(g_dirty) };
     bool first = true;
     DWORD timeout = 0;
     for (;;) {
@@ -714,7 +785,8 @@ DWORD WINAPI WorkerProc(LPVOID)
             Settings s;
             g_watcher.Current(s);
             SourceConfig want = ToSourceConfig(s);
-            if (!m.hasTarget || want != m.target) BeginSwitch(m, want);
+            if (!m.hasTarget || want != m.target || s.quality != m.quality)
+                BeginSwitch(m, want, s.quality);
         }
         timeout = Step(m);
     }
@@ -827,8 +899,8 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     LogTokenState();
 
     SetLastError(ERROR_SUCCESS);
-    g_mutex = CreateMutexW(nullptr, FALSE, kMutexName);
-    if (!g_mutex) {
+    g_mutex.Attach(CreateMutexW(nullptr, FALSE, kMutexName));
+    if (static_cast<HANDLE>(g_mutex) == nullptr) {
         Log(L"[host] CreateMutex failed: %lu", GetLastError());
         return 1;
     }
@@ -838,21 +910,20 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                     L"Хост VCam уже запущен (VCamVideoStreamProducer.exe).\n"
                     L"Используйте значок в трее рядом с часами.",
                     L"VCam Video Stream Producer", MB_OK | MB_ICONINFORMATION);
-        CloseHandle(g_mutex);
-        g_mutex = nullptr;
+        g_mutex.Close();
         return 0;
     }
-    WaitForSingleObject(g_mutex, INFINITE); // владение мьютексом = «хост запущен»
+    WaitForSingleObject(static_cast<HANDLE>(g_mutex), INFINITE); // владение мьютексом = «хост запущен»
 
-    g_stop = CreateEventW(nullptr, TRUE, FALSE, kStopEventName);
-    if (!g_stop) {
+    g_stop.Attach(CreateEventW(nullptr, TRUE, FALSE, kStopEventName));
+    if (static_cast<HANDLE>(g_stop) == nullptr) {
         Log(L"[host] CreateEvent(Stop) failed: %lu", GetLastError());
         ReleaseMutex(g_mutex);
-        CloseHandle(g_mutex);
+        g_mutex.Close();
         return 1;
     }
     if (GetLastError() == ERROR_ALREADY_EXISTS) ResetEvent(g_stop);
-    g_dirty = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    g_dirty.Attach(CreateEventW(nullptr, FALSE, FALSE, nullptr));
     InitializeCriticalSection(&g_statusCs);
 
     ApplyAutostartFromSettings();
@@ -861,7 +932,10 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = WndProc;
     wc.hInstance = g_inst;
-    wc.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    // Иконка exe (version.rc: 1 ICON). Нет ресурса — стандартный IDI_APPLICATION.
+    wc.hIcon = LoadIconW(g_inst, MAKEINTRESOURCEW(1));
+    if (!wc.hIcon) wc.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    wc.hIconSm = wc.hIcon;
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     wc.lpszClassName = kTrayClass;
     if (!RegisterClassExW(&wc)) {
@@ -872,10 +946,10 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     if (!g_hwnd) {
         Log(L"[host] CreateWindowEx failed: %lu", GetLastError());
         DeleteCriticalSection(&g_statusCs);
-        CloseHandle(g_dirty);
-        CloseHandle(g_stop);
+        g_dirty.Close();
+        g_stop.Close();
         ReleaseMutex(g_mutex);
-        CloseHandle(g_mutex);
+        g_mutex.Close();
         return 1;
     }
 
@@ -884,7 +958,8 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     g_nid.uID = 1;
     g_nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     g_nid.uCallbackMessage = WM_TRAYICON;
-    g_nid.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    g_nid.hIcon = LoadIconW(g_inst, MAKEINTRESOURCEW(1));
+    if (!g_nid.hIcon) g_nid.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
     wcsncpy_s(g_nid.szTip, kTrayTip, _TRUNCATE);
     if (!Shell_NotifyIconW(NIM_ADD, &g_nid)) Log(L"[host] Shell_NotifyIcon(add) failed");
     Log(L"[host] tray icon added");
@@ -898,8 +973,9 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         Log(L"[host] watching: %s", settingsPath.c_str());
     }
 
-    g_worker = CreateThread(nullptr, 0, WorkerProc, nullptr, 0, nullptr);
-    if (!g_worker) Log(L"[host] CreateThread(worker) failed: %lu", GetLastError());
+    g_worker.Attach(CreateThread(nullptr, 0, WorkerProc, nullptr, 0, nullptr));
+    if (static_cast<HANDLE>(g_worker) == nullptr)
+        Log(L"[host] CreateThread(worker) failed: %lu", GetLastError());
 
     for (;;) {
         MSG msg;
@@ -910,40 +986,34 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
             DispatchMessageW(&msg);
         }
         if (quit) break;
-        DWORD r = MsgWaitForMultipleObjects(1, &g_stop, FALSE, INFINITE, QS_ALLINPUT);
+        HANDLE hStop = static_cast<HANDLE>(g_stop);
+        DWORD r = MsgWaitForMultipleObjects(1, &hStop, FALSE, INFINITE, QS_ALLINPUT);
         if (r == WAIT_OBJECT_0) break;
     }
 
     Log(L"[host] shutting down");
     SetEvent(g_stop);
     g_watcher.Stop();
-    if (g_worker) {
+    if (static_cast<HANDLE>(g_worker) != nullptr) {
         // Handles/critical sections below are shared with the worker: it must
         // be joined before they are destroyed (checked wait, not best-effort).
-        if (WaitForSingleObject(g_worker, 8000) != WAIT_OBJECT_0) {
+        if (WaitForSingleObject(static_cast<HANDLE>(g_worker), 8000) != WAIT_OBJECT_0) {
             Log(L"[host] worker did not stop in 8000 ms; waiting indefinitely");
-            WaitForSingleObject(g_worker, INFINITE);
+            WaitForSingleObject(static_cast<HANDLE>(g_worker), INFINITE);
         }
-        CloseHandle(g_worker);
-        g_worker = nullptr;
+        g_worker.Close();
     }
     Shell_NotifyIconW(NIM_DELETE, &g_nid);
     Log(L"[host] tray icon removed");
     DestroyWindow(g_hwnd);
     g_hwnd = nullptr;
 
-    CloseHandle(g_dirty);
-    g_dirty = nullptr;
-    CloseHandle(g_stop);
-    g_stop = nullptr;
+    g_dirty.Close();
+    g_stop.Close();
     DeleteCriticalSection(&g_statusCs);
     ReleaseMutex(g_mutex);
-    CloseHandle(g_mutex);
-    g_mutex = nullptr;
+    g_mutex.Close();
     Log(L"[host] exit");
-    if (g_logFile != INVALID_HANDLE_VALUE) {
-        CloseHandle(g_logFile);
-        g_logFile = INVALID_HANDLE_VALUE;
-    }
+    g_logFile.Close();
     return 0;
 }
