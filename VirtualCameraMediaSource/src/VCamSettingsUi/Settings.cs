@@ -133,10 +133,24 @@ public sealed class Settings
         {
             var path = filePath ?? FilePath;
             if (!File.Exists(path)) return new Settings();
-            using var doc = JsonDocument.Parse(File.ReadAllText(path));
-            var root = doc.RootElement;
-            if (root.ValueKind != JsonValueKind.Object) return new Settings();
-            var s = new Settings();
+            return LoadFromText(File.ReadAllText(path));
+        }
+        catch
+        {
+            return new Settings();
+        }
+    }
+
+    // Parses an already-read snapshot (throws on malformed JSON — the caller
+    // decides between a silent default and a retry). Load() above keeps the
+    // old fail-soft contract; the live-sync watcher uses this directly so it
+    // applies exactly the validated text it has just read (no TOCTOU re-read).
+    public static Settings LoadFromText(string text)
+    {
+        using var doc = JsonDocument.Parse(text);
+        var root = doc.RootElement;
+        if (root.ValueKind != JsonValueKind.Object) return new Settings();
+        var s = new Settings();
 
             var isNew = root.TryGetProperty("source", out _) ||
                         root.TryGetProperty("static", out _) ||
@@ -222,11 +236,6 @@ public sealed class Settings
             }
 
             return s;
-        }
-        catch
-        {
-            return new Settings();
-        }
     }
 
     // Writes ONLY the new schema, UTF-8 without BOM (see SerializerOptions).

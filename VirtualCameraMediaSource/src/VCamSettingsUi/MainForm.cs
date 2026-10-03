@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text;
+using System.Text.Json;
 
 namespace VCamSettingsUi;
 
@@ -11,6 +12,7 @@ public sealed class MainForm : Form
     private readonly Button _openButton = new();
     private readonly Button _fullSizeButton = new();
     private readonly Button _saveButton = new();
+    private readonly Button _reloadButton = new();
     private readonly Label _pathLabel = new();
     private readonly Label _hintLabel = new();
 
@@ -111,6 +113,19 @@ public sealed class MainForm : Form
     private const string HostMutexName = "VCamVideoStreamProducer.Instance";
     private const string HostStopEventName = "VCamVideoStreamProducer.Stop";
 
+    // Live sync with settings.json (the file can be rewritten from outside —
+    // e2e, tooling — while the form is open). A FileSystemWatcher + 250 ms
+    // debounce timer reloads the controls; user edits set _dirty and block
+    // the auto-reload (a warning in the hint label + the manual "Обновить"
+    // button appear instead). Echo of our own Save is recognised by content
+    // comparison (_lastAppliedText), not by timing.
+    private FileSystemWatcher? _settingsWatcher;
+    private readonly System.Windows.Forms.Timer _syncTimer = new();
+    private bool _dirty;            // user edited controls after Load/Save
+    private bool _suppressDirty;    // programmatic control updates (Load/reload)
+    private string _lastAppliedText = ""; // file snapshot the controls reflect
+    private int _syncRetries;
+
     private static readonly string[] ModeNames = { "fit — вписать с пололосами", "cover — заполнить (обрезка)", "crop — обрезка выбранной области" };
     private static readonly string[] MediaNames = { "статичная картинка", "видеоролик", "физическая камера" };
     private static readonly string[] QualityNames = { "натив (source)", "720p (fixed)" };
@@ -208,6 +223,14 @@ public sealed class MainForm : Form
         _saveButton.Name = "saveButton";
         _saveButton.Click += OnSaveClicked;
 
+        // Manual reload from settings.json (always available; also the way out
+        // when the file changed externally while the form is dirty).
+        _reloadButton.Location = new Point(566, 654);
+        _reloadButton.Size = new Size(116, 40);
+        _reloadButton.Text = "Обновить";
+        _reloadButton.Name = "reloadButton";
+        _reloadButton.Click += OnReloadClicked;
+
         _hostStatusLabel.Location = new Point(430, 538);
         _hostStatusLabel.Size = new Size(244, 22);
         _hostStatusLabel.ForeColor = Color.DimGray;
@@ -282,7 +305,7 @@ public sealed class MainForm : Form
         _fxVhs.Name = "fxVhs";
 
         _hintLabel.Location = new Point(12, 652);
-        _hintLabel.Size = new Size(660, 50);
+        _hintLabel.Size = new Size(548, 50);
         _hintLabel.ForeColor = Color.DimGray;
         _hintLabel.Text = $"Настройки: {Settings.FilePath} — хост VCam подхватит их автоматически (~1 с).";
         _hintLabel.Name = "hintLabel";
@@ -298,7 +321,7 @@ public sealed class MainForm : Form
             _fxScanlines, _fxScanlinesLevel, _fxScanlinesLevelVal,
             _fxRgbSplit, _fxRgbSplitLevel, _fxRgbSplitLevelVal,
             _fxTracking, _fxTrackingLevel, _fxTrackingLevelVal, _fxVhs,
-            _mode, _openButton, _fullSizeButton, _saveButton, _hostStatusLabel, _hostButton, _helpButton,
+            _mode, _openButton, _fullSizeButton, _saveButton, _reloadButton, _hostStatusLabel, _hostButton, _helpButton,
             _cropXLabel, _cropX, _cropYLabel, _cropY, _cropWLabel, _cropW, _cropHLabel, _cropH, _cropKeepAspect, _hintLabel });
 
         _previewExe = FindPreviewExe();
@@ -314,8 +337,10 @@ public sealed class MainForm : Form
         _cameraRefresh.Click += OnCameraRefreshClicked;
         _controlsPanel.StatusMessage += UpdateCameraStatus;
 
+        SubscribeDirtyTracking();
         LoadCurrentSettings();
         UpdateLayout();
+        InitSettingsSync();
     }
 
     private void SetupVideoPanel()
@@ -457,6 +482,236 @@ public sealed class MainForm : Form
         val.Text = "100";
         val.Name = name + "Val";
         bar.Scroll += (_, _) => val.Text = bar.Value.ToString();
+        // ValueChanged covers Scroll + keyboard + programmatic sets; the label
+        // stays in sync and user edits set the dirty flag (programmatic sets
+        // during Load/reload are suppressed via _suppressDirty).
+        bar.ValueChanged += (_, _) => { val.Text = bar.Value.ToString(); MarkDirty(); };
+    }
+
+    // Any user edit after Load/Save marks the form dirty; while dirty the
+    // auto-reload from settings.json is blocked (warning instead) so external
+    // changes never silently discard what the user is editing.
+    private void MarkDirty()
+    {
+        if (_suppressDirty || _dirty) return;
+        _dirty = true;
+    }
+
+    private void SubscribeDirtyTracking()
+    {
+        foreach (var c in new[] { _fxMirror, _fxGrayscale, _fxNoise, _fxScanlines,
+                                  _fxRgbSplit, _fxTracking, _fxVhs, _cropKeepAspect })
+            c.CheckedChanged += (_, _) => MarkDirty();
+        // TrackBars are covered in SetupFxLevel (ValueChanged).
+        _mode.SelectedIndexChanged += (_, _) => MarkDirty();
+        _mediaCombo.SelectedIndexChanged += (_, _) => MarkDirty();
+        _qualityCombo.SelectedIndexChanged += (_, _) => MarkDirty();
+        _captureCombo.SelectedIndexChanged += (_, _) => MarkDirty();
+        _cameraCombo.SelectedIndexChanged += (_, _) => MarkDirty();
+        // Crop fields: programmatic sync runs under _updatingCropFields.
+        foreach (var n in new[] { _cropX, _cropY, _cropW, _cropH })
+            n.ValueChanged += (_, _) => { if (!_updatingCropFields) MarkDirty(); };
+        // Crop rectangle drags and file picks go through OnCropSelectionChanged
+        // / SetSource / OnOpenClicked (each marks dirty there).
+    }
+
+    private void InitSettingsSync()
+    {
+        _lastAppliedText = ReadSettingsText();
+        _syncTimer.Interval = 250;
+        _syncTimer.Tick += OnSyncTimerTick;
+        try
+        {
+            Directory.CreateDirectory(Settings.DirectoryPath);
+            _settingsWatcher = new FileSystemWatcher(Settings.DirectoryPath,
+                Path.GetFileName(Settings.FilePath))
+            {
+                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size |
+                               NotifyFilters.CreationTime,
+                EnableRaisingEvents = true,
+            };
+            _settingsWatcher.Changed += OnSettingsFileChanged;
+            _settingsWatcher.Created += OnSettingsFileChanged;
+            _settingsWatcher.Renamed += OnSettingsFileChanged;
+            _settingsWatcher.Deleted += OnSettingsFileChanged;
+            // Buffer overflow: the next save/manual reload converges anyway.
+            _settingsWatcher.Error += (_, _) => { };
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"MainForm: settings watcher disabled: {ex.Message}");
+            _settingsWatcher = null;
+        }
+    }
+
+    // FileSystemWatcher fires on a pool thread (possibly several bursts per
+    // save): marshal to the UI thread and restart the debounce timer.
+    private void OnSettingsFileChanged(object? sender, FileSystemEventArgs e)
+    {
+        if (IsDisposed || Disposing) return;
+        try
+        {
+            BeginInvoke((Action)(() =>
+            {
+                if (IsDisposed || Disposing) return;
+                _syncTimer.Stop();
+                _syncTimer.Start();
+            }));
+        }
+        catch (ObjectDisposedException) { }
+        catch (InvalidOperationException) { } // handle not created yet
+    }
+
+    private void OnSyncTimerTick(object? sender, EventArgs e)
+    {
+        _syncTimer.Stop();
+        TrySyncFromFile();
+    }
+
+    private void RetrySyncLater()
+    {
+        // Transient read (half-written file, lock): retry a few times, then
+        // give up quietly — the next external change or manual reload retries.
+        if (_syncRetries++ < 8)
+        {
+            _syncTimer.Stop();
+            _syncTimer.Start();
+        }
+        else
+        {
+            _syncRetries = 0;
+        }
+    }
+
+    private static string ReadSettingsText()
+    {
+        try
+        {
+            return File.Exists(Settings.FilePath)
+                ? File.ReadAllText(Settings.FilePath)
+                : "";
+        }
+        catch
+        {
+            return "";
+        }
+    }
+
+    private void TrySyncFromFile()
+    {
+        string text;
+        try
+        {
+            if (!File.Exists(Settings.FilePath)) return; // deleted: keep controls
+            text = File.ReadAllText(Settings.FilePath);
+        }
+        catch (IOException)
+        {
+            RetrySyncLater();
+            return;
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"MainForm: settings re-read failed: {ex.Message}");
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            RetrySyncLater(); // truncated mid-write: wait for the rest
+            return;
+        }
+
+        // Echo suppression by content, not by timing: our own Save (and any
+        // spurious duplicate event) yields exactly the snapshot the controls
+        // already reflect, so there is nothing to do.
+        if (text == _lastAppliedText)
+        {
+            _syncRetries = 0;
+            return;
+        }
+
+        // Never apply half-written JSON: Settings.Load() fails soft to
+        // defaults, which would blank the controls on a torn read.
+        try
+        {
+            using var doc = JsonDocument.Parse(text);
+        }
+        catch (JsonException)
+        {
+            RetrySyncLater();
+            return;
+        }
+
+        if (_dirty)
+        {
+            // Guard unsaved user edits: keep the controls, show the indicator.
+            _reloadButton.Text = "Обновить *";
+            _hintLabel.ForeColor = Color.DarkGoldenrod;
+            _hintLabel.Text = "Файл настроек изменён извне — ваши несохранённые правки " +
+                "не тронуты. Нажмите «Обновить», чтобы загрузить файл, или " +
+                "«Сохранить настройки», чтобы перезаписать его.";
+            return;
+        }
+
+        ApplySettingsText(text);
+    }
+
+    // Applies a validated snapshot to all controls (same mapping as startup).
+    private void ApplySettingsText(string text)
+    {
+        Settings s;
+        try
+        {
+            s = Settings.LoadFromText(text);
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"MainForm: settings parse failed: {ex.Message}");
+            RetrySyncLater();
+            return;
+        }
+
+        _suppressDirty = true;
+        try
+        {
+            ApplySettingsToControls(s);
+            _dirty = false;
+            _syncRetries = 0;
+            _reloadButton.Text = "Обновить";
+            _lastAppliedText = text;
+            _hintLabel.ForeColor = Color.ForestGreen;
+            _hintLabel.Text = $"Настройки обновлены из файла ({DateTime.Now:HH:mm:ss}) — " +
+                "хост подхватит их автоматически (~1 с).";
+        }
+        finally
+        {
+            _suppressDirty = false;
+        }
+        UpdateLayout();
+    }
+
+    private void OnReloadClicked(object? sender, EventArgs e)
+    {
+        // Explicit user choice, no extra confirmation: the flagged "Обновить *"
+        // is only shown after the external-change warning (edits knowingly
+        // discarded); with no pending change a reload is a no-op anyway.
+        _syncTimer.Stop();
+        var text = ReadSettingsText();
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            _hintLabel.ForeColor = Color.DarkGoldenrod;
+            _hintLabel.Text = "Не удалось прочитать файл настроек — повторите позже.";
+            return;
+        }
+        if (text == _lastAppliedText)
+        {
+            _reloadButton.Text = "Обновить";
+            _hintLabel.ForeColor = Color.DimGray;
+            _hintLabel.Text = $"Настройки: {Settings.FilePath} — уже актуальны.";
+            return;
+        }
+        ApplySettingsText(text);
     }
 
     private static void PlaceCropField(Label label, NumericUpDown input, int x, int y, string text)
@@ -614,6 +869,23 @@ public sealed class MainForm : Form
     private void LoadCurrentSettings()
     {
         var s = Settings.Load();
+        _suppressDirty = true;
+        try
+        {
+            ApplySettingsToControls(s);
+        }
+        finally
+        {
+            _suppressDirty = false;
+        }
+        _dirty = false;
+        _lastAppliedText = ReadSettingsText();
+    }
+
+    // One mapping file -> controls, shared by startup, auto-reload and manual
+    // reload. Must run under _suppressDirty (programmatic sets, not edits).
+    private void ApplySettingsToControls(Settings s)
+    {
         _cropKeepAspect.Checked = s.CropKeepAspect;
         _mode.SelectedIndex = s.ScaleMode switch
         {
@@ -659,6 +931,12 @@ public sealed class MainForm : Form
         {
             SetSource(s.StaticPath, new Rectangle(s.CropX, s.CropY, s.CropW, s.CropH));
         }
+
+        // External change may rename the remembered camera: re-select by id
+        // when the list is already loaded (FillCameraCombo suppresses dirty).
+        if (_cameraListLoaded)
+            FillCameraCombo();
+        UpdateCameraPanel();
     }
 
     private ScaleMode CurrentMode => _mode.SelectedIndex switch
@@ -841,6 +1119,23 @@ public sealed class MainForm : Form
     // "<name> (недоступно)" so the saved choice is never lost.
     private void FillCameraCombo()
     {
+        // Programmatic re-selection (list load/refresh, external reload) must
+        // not look like a user edit: suppress the dirty flag, restoring the
+        // outer state (reload runs suppressed already, refresh does not).
+        var prev = _suppressDirty;
+        _suppressDirty = true;
+        try
+        {
+            FillCameraComboCore();
+        }
+        finally
+        {
+            _suppressDirty = prev;
+        }
+    }
+
+    private void FillCameraComboCore()
+    {
         var current = _cameraCombo.SelectedItem as CameraItem;
         var keepId = current?.Id ?? _cameraWishId;
         var keepName = current?.Name ?? _cameraWishName;
@@ -912,6 +1207,7 @@ public sealed class MainForm : Form
             if (dlg.ShowDialog(this) != DialogResult.OK) return;
             _videoPath = dlg.FileName;
             UpdateLayout();
+            MarkDirty();
             return;
         }
 
@@ -963,6 +1259,7 @@ public sealed class MainForm : Form
             {
                 UpdatePreview();
             }
+            MarkDirty(); // file pick; programmatic loads run suppressed
         }
         catch (Exception ex)
         {
@@ -983,6 +1280,7 @@ public sealed class MainForm : Form
     {
         UpdateCropFieldsFromSelection();
         UpdateCropPreviewImage();
+        MarkDirty(); // rectangle drag; programmatic syncs run suppressed
     }
 
     private void UpdateCropPreviewImage()
@@ -1009,6 +1307,7 @@ public sealed class MainForm : Form
     private void OnCropFieldChanged(object? sender, EventArgs e)
     {
         if (_updatingCropFields || _sourceImage is null) return;
+        MarkDirty(); // numeric edit (may clamp to the same rect: no Selection event)
         _updatingCropFields = true;
         try
         {
@@ -1135,6 +1434,13 @@ public sealed class MainForm : Form
         try
         {
             settings.Save();
+            // What is on disk now matches the controls: clear the dirty flag
+            // and the external-change indicator, remember the snapshot so the
+            // watcher recognises its echo as our own write.
+            _dirty = false;
+            _syncRetries = 0;
+            _reloadButton.Text = "Обновить";
+            _lastAppliedText = ReadSettingsText();
             _hintLabel.ForeColor = warn ? Color.DarkGoldenrod : Color.ForestGreen;
             _hintLabel.Text = okText;
         }
@@ -1147,6 +1453,14 @@ public sealed class MainForm : Form
 
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
+        _syncTimer.Stop();
+        _syncTimer.Dispose();
+        if (_settingsWatcher is not null)
+        {
+            _settingsWatcher.EnableRaisingEvents = false;
+            _settingsWatcher.Dispose();
+            _settingsWatcher = null;
+        }
         _sourceImage?.Dispose();
         var img = _preview.Image;
         _preview.Image = null;
