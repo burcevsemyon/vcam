@@ -84,6 +84,10 @@ public sealed class MainForm : Form
     private readonly Label _videoInfoLabel = new();
     private readonly Button _previewButton = new();
     private readonly Label _previewHint = new();
+    // Borrowed-video indicator (hotkey static→video→auto-static): visible only
+    // in video mode, reads the transient %APPDATA%\VCam\hotkey_state.json the
+    // host writes while a hotkey-borrowed clip is on air.
+    private readonly Label _hotkeyBorrowLabel = new();
 
     // Physical camera panel (replaces the preview in camera mode). The device
     // list is produced by "VCamProducerCli list-devices" (stdout rows id\tname).
@@ -133,6 +137,12 @@ public sealed class MainForm : Form
     private string? _previewExe;
     private bool _updatingCropFields;
 
+    // Hotkey hint (always visible, single line between the mode row and the
+    // crop fields): current combination from settings.json + borrow state.
+    // The combination itself lives in settings.json (hotkey {modifiers, vk});
+    // there is no editor — a wrong value falls back to Ctrl+Alt+V in host+UI.
+    private readonly Label _hotkeyHint = new();
+
     // Host (VCamVideoStreamProducer.exe): start/stop button + status indicator.
     private readonly Button _hostButton = new();
     private readonly Label _hostStatusLabel = new();
@@ -171,8 +181,8 @@ public sealed class MainForm : Form
         MaximizeBox = true;
         MinimizeBox = true;
         StartPosition = FormStartPosition.CenterScreen;
-        ClientSize = new Size(880, 946);
-        MinimumSize = new Size(900, 996);
+        ClientSize = new Size(880, 968);
+        MinimumSize = new Size(900, 1018);
         Font = new Font("Segoe UI", 9f);
         try
         {
@@ -261,7 +271,7 @@ public sealed class MainForm : Form
 
         // Manual reload from settings.json (always available; also the way out
         // when the file changed externally while the form is dirty).
-        _reloadButton.Location = new Point(566, 896);
+        _reloadButton.Location = new Point(566, 918);
         _reloadButton.Size = new Size(116, 40);
         _reloadButton.Text = "Обновить";
         _reloadButton.Name = "reloadButton";
@@ -278,7 +288,14 @@ public sealed class MainForm : Form
         _hostButton.Name = "hostButton";
         _hostButton.Click += OnHostButtonClicked;
 
-        int fieldY = 566;
+        // Hotkey hint: single always-visible line under the mode row.
+        _hotkeyHint.Location = new Point(12, 562);
+        _hotkeyHint.Size = new Size(856, 22);
+        _hotkeyHint.ForeColor = Color.DimGray;
+        _hotkeyHint.Name = "hotkeyHint";
+        _hotkeyHint.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+
+        int fieldY = 588;
         PlaceCropField(_cropXLabel, _cropX, 12, fieldY, "X");
         PlaceCropField(_cropYLabel, _cropY, 140, fieldY, "Y");
         PlaceCropField(_cropWLabel, _cropW, 268, fieldY, "Ширина");
@@ -297,14 +314,14 @@ public sealed class MainForm : Form
         // sliders stretch (Dock Fill) — nothing overlaps at 100%/125% DPI.
         SetupFxGroup();
 
-        _hintLabel.Location = new Point(12, 898);
+        _hintLabel.Location = new Point(12, 920);
         _hintLabel.Size = new Size(548, 38);
         _hintLabel.ForeColor = Color.DimGray;
         _hintLabel.Text = $"Настройки: {Settings.FilePath} — хост VCam подхватит их автоматически (~1 с).";
         _hintLabel.Name = "hintLabel";
         _hintLabel.Anchor = AnchorStyles.Left | AnchorStyles.Bottom;
 
-        _helpButton.Location = new Point(688, 896);
+        _helpButton.Location = new Point(688, 918);
         _helpButton.Size = new Size(180, 40);
         _helpButton.Text = "Справка…";
         _helpButton.Name = "helpButton";
@@ -312,7 +329,7 @@ public sealed class MainForm : Form
         _helpButton.Anchor = AnchorStyles.Right | AnchorStyles.Bottom;
 
         Controls.AddRange(new Control[] { _preview, _cropView, _videoPanel, _cameraPanel, _pathLabel, _mediaLabel, _mediaCombo,
-            _qualityLabel, _qualityCombo, _fxGroup,
+            _qualityLabel, _qualityCombo, _fxGroup, _hotkeyHint,
             _mode, _openButton, _fullSizeButton, _saveButton, _reloadButton, _hostStatusLabel, _hostButton, _helpButton,
             _cropXLabel, _cropX, _cropYLabel, _cropY, _cropWLabel, _cropW, _cropHLabel, _cropH, _cropKeepAspect, _hintLabel });
 
@@ -362,7 +379,9 @@ public sealed class MainForm : Form
         _videoInfoLabel.Text =
             "Ролик декодируется хостом VCamVideoStreamProducer.exe и всегда масштабируется letterbox в 1280×720.\r\n" +
             "Настройки scaleMode и crop для видео не применяются (см. секцию static).\r\n" +
-            "Смена файла подхватывается автоматически (~1 с), без перезапуска.";
+            "Смена файла подхватывается автоматически (~1 с), без перезапуска.\r\n" +
+            "Обычное видео крутится по кругу; ролик, вызванный горячей клавишей, " +
+            "играет один раз и возвращает предыдущий источник.";
 
         _previewButton.Location = new Point(16, 176);
         _previewButton.Size = new Size(380, 40);
@@ -375,7 +394,14 @@ public sealed class MainForm : Form
         _previewHint.ForeColor = Color.DimGray;
         _previewHint.Name = "previewHint";
 
-        _videoPanel.Controls.AddRange(new Control[] { _videoTitle, _videoPathLabel, _videoInfoLabel, _previewButton, _previewHint });
+        // Borrowed-video indicator: empty unless the host holds a hotkey borrow
+        // (transient hotkey_state.json). Free space below the preview hint.
+        _hotkeyBorrowLabel.Location = new Point(16, 330);
+        _hotkeyBorrowLabel.Size = new Size(820, 110);
+        _hotkeyBorrowLabel.ForeColor = Color.DimGray;
+        _hotkeyBorrowLabel.Name = "hotkeyBorrowLabel";
+
+        _videoPanel.Controls.AddRange(new Control[] { _videoTitle, _videoPathLabel, _videoInfoLabel, _previewButton, _previewHint, _hotkeyBorrowLabel });
     }
 
     // Same style as _videoPanel: white, FixedSingle, 856x455 over the preview.
@@ -465,7 +491,7 @@ public sealed class MainForm : Form
     // the neighbour (the old fixed-X layout clipped/overlapped).
     private void SetupFxGroup()
     {
-        _fxGroup.Location = new Point(12, 592);
+        _fxGroup.Location = new Point(12, 614);
         _fxGroup.Size = new Size(856, 298);
         _fxGroup.Text = "Эффекты";
         _fxGroup.Name = "fxGroup";
@@ -948,6 +974,7 @@ public sealed class MainForm : Form
         _hostStatusLabel.Text = running ? "Хост: запущен" : "Хост: не запущен";
         _hostStatusLabel.ForeColor = running ? Color.ForestGreen : Color.DimGray;
         _hostButton.Text = running ? "Перезапустить хост" : "Запустить хост";
+        UpdateHotkeyBorrowLabel(); // опрос transient borrow-состояния (1 с)
     }
 
     private void OnHostButtonClicked(object? sender, EventArgs e)
@@ -1033,6 +1060,8 @@ public sealed class MainForm : Form
     private void ApplySettingsToControls(Settings s)
     {
         _cropKeepAspect.Checked = s.CropKeepAspect;
+        UpdateHotkeyHint(s);
+        UpdateHotkeyBorrowLabel();
         _mode.SelectedIndex = s.ScaleMode switch
         {
             ScaleMode.Cover => 1,
@@ -1189,6 +1218,121 @@ public sealed class MainForm : Form
               "Запускается отдельным процессом, поверх всех окон (always-on-top). Esc — выход."
             : "VCamPreview.exe не найден: искал рядом с VCamSettingsUi.exe и в " +
               "<корень репозитория>\\build\\x64\\Release — окно предпросмотра недоступно, кнопка отключена.";
+        UpdateHotkeyBorrowLabel();
+    }
+
+    // Transient hotkey-borrow state the host writes while a hotkey-borrowed
+    // clip is on air (%APPDATA%\VCam\hotkey_state.json, NOT settings.json —
+    // otherwise the settings watcher would loop the switches). Missing file
+    // (or garbage) = no borrow. Never throws.
+    private static string HotkeyStatePath =>
+        Path.Combine(Settings.DirectoryPath, "hotkey_state.json");
+
+    private static bool TryReadHotkeyBorrow(out string returnTo)
+    {
+        returnTo = "";
+        string text;
+        try
+        {
+            if (!File.Exists(HotkeyStatePath)) return false;
+            text = File.ReadAllText(HotkeyStatePath);
+        }
+        catch
+        {
+            return false;
+        }
+        try
+        {
+            using var doc = JsonDocument.Parse(text);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return false;
+            var borrowed = root.TryGetProperty("borrowed", out var b) &&
+                           b.ValueKind == JsonValueKind.True;
+            if (!borrowed) return false;
+            if (root.TryGetProperty("returnTo", out var r) &&
+                r.ValueKind == JsonValueKind.String)
+                returnTo = r.GetString() ?? "";
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    // Mirrors the host HotkeyDisplay (C++): modifiers are RegisterHotKey bits
+    // (1=Alt, 2=Ctrl, 4=Shift, 8=Win), vk is the Virtual-Key code. Garbage is
+    // already normalised to Ctrl+Alt+V by Settings parsing on both sides.
+    private static string HotkeyDisplay(Settings s)
+    {
+        var sb = new StringBuilder();
+        if ((s.HotkeyModifiers & 2) != 0) sb.Append("Ctrl+");
+        if ((s.HotkeyModifiers & 1) != 0) sb.Append("Alt+");
+        if ((s.HotkeyModifiers & 4) != 0) sb.Append("Shift+");
+        if ((s.HotkeyModifiers & 8) != 0) sb.Append("Win+");
+        var vk = s.HotkeyVk;
+        if ((vk >= '0' && vk <= '9') || (vk >= 'A' && vk <= 'Z'))
+            sb.Append((char)vk);
+        else if (vk >= 0x70 && vk <= 0x87)
+            sb.Append('F').Append(vk - 0x70 + 1);
+        else
+            sb.Append(vk switch
+            {
+                0x20 => "Space",
+                0x0D => "Enter",
+                0x09 => "Tab",
+                0x1B => "Esc",
+                0x25 => "Left",
+                0x27 => "Right",
+                0x26 => "Up",
+                0x28 => "Down",
+                _ => $"VK 0x{vk:X2}",
+            });
+        return sb.ToString();
+    }
+
+    // Always-visible hotkey line: current combination + what it does.
+    private void UpdateHotkeyHint(Settings s)
+    {
+        _hotkeyHint.Text = "Горячая клавиша: " + HotkeyDisplay(s) +
+            " — показать видео один раз (повторно — вернуться сразу; " +
+            "после конца ролика — автовозврат). Комбинация — в settings.json (hotkey).";
+    }
+
+    // Borrowed-video indicator, polled (host timer tick + panel updates): while
+    // the host holds a hotkey borrow the label names the source the clip will
+    // return to; otherwise it stays a quiet hint.
+    private void UpdateHotkeyBorrowLabel()
+    {
+        if (TryReadHotkeyBorrow(out var returnTo))
+        {
+            if (string.IsNullOrEmpty(returnTo)) returnTo = "static";
+            var borrowText =
+                "▶ Сейчас идёт видео по горячей клавише: после конца ролика " +
+                $"эфир вернётся на «{returnTo}» (повторное нажатие — вернуться сразу).";
+            if (_hotkeyBorrowLabel.Text != borrowText)
+            {
+                _hotkeyBorrowLabel.ForeColor = Color.DarkRed;
+                _hotkeyBorrowLabel.Text = borrowText;
+            }
+            const string suffix = " Сейчас идёт видео по горячей клавише.";
+            if (!_hotkeyHint.Text.EndsWith(suffix, StringComparison.Ordinal))
+                _hotkeyHint.Text += suffix;
+        }
+        else
+        {
+            const string idleText =
+                "Видео по горячей клавише будет играть один раз — " +
+                "после конца ролика эфир вернётся сам.";
+            if (_hotkeyBorrowLabel.Text != idleText)
+            {
+                _hotkeyBorrowLabel.ForeColor = Color.DimGray;
+                _hotkeyBorrowLabel.Text = idleText;
+            }
+            const string suffix = " Сейчас идёт видео по горячей клавише.";
+            if (_hotkeyHint.Text.EndsWith(suffix, StringComparison.Ordinal))
+                _hotkeyHint.Text = _hotkeyHint.Text[..^suffix.Length];
+        }
     }
 
     // First switch to the camera source (also at startup when the saved type is

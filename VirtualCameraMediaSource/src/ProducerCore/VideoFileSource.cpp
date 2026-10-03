@@ -286,7 +286,9 @@ bool VideoFileSource::Open(const SourceConfig& cfg, std::wstring& err)
 {
     bool reuse = false;
     EnterCriticalSection(&cs_);
-    reuse = open_ && !failed_ && cfg == cfg_;
+    // Закончившийся play-once с тем же конфигом не переиспользуем: он уже
+    // отдал "ended" и кадров не даст — нужен новый проход с начала файла.
+    reuse = open_ && !failed_ && !ended_ && cfg == cfg_;
     LeaveCriticalSection(&cs_);
     if (reuse) return true;
 
@@ -308,6 +310,8 @@ bool VideoFileSource::Open(const SourceConfig& cfg, std::wstring& err)
     frameReady_ = false;
     failed_ = false;
     failReason_.clear();
+    playOnce_ = cfg.playOnce;
+    ended_ = false;
     LeaveCriticalSection(&cs_);
 
     stopEvent_.Attach(CreateEventW(nullptr, TRUE, FALSE, nullptr));
@@ -335,6 +339,7 @@ bool VideoFileSource::Render(uint8_t* bgrx, int stride, std::wstring& err)
     EnterCriticalSection(&cs_);
     if (!open_) err = L"video source is not open";
     else if (failed_) err = failReason_;
+    else if (ended_) err = L"ended";
     else if (!frameReady_) err = L"no frame decoded yet";
     else ready = ScaleFrameTo720pLocked(bgrx, (LONG)stride);
     LeaveCriticalSection(&cs_);
@@ -354,6 +359,7 @@ bool VideoFileSource::Render(uint8_t* dst, int stride, uint32_t w, uint32_t h,
     EnterCriticalSection(&cs_);
     if (!open_) err = L"video source is not open";
     else if (failed_) err = failReason_;
+    else if (ended_) err = L"ended";
     else if (!frameReady_) err = L"no frame decoded yet";
     else if (w == frameW_ && h == frameH_) {
         vcam::CopyFrameRowwise(dst, (size_t)stride, frame_.data(), (size_t)frameW_ * 4,
@@ -380,6 +386,14 @@ bool VideoFileSource::NativeSize(uint32_t& w, uint32_t& h)
     return ok;
 }
 
+bool VideoFileSource::Ended() const
+{
+    EnterCriticalSection(const_cast<CRITICAL_SECTION*>(&cs_));
+    bool e = ended_;
+    LeaveCriticalSection(const_cast<CRITICAL_SECTION*>(&cs_));
+    return e;
+}
+
 void VideoFileSource::Close()
 {
     Shutdown(3000);
@@ -400,6 +414,8 @@ bool VideoFileSource::Shutdown(DWORD timeoutMs)
     frameReady_ = false;
     failed_ = false;
     failReason_.clear();
+    playOnce_ = false;
+    ended_ = false;
     LeaveCriticalSection(&cs_);
 
     frame_.clear();
@@ -416,7 +432,8 @@ DWORD WINAPI VideoFileSource::ThreadProc(LPVOID self)
 }
 
 // Фоновый декод: pacing по timestamp (frame-holding), letterbox в frame_ под cs_,
-// луп SetPosition(0) на end-of-stream. Ошибка → SetFailed (Render даст false).
+// луп SetPosition(0) на end-of-stream (default) или ended_-стоп без seek в
+// режиме playOnce. Ошибка → SetFailed (Render даст false).
 void VideoFileSource::DecodeLoop()
 {
     HRESULT hrCo = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
@@ -442,6 +459,9 @@ void VideoFileSource::DecodeLoop()
     ULONGLONG wallStart = GetTickCount64();
     LONGLONG baseMs = 0;
     bool failed = false;
+    // playOnce_ стабилен на время жизни потока (пишется в Open/Shutdown под
+    // остановленный DecodeLoop) — копируем в локальную для проверки EOS.
+    const bool playOnce = playOnce_;
 
     while (WaitForSingleObject(stopEvent_, 0) != WAIT_OBJECT_0) {
         ATL::CComPtr<IMFMediaBuffer> buf;
@@ -509,6 +529,15 @@ void VideoFileSource::DecodeLoop()
         }
 
         if (flags & MF_SOURCE_READERF_ENDOFSTREAM) {
+            if (playOnce) {
+                // Один проход сыгран: кадров больше не будет, seek не делаем.
+                // Последний кадр остаётся в frame_, но Render даёт "ended".
+                EnterCriticalSection(&cs_);
+                ended_ = true;
+                LeaveCriticalSection(&cs_);
+                LogVideo(L"end of stream (play-once, no loop)");
+                break;
+            }
             PROPVARIANT pv;
             PropVariantInit(&pv);
             pv.vt = VT_I8;

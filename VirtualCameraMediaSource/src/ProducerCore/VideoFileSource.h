@@ -11,7 +11,8 @@
 #include "VideoProcessorScaler.h"
 
 // Видеофайл через MF SourceReader: декод в фоновом потоке с frame-holding по
-// timestamp и лупом SetPosition(0). Декод — в нативном размере (кламп к cap 4K,
+// timestamp и лупом SetPosition(0) (default; SourceConfig.playOnce=true =
+// один проход без seek + Ended()/Render-"ended" в конце). Декод — в нативном
 // кадр хранится в frame_); Render отдаёт последний декодированный кадр;
 // legacy Render(bgrx, stride) = 720p letterbox (MFT, fallback CPU);
 // sized Render = произвольный размер (натив — memcpy, 720p — MFT/CPU,
@@ -32,6 +33,8 @@ public:
     bool NativeSize(uint32_t& w, uint32_t& h) override;
     void Close() override;
     const wchar_t* Name() const override { return L"video"; }
+    // true = файл доигран один раз в режиме playOnce (Render даёт false/"ended").
+    bool Ended() const override;
 
 private:
     static DWORD WINAPI ThreadProc(LPVOID self);
@@ -60,5 +63,10 @@ private:
     bool frameReady_ = false;
     bool failed_ = false;
     std::wstring failReason_;
+    // Режим play-once (из SourceConfig.playOnce): файл играется один раз,
+    // на end-of-stream seek НЕ делается, взводится ended_ (Render=false/"ended").
+    // Default false = луп SetPosition(0) как раньше.
+    bool playOnce_ = false;
+    bool ended_ = false;
     VideoProcessorScaler mftScaler_; // GPU-скейл; недоступен -> CPU-fallback
 };

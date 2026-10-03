@@ -14,6 +14,7 @@ namespace VCamSettingsUi;
 //     "camera": { "id": "<MF symbolic link>", "name": "<friendly name>",
 ///                "capture": "max" | "720p" | "1080p" },
 //     "quality": "source" | "fixed720p",
+//     "hotkey": { "modifiers": int 1-15, "vk": int 0x08-0xFE },
 //     "effects": { "enabled": bool, "mirror": bool, "grayscale": bool,
 //                "noise": bool, "scanlines": bool, "rgbsplit": bool,
 //                "tracking": bool, "vhs": bool, "noiseLevel": int 0-100,
@@ -86,6 +87,13 @@ public sealed class Settings
     // Root "quality" (v2): mirrors Settings::ParseQuality on the C++ side —
     // only "fixed720p" passes, anything else (incl. missing) is Source.
     public Quality Quality { get; set; } = Quality.Source;
+
+    // Section "hotkey" (global host hotkey static->video->auto-static): mirrors
+    // HotkeySection on the C++ side. Modifiers are RegisterHotKey bits
+    // (MOD_ALT=1, MOD_CONTROL=2, MOD_SHIFT=4, MOD_WIN=8); vk is the Virtual-Key
+    // code. Missing key or garbage (incl. 0) -> default Ctrl+Alt+V (3, 0x56).
+    public int HotkeyModifiers { get; set; } = 3;
+    public int HotkeyVk { get; set; } = 0x56;
 
     // Section "effects" (host post-fx): mirrors EffectsSection on the C++ side.
     // Legacy files without the section migrate to enabled + all-false.
@@ -203,6 +211,12 @@ public sealed class Settings
                 if (root.TryGetProperty("quality", out var q) && q.ValueKind == JsonValueKind.String)
                     s.Quality = ParseQuality(q.GetString() ?? "");
 
+                if (root.TryGetProperty("hotkey", out var hk) && hk.ValueKind == JsonValueKind.Object)
+                {
+                    s.HotkeyModifiers = ParseHotkeyModifiers(GetInt(hk, "modifiers", 3));
+                    s.HotkeyVk = ParseHotkeyVk(GetInt(hk, "vk", 0x56));
+                }
+
                 if (root.TryGetProperty("effects", out var fx) && fx.ValueKind == JsonValueKind.Object)
                 {
                     s.FxEnabled = GetBoolDefaultTrue(fx, "enabled");
@@ -293,6 +307,11 @@ public sealed class Settings
                 },
             },
             ["quality"] = Quality == Quality.Fixed720p ? "fixed720p" : "source",
+            ["hotkey"] = new Dictionary<string, object>
+            {
+                ["modifiers"] = HotkeyModifiers,
+                ["vk"] = HotkeyVk,
+            },
             ["effects"] = new Dictionary<string, object>
             {
                 ["enabled"] = FxEnabled,
@@ -328,6 +347,11 @@ public sealed class Settings
             ? n
             : 0;
 
+    private static int GetInt(JsonElement obj, string name, int defaultValue) =>
+        obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var n)
+            ? n
+            : defaultValue;
+
     private static bool GetBool(JsonElement obj, string name) =>
         obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.True;
 
@@ -362,6 +386,14 @@ public sealed class Settings
     private static string ParseBackend(string backend) =>
         string.Equals(backend, "frei0r", StringComparison.Ordinal) ? "frei0r"
         : "cpu";
+
+    // Mirrors the C++ hotkey parsing exactly: modifiers 1-15 pass, vk
+    // 0x08-0xFE passes, anything else (missing/garbage/0) is Ctrl+Alt+V.
+    private static int ParseHotkeyModifiers(int mods) =>
+        mods >= 1 && mods <= 15 ? mods : 3;
+
+    private static int ParseHotkeyVk(int vk) =>
+        vk >= 0x08 && vk <= 0xFE ? vk : 0x56;
 
     // Mirrors the C++ ParseCapture exactly: only "720p"/"1080p" pass (ordinal),
     // everything else (missing/garbage/future tokens) is Max.

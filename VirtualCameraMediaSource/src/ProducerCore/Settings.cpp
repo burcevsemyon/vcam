@@ -281,6 +281,15 @@ void ParseNewSchema(const std::string& json, Settings& s)
     std::wstring q;
     if (JsonGetString(json, "quality", q)) ParseQuality(q, s.quality);
     s.autostart = JsonGetBool(json, "autostart", true);
+    if (FindObjectRange(json, "hotkey", b, e)) {
+        std::string sec = json.substr(b, e - b);
+        // hotkey: {modifiers, vk}; мусор (включая 0) → дефолт Ctrl+Alt+V
+        // (модификаторы — биты MOD_ALT|CONTROL|SHIFT|WIN = 1|2|4|8).
+        int mods = JsonGetInt(sec, "modifiers", 3);
+        s.hotkey.modifiers = (mods >= 1 && mods <= 15) ? mods : 3;
+        int vk = JsonGetInt(sec, "vk", 0x56);
+        s.hotkey.vk = (vk >= 0x08 && vk <= 0xFE) ? vk : 0x56;
+    }
 }
 
 // Старый формат: корневые imagePath/mediaMode/mediaPath/scaleMode/crop*.
@@ -306,6 +315,8 @@ void ParseLegacySchema(const std::string& json, Settings& s)
     s.video.path = mediaPath;
     s.quality = L"source"; // legacy без ключа quality -> source
     s.cam.capture = L"max"; // legacy без секции camera -> max
+    s.hotkey.modifiers = 3; // legacy без секции hotkey -> Ctrl+Alt+V
+    s.hotkey.vk = 0x56;
     s.fx.enabled = true;    // legacy без секции effects -> мастер вкл, тоглы выкл
     s.fx.mirror = false;    // legacy без секции effects -> всё выкл
     s.fx.grayscale = false;
@@ -368,6 +379,8 @@ std::string Settings::Serialize() const
            "\", \"name\": \"" + EscapeJson(cam.name) +
            "\", \"capture\": \"" + EscapeJson(cam.capture) + "\" },\n";
     out += "  \"quality\": \"" + EscapeJson(quality) + "\",\n";
+    out += "  \"hotkey\": { \"modifiers\": " + std::to_string(hotkey.modifiers) +
+           ", \"vk\": " + std::to_string(hotkey.vk) + " },\n";
     out += "  \"effects\": { \"enabled\": ";
     out += fx.enabled ? "true" : "false";
     out += ", \"mirror\": ";

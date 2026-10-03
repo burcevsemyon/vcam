@@ -40,6 +40,20 @@ struct CameraSection {
     }
 };
 
+// Глобальный хоткей хоста static→video→auto-static (секция hotkey).
+// Модификаторы — биты RegisterHotKey (MOD_ALT=1, MOD_CONTROL=2, MOD_SHIFT=4,
+// MOD_WIN=8); vk — Virtual-Key code. Мусор/отсутствие → дефолт Ctrl+Alt+V.
+struct HotkeySection {
+    int modifiers = 3; // MOD_CONTROL | MOD_ALT
+    int vk = 0x56;     // 'V'
+
+    bool operator==(const HotkeySection& o) const
+    {
+        return modifiers == o.modifiers && vk == o.vk;
+    }
+    bool operator!=(const HotkeySection& o) const { return !(*this == o); }
+};
+
 struct EffectsSection {
     bool enabled = true;    // мастер-выключатель: false = хост скипает ApplyFx целиком
     bool mirror = false;    // зеркало по горизонтали
@@ -89,12 +103,15 @@ struct Settings {
     // Эффекты хоста (секция effects): смена только эффектов — без переоткрытия
     // источника (отдельная ветка в WorkerProc, см. BeginSwitch по target/quality).
     EffectsSection fx;
+    // Глобальный хоткей (секция hotkey): смена — только перерегистрация
+    // RegisterHotKey, без переоткрытия источника.
+    HotkeySection hotkey;
 
     bool operator==(const Settings& o) const
     {
         return sourceType == o.sourceType && st == o.st && video == o.video &&
                 cam == o.cam && autostart == o.autostart && quality == o.quality &&
-                fx == o.fx;
+                fx == o.fx && hotkey == o.hotkey;
     }
     bool operator!=(const Settings& o) const { return !(*this == o); }
 
