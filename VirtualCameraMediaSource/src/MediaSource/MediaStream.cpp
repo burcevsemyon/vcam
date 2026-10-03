@@ -308,6 +308,29 @@ HRESULT CMediaStream::SetMediaType(IMFMediaType* pMediaType)
     return S_OK;
 }
 
+// Common attribute set for the advertised video types (RGB32/NV12, any size):
+// progressive, fixed-size, 30 fps, 1:1 pixel aspect. Bitrate is derived from
+// the sample size and clamped to UINT32 (large native v2 frames would overflow).
+static HRESULT FillVideoMediaType(IMFMediaType* pType, const GUID& subtype,
+                                  UINT32 w, UINT32 h, UINT32 stride, UINT32 sampleSize)
+{
+    HRESULT hr = pType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
+    if (SUCCEEDED(hr)) hr = pType->SetGUID(MF_MT_SUBTYPE, subtype);
+    if (SUCCEEDED(hr)) hr = MFSetAttributeSize(pType, MF_MT_FRAME_SIZE, w, h);
+    if (SUCCEEDED(hr)) hr = MFSetAttributeRatio(pType, MF_MT_FRAME_RATE, 30, 1);
+    if (SUCCEEDED(hr)) hr = pType->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
+    if (SUCCEEDED(hr)) hr = pType->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
+    if (SUCCEEDED(hr)) hr = pType->SetUINT32(MF_MT_FIXED_SIZE_SAMPLES, TRUE);
+    if (SUCCEEDED(hr)) hr = pType->SetUINT32(MF_MT_DEFAULT_STRIDE, stride);
+    if (SUCCEEDED(hr)) hr = pType->SetUINT32(MF_MT_SAMPLE_SIZE, sampleSize);
+    if (SUCCEEDED(hr)) {
+        const UINT64 bps = (UINT64)sampleSize * 8 * 30;
+        hr = pType->SetUINT32(MF_MT_AVG_BITRATE, bps > 0xFFFFFFFFull ? 0xFFFFFFFFu : (UINT32)bps);
+    }
+    if (SUCCEEDED(hr)) hr = MFSetAttributeRatio(pType, MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
+    return hr;
+}
+
 HRESULT CMediaStream::FinalConstruct(CMediaSource* pSource)
 {
     VCamDiagLog(L"Stream.FinalConstruct");
@@ -322,82 +345,22 @@ HRESULT CMediaStream::FinalConstruct(CMediaSource* pSource)
 
     hr = MFCreateMediaType(&m_pMediaType);
     if (FAILED(hr)) return hr;
-
-    hr = m_pMediaType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-    if (FAILED(hr)) return hr;
-    hr = m_pMediaType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
-    if (FAILED(hr)) return hr;
-    hr = MFSetAttributeSize(m_pMediaType, MF_MT_FRAME_SIZE, vcam::VCamWidth, vcam::VCamHeight);
-    if (FAILED(hr)) return hr;
-    hr = MFSetAttributeRatio(m_pMediaType, MF_MT_FRAME_RATE, 30, 1);
-    if (FAILED(hr)) return hr;
-    hr = m_pMediaType->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
-    if (FAILED(hr)) return hr;
-    hr = m_pMediaType->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
-    if (FAILED(hr)) return hr;
-    hr = m_pMediaType->SetUINT32(MF_MT_FIXED_SIZE_SAMPLES, TRUE);
-    if (FAILED(hr)) return hr;
-    hr = m_pMediaType->SetUINT32(MF_MT_DEFAULT_STRIDE, vcam::VCamStride);
-    if (FAILED(hr)) return hr;
-    hr = m_pMediaType->SetUINT32(MF_MT_SAMPLE_SIZE, vcam::VCamFrameSize);
-    if (FAILED(hr)) return hr;
-    hr = m_pMediaType->SetUINT32(MF_MT_AVG_BITRATE,
-                                 (UINT32)(vcam::VCamWidth * vcam::VCamHeight * vcam::VCamPixelSize * 8 * 30));
-    if (FAILED(hr)) return hr;
-    hr = MFSetAttributeRatio(m_pMediaType, MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
+    hr = FillVideoMediaType(m_pMediaType, MFVideoFormat_RGB32, vcam::VCamWidth, vcam::VCamHeight,
+                            vcam::VCamStride, vcam::VCamFrameSize);
     if (FAILED(hr)) return hr;
 
     // Secondary format: NV12 1280x720@30.
     const UINT32 nv12Bytes = (UINT32)(vcam::VCamWidth * vcam::VCamHeight * 3 / 2);
     hr = MFCreateMediaType(&m_pMediaTypeNv12);
     if (FAILED(hr)) return hr;
-    hr = m_pMediaTypeNv12->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-    if (FAILED(hr)) return hr;
-    hr = m_pMediaTypeNv12->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12);
-    if (FAILED(hr)) return hr;
-    hr = MFSetAttributeSize(m_pMediaTypeNv12, MF_MT_FRAME_SIZE, vcam::VCamWidth, vcam::VCamHeight);
-    if (FAILED(hr)) return hr;
-    hr = MFSetAttributeRatio(m_pMediaTypeNv12, MF_MT_FRAME_RATE, 30, 1);
-    if (FAILED(hr)) return hr;
-    hr = m_pMediaTypeNv12->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
-    if (FAILED(hr)) return hr;
-    hr = m_pMediaTypeNv12->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
-    if (FAILED(hr)) return hr;
-    hr = m_pMediaTypeNv12->SetUINT32(MF_MT_FIXED_SIZE_SAMPLES, TRUE);
-    if (FAILED(hr)) return hr;
-    hr = m_pMediaTypeNv12->SetUINT32(MF_MT_DEFAULT_STRIDE, vcam::VCamWidth);
-    if (FAILED(hr)) return hr;
-    hr = m_pMediaTypeNv12->SetUINT32(MF_MT_SAMPLE_SIZE, nv12Bytes);
-    if (FAILED(hr)) return hr;
-    hr = m_pMediaTypeNv12->SetUINT32(MF_MT_AVG_BITRATE, (UINT32)(nv12Bytes * 8 * 30));
-    if (FAILED(hr)) return hr;
-    hr = MFSetAttributeRatio(m_pMediaTypeNv12, MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
+    hr = FillVideoMediaType(m_pMediaTypeNv12, MFVideoFormat_NV12, vcam::VCamWidth, vcam::VCamHeight,
+                            vcam::VCamWidth, nv12Bytes);
     if (FAILED(hr)) return hr;
 
     // Tertiary format: 640x480 RGB32@30
     hr = MFCreateMediaType(&m_pMediaType640);
     if (FAILED(hr)) return hr;
-    hr = m_pMediaType640->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-    if (FAILED(hr)) return hr;
-    hr = m_pMediaType640->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
-    if (FAILED(hr)) return hr;
-    hr = MFSetAttributeSize(m_pMediaType640, MF_MT_FRAME_SIZE, 640, 480);
-    if (FAILED(hr)) return hr;
-    hr = MFSetAttributeRatio(m_pMediaType640, MF_MT_FRAME_RATE, 30, 1);
-    if (FAILED(hr)) return hr;
-    hr = m_pMediaType640->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
-    if (FAILED(hr)) return hr;
-    hr = m_pMediaType640->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
-    if (FAILED(hr)) return hr;
-    hr = m_pMediaType640->SetUINT32(MF_MT_FIXED_SIZE_SAMPLES, TRUE);
-    if (FAILED(hr)) return hr;
-    hr = m_pMediaType640->SetUINT32(MF_MT_DEFAULT_STRIDE, 640 * 4);
-    if (FAILED(hr)) return hr;
-    hr = m_pMediaType640->SetUINT32(MF_MT_SAMPLE_SIZE, 640 * 480 * 4);
-    if (FAILED(hr)) return hr;
-    hr = m_pMediaType640->SetUINT32(MF_MT_AVG_BITRATE, (UINT32)(640 * 480 * 4 * 8 * 30));
-    if (FAILED(hr)) return hr;
-    hr = MFSetAttributeRatio(m_pMediaType640, MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
+    hr = FillVideoMediaType(m_pMediaType640, MFVideoFormat_RGB32, 640, 480, 640 * 4, 640 * 480 * 4);
     if (FAILED(hr)) return hr;
 
     // 640x480 NV12 намеренно НЕ предлагается: системный FrameServer-прокси
@@ -413,21 +376,8 @@ HRESULT CMediaStream::FinalConstruct(CMediaSource* pSource)
             vcam_v2::ShouldAdvertiseNative(v2w, v2h)) {
             ATL::CComPtr<IMFMediaType> pNative;
             hr = MFCreateMediaType(&pNative);
-            if (SUCCEEDED(hr)) hr = pNative->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-            if (SUCCEEDED(hr)) hr = pNative->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
-            if (SUCCEEDED(hr)) hr = MFSetAttributeSize(pNative, MF_MT_FRAME_SIZE, v2w, v2h);
-            if (SUCCEEDED(hr)) hr = MFSetAttributeRatio(pNative, MF_MT_FRAME_RATE, 30, 1);
-            if (SUCCEEDED(hr)) hr = pNative->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
-            if (SUCCEEDED(hr)) hr = pNative->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
-            if (SUCCEEDED(hr)) hr = pNative->SetUINT32(MF_MT_FIXED_SIZE_SAMPLES, TRUE);
-            if (SUCCEEDED(hr)) hr = pNative->SetUINT32(MF_MT_DEFAULT_STRIDE, v2w * 4);
-            if (SUCCEEDED(hr)) hr = pNative->SetUINT32(MF_MT_SAMPLE_SIZE, v2fs);
-            if (SUCCEEDED(hr)) {
-                const UINT64 bps = (UINT64)v2fs * 8 * 30;
-                hr = pNative->SetUINT32(MF_MT_AVG_BITRATE,
-                                        bps > 0xFFFFFFFFull ? 0xFFFFFFFFu : (UINT32)bps);
-            }
-            if (SUCCEEDED(hr)) hr = MFSetAttributeRatio(pNative, MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
+            if (SUCCEEDED(hr))
+                hr = FillVideoMediaType(pNative, MFVideoFormat_RGB32, v2w, v2h, v2w * 4, v2fs);
             if (SUCCEEDED(hr)) {
                 m_pMediaTypeNative = pNative;
                 m_nativeW = v2w;

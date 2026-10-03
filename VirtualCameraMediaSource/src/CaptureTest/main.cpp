@@ -402,15 +402,255 @@ static int RunDirectMode(int numFrames, const wchar_t* outputPrefix)
 // Usage: CaptureTest.exe device [strict] [nv12] [nameFilter] [width] [height] [outputPrefix]
 // Exit: 0 = captured all frames, 1 = failure, 2 = no device matching filter.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Device mode helpers
+// ---------------------------------------------------------------------------
+
+// RAII-сессия MF/COM: уборка на любом выходе — блок MFShutdown +
+// CoUninitialize больше не дублируется перед каждым ранним return.
+struct MfSession {
+    bool comOk = false;
+    bool mfOk = false;
+    ~MfSession()
+    {
+        if (mfOk) MFShutdown();
+        if (comOk) CoUninitialize();
+    }
+};
+
+// Текущий тип stream 0: из него считается формат буферов сэмплов
+// (BMP пишем по нему, а не по захардкоженному 1280x720).
+struct Stream0Info {
+    GUID major{};
+    GUID sub{};
+    UINT32 w = 0;
+    UINT32 h = 0;
+    bool known = false;
+};
+
+// Печатает потоки PD, по запросу ставит нужный тип на stream 0 и запоминает
+// текущий тип. pPD отдаём наружу — он нужен для Start().
+static HRESULT InspectStreams(IMFMediaSource* pSource, UINT32 reqW, UINT32 reqH,
+                              bool wantNv12, Stream0Info& s0,
+                              ATL::CComPtr<IMFPresentationDescriptor>& pPD)
+{
+    HRESULT hr = S_OK;
+    hr = pSource->CreatePresentationDescriptor(&pPD);
+    LogW(L"CreatePresentationDescriptor: hr=0x%08X", hr);
+    if (SUCCEEDED(hr)) {
+        DWORD nStreams = 0;
+        hr = pPD->GetStreamDescriptorCount(&nStreams);
+        LogW(L"  GetStreamDescriptorCount: hr=0x%08X count=%u", hr, nStreams);
+        for (DWORD s = 0; s < nStreams; ++s) {
+            BOOL bSelected = FALSE;
+            ATL::CComPtr<IMFStreamDescriptor> pSD;
+            hr = pPD->GetStreamDescriptorByIndex(s, &bSelected, &pSD);
+            if (FAILED(hr) || !pSD) {
+                LogW(L"  GetStreamDescriptorByIndex(%u): hr=0x%08X", s, hr);
+                continue;
+            }
+            wchar_t sname[256] = L"(none)";
+            DWORD sid = 0;
+            PROPVARIANT vt;
+            PropVariantInit(&vt);
+            if (SUCCEEDED(pSD->GetItem(MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, &vt))
+                && vt.vt == VT_BSTR && vt.bstrVal) {
+                wcsncpy_s(sname, _countof(sname), vt.bstrVal, 255);
+            }
+            PropVariantClear(&vt);
+            pSD->GetStreamIdentifier(&sid);
+            LogW(L"  stream[%u] name='%s' streamId=%u selected=%d", s, sname, sid, (int)bSelected);
+
+            ATL::CComPtr<IMFMediaTypeHandler> pMTH;
+            hr = pSD->GetMediaTypeHandler(&pMTH);
+            if (SUCCEEDED(hr) && pMTH) {
+                if ((s == 0 || sid == 0) && reqW > 0 && reqH > 0) {
+                    DWORD countTypes = 0;
+                    pMTH->GetMediaTypeCount(&countTypes);
+                    for (DWORD t = 0; t < countTypes; ++t) {
+                        ATL::CComPtr<IMFMediaType> pMTType;
+                        if (SUCCEEDED(pMTH->GetMediaTypeByIndex(t, &pMTType)) && pMTType) {
+                            UINT32 w = 0, h = 0;
+                            MFGetAttributeSize(pMTType, MF_MT_FRAME_SIZE, &w, &h);
+                            GUID sub = {};
+                            pMTType->GetGUID(MF_MT_SUBTYPE, &sub);
+                            GUID want = wantNv12 ? MFVideoFormat_NV12 : MFVideoFormat_RGB32;
+                            if (w == reqW && h == reqH && sub == want) {
+                                pMTH->SetCurrentMediaType(pMTType);
+                                LogW(L"Set requested media type: %ux%u %s", w, h, wantNv12 ? L"NV12" : L"RGB32");
+                                pMTType = nullptr;
+                                break;
+                            }
+                            pMTType = nullptr;
+                        }
+                    }
+                }
+
+                // Capture the CURRENT media type of the stream we start (s==0 / sid==0):
+                // this is the format the sample buffers will actually be.
+                ATL::CComPtr<IMFMediaType> pCur;
+                hr = pMTH->GetCurrentMediaType(&pCur);
+                if (SUCCEEDED(hr) && pCur && (s == 0 || sid == 0) && !s0.known) {
+                    GUID major{}, sub{};
+                    UINT32 w = 0, h = 0;
+                    pCur->GetGUID(MF_MT_MAJOR_TYPE, &major);
+                    pCur->GetGUID(MF_MT_SUBTYPE, &sub);
+                    MFGetAttributeSize(pCur, MF_MT_FRAME_SIZE, &w, &h);
+                    if (major == MFMediaType_Video && w > 0 && h > 0) {
+                        s0.major = major;
+                        s0.sub = sub;
+                        s0.w = w;
+                        s0.h = h;
+                        s0.known = true;
+                        wchar_t mg[64], sg[64];
+                        GuidToW(major, mg, _countof(mg));
+                        GuidToW(sub, sg, _countof(sg));
+                        LogW(L"    stream0 currentType: major=%s sub=%s size=%ux%u (stride=%u for RGB32)", mg, sg, w, h, w * 4);
+                    }
+                    pCur = nullptr;
+                } else if (pCur) {
+                    pCur = nullptr;
+                }
+
+                ATL::CComPtr<IMFMediaType> pMT;
+                hr = pMTH->GetMediaTypeByIndex(0, &pMT);
+                if (SUCCEEDED(hr) && pMT) {
+                    GUID major{}, sub{};
+                    UINT32 w = 0, h = 0, num = 0, den = 0;
+                    pMT->GetGUID(MF_MT_MAJOR_TYPE, &major);
+                    pMT->GetGUID(MF_MT_SUBTYPE, &sub);
+                    MFGetAttributeSize(pMT, MF_MT_FRAME_SIZE, &w, &h);
+                    MFGetAttributeRatio(pMT, MF_MT_FRAME_RATE, &num, &den);
+                    wchar_t mg[64], sg[64];
+                    GuidToW(major, mg, _countof(mg));
+                    GuidToW(sub, sg, _countof(sg));
+                    LogW(L"    mediaType[0]: major=%s sub=%s size=%ux%u rate=%u/%u", mg, sg, w, h, num, den);
+                    pMT = nullptr;
+                } else {
+                    LogW(L"    GetMediaTypeByIndex(0): hr=0x%08X", hr);
+                }
+                pMTH = nullptr;
+            } else {
+                LogW(L"    GetMediaTypeHandler: hr=0x%08X", hr);
+            }
+            pSD = nullptr;
+        }
+        hr = pPD->SelectStream(0);
+        LogW(L"SelectStream(0): hr=0x%08X", hr);
+    }
+    return hr;
+}
+
+// 6. Pump samples: 10 frames, 2 s per frame
+// (this pruned SDK's IMFMediaStream has no GetMediaType; the sample buffer
+//  length is the evidence: 1280*720*4 = 3686400 bytes = RGB32 1280x720)
+// numFrames кадров, 2 с на кадр; каждый — sha256 в лог и BMP/raw на диск.
+// Возвращает число принятых кадров.
+static int PumpFrames(IMFMediaStream* pStream, int numFrames,
+                      const wchar_t* outputPrefix, const Stream0Info& s0)
+{
+    HRESULT hr = S_OK;
+    int framesReceived = 0;
+    ULONGLONG deadline = GetTickCount64() + 30000;
+    while (framesReceived < numFrames && GetTickCount64() < deadline) {
+        ATL::CComPtr<CToken> pToken;
+        pToken.Attach(new CToken());
+        hr = pStream->RequestSample(pToken);
+        if (FAILED(hr)) {
+            LogW(L"RequestSample(frame %d): hr=0x%08X", framesReceived, hr);
+            pToken = nullptr;
+            break;
+        }
+
+        bool got = false;
+        ULONGLONG st0 = GetTickCount64();
+        while (!got && (GetTickCount64() - st0) < 2000) {
+            ATL::CComPtr<IMFMediaEvent> pEvent;
+            hr = pStream->GetEvent(MF_EVENT_FLAG_NO_WAIT, &pEvent);
+            if (FAILED(hr)) { Sleep(20); continue; }
+            MediaEventType met;
+            pEvent->GetType(&met);
+            if (met == MEMediaSample) {
+                PROPVARIANT vt;
+                vt.vt = VT_UNKNOWN;
+                pEvent->GetValue(&vt);
+                ATL::CComPtr<IMFSample> pSample;
+                pSample = static_cast<IMFSample*>(vt.punkVal); // AddRef в operator=
+                PropVariantClear(&vt);
+
+                ATL::CComPtr<IMFMediaBuffer> pBuffer;
+                hr = pSample->ConvertToContiguousBuffer(&pBuffer);
+                if (SUCCEEDED(hr) && pBuffer) {
+                    BYTE* pBits = nullptr;
+                    DWORD maxLen = 0, curLen = 0;
+                    if (SUCCEEDED(pBuffer->Lock(&pBits, &maxLen, &curLen)) && pBits) {
+                        wchar_t hex[65];
+                        bool hashed = Sha256Hex(pBits, curLen, hex, _countof(hex));
+                        LogW(L"frame %d: curLen=%u (%llu KB) sha256=%s",
+                            framesReceived, curLen, (unsigned long long)(curLen / 1024), hashed ? hex : L"(hash failed)");
+                        wchar_t fname[512];
+                        // Save a BMP when the current type is RGB32 (size from the PD,
+                        // not hardcoded): reference VCamSample emits 1280x960 RGB32.
+                        bool rgb32 = s0.known
+                            && s0.major == MFMediaType_Video
+                            && s0.sub == MFVideoFormat_RGB32
+                            && s0.w > 0 && s0.h > 0
+                            && curLen >= s0.w * s0.h * 4;
+                        bool nv12 = s0.known
+                            && s0.major == MFMediaType_Video
+                            && s0.sub == MFVideoFormat_NV12
+                            && s0.w > 0 && s0.h > 0
+                            && curLen >= s0.w * s0.h * 3 / 2;
+                        if (rgb32) {
+                            swprintf_s(fname, L"%s_%03d.bmp", outputPrefix, framesReceived);
+                            SaveBMP(fname, pBits, (int)s0.w, (int)s0.h, (int)(s0.w * 4));
+                        } else if (nv12) {
+                            swprintf_s(fname, L"%s_%03d.bmp", outputPrefix, framesReceived);
+                            SaveNv12AsBmp(fname, pBits, (int)s0.w, (int)s0.h);
+                        } else {
+                            swprintf_s(fname, L"%s_%03d.raw", outputPrefix, framesReceived);
+                            FILE* f = _wfopen(fname, L"wb");
+                            if (f) {
+                                fwrite(pBits, 1, curLen, f);
+                                fclose(f);
+                                LogW(L"Saved raw: %s (%u bytes)", fname, curLen);
+                            }
+                        }
+                        // zero-check: first 64 bytes all zero?
+                        bool allZero64 = true;
+                        for (DWORD k = 0; k < 64 && k < curLen; ++k) if (pBits[k] != 0) { allZero64 = false; break; }
+                        if (allZero64) LogW(L"  WARNING: first 64 bytes are all zero");
+                    }
+                    pBuffer->Unlock();
+                    pBuffer = nullptr;
+                } else {
+                    LogW(L"frame %d: buffer access failed hr=0x%08X", framesReceived, hr);
+                }
+
+                pSample = nullptr;
+                framesReceived++;
+                got = true;
+            }
+            pEvent = nullptr;
+        }
+        if (!got) LogW(L"no MEMediaSample for frame %d within 2 s", framesReceived);
+        pToken = nullptr;
+    }
+    return framesReceived;
+}
+
 static int RunDeviceMode(int numFrames, const wchar_t* nameFilter, UINT32 reqW, UINT32 reqH, const wchar_t* outputPrefix, bool strict, bool wantNv12)
 {
     LogW(L"--- device mode: filter='%s' strict=%d nv12=%d frames=%d res=%ux%u out='%s'", nameFilter, (int)strict, (int)wantNv12, numFrames, reqW, reqH, outputPrefix);
 
+    MfSession session;
     HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     if (FAILED(hr)) { LogW(L"CoInitializeEx failed: 0x%08X", hr); return 1; }
+    session.comOk = true;
 
     hr = MFStartup(MF_VERSION);
-    if (FAILED(hr)) { LogW(L"MFStartup failed: 0x%08X", hr); CoUninitialize(); return 1; }
+    if (FAILED(hr)) { LogW(L"MFStartup failed: 0x%08X", hr); return 1; }
+    session.mfOk = true;
 
     // 1. Enumerate video capture device sources
     IMFActivate** ppDevices = nullptr;
@@ -425,8 +665,6 @@ static int RunDeviceMode(int numFrames, const wchar_t* nameFilter, UINT32 reqW, 
     }
     LogW(L"MFEnumDeviceSources(VIDCAP filter): hr=0x%08X count=%u", hr, count);
     if (FAILED(hr)) {
-        MFShutdown();
-        CoUninitialize();
         return 1;
     }
 
@@ -495,8 +733,6 @@ static int RunDeviceMode(int numFrames, const wchar_t* nameFilter, UINT32 reqW, 
     if (match < 0) {
         LogW(L"NO DEVICE matching filter '%s' — exit 2", nameFilter);
         CoTaskMemFree(ppDevices);
-        MFShutdown();
-        CoUninitialize();
         return 2;
     }
     LogW(L"Matched device[%d] to filter '%s'", match, nameFilter);
@@ -512,130 +748,23 @@ static int RunDeviceMode(int numFrames, const wchar_t* nameFilter, UINT32 reqW, 
     LogW(L"ActivateObject(IID_IMFMediaSource): hr=0x%08X", hr);
     if (FAILED(hr)) {
         pAct = nullptr;
-        MFShutdown();
-        CoUninitialize();
         return 1;
     }
 
     // 3. Presentation descriptor: log streams, select stream 0
     // Current media type of the stream we start (from the PD), used to size the
     // saved BMP correctly (reference VCamSample emits 1280x960 RGB32, not 1280x720).
-    GUID stream0Major{}, stream0Sub{};
-    UINT32 stream0W = 0, stream0H = 0;
-    bool stream0Known = false;
+    Stream0Info s0;
 
     ATL::CComPtr<IMFPresentationDescriptor> pPD;
-    hr = pSource->CreatePresentationDescriptor(&pPD);
-    LogW(L"CreatePresentationDescriptor: hr=0x%08X", hr);
-    if (SUCCEEDED(hr)) {
-        DWORD nStreams = 0;
-        hr = pPD->GetStreamDescriptorCount(&nStreams);
-        LogW(L"  GetStreamDescriptorCount: hr=0x%08X count=%u", hr, nStreams);
-        for (DWORD s = 0; s < nStreams; ++s) {
-            BOOL bSelected = FALSE;
-            ATL::CComPtr<IMFStreamDescriptor> pSD;
-            hr = pPD->GetStreamDescriptorByIndex(s, &bSelected, &pSD);
-            if (FAILED(hr) || !pSD) {
-                LogW(L"  GetStreamDescriptorByIndex(%u): hr=0x%08X", s, hr);
-                continue;
-            }
-            wchar_t sname[256] = L"(none)";
-            DWORD sid = 0;
-            PROPVARIANT vt;
-            PropVariantInit(&vt);
-            if (SUCCEEDED(pSD->GetItem(MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, &vt))
-                && vt.vt == VT_BSTR && vt.bstrVal) {
-                wcsncpy_s(sname, _countof(sname), vt.bstrVal, 255);
-            }
-            PropVariantClear(&vt);
-            pSD->GetStreamIdentifier(&sid);
-            LogW(L"  stream[%u] name='%s' streamId=%u selected=%d", s, sname, sid, (int)bSelected);
-
-            ATL::CComPtr<IMFMediaTypeHandler> pMTH;
-            hr = pSD->GetMediaTypeHandler(&pMTH);
-            if (SUCCEEDED(hr) && pMTH) {
-                if ((s == 0 || sid == 0) && reqW > 0 && reqH > 0) {
-                    DWORD countTypes = 0;
-                    pMTH->GetMediaTypeCount(&countTypes);
-                    for (DWORD t = 0; t < countTypes; ++t) {
-                        ATL::CComPtr<IMFMediaType> pMTType;
-                        if (SUCCEEDED(pMTH->GetMediaTypeByIndex(t, &pMTType)) && pMTType) {
-                            UINT32 w = 0, h = 0;
-                            MFGetAttributeSize(pMTType, MF_MT_FRAME_SIZE, &w, &h);
-                            GUID sub = {};
-                            pMTType->GetGUID(MF_MT_SUBTYPE, &sub);
-                            GUID want = wantNv12 ? MFVideoFormat_NV12 : MFVideoFormat_RGB32;
-                            if (w == reqW && h == reqH && sub == want) {
-                                pMTH->SetCurrentMediaType(pMTType);
-                                LogW(L"Set requested media type: %ux%u %s", w, h, wantNv12 ? L"NV12" : L"RGB32");
-                                pMTType = nullptr;
-                                break;
-                            }
-                            pMTType = nullptr;
-                        }
-                    }
-                }
-
-                // Capture the CURRENT media type of the stream we start (s==0 / sid==0):
-                // this is the format the sample buffers will actually be.
-                ATL::CComPtr<IMFMediaType> pCur;
-                hr = pMTH->GetCurrentMediaType(&pCur);
-                if (SUCCEEDED(hr) && pCur && (s == 0 || sid == 0) && !stream0Known) {
-                    GUID major{}, sub{};
-                    UINT32 w = 0, h = 0;
-                    pCur->GetGUID(MF_MT_MAJOR_TYPE, &major);
-                    pCur->GetGUID(MF_MT_SUBTYPE, &sub);
-                    MFGetAttributeSize(pCur, MF_MT_FRAME_SIZE, &w, &h);
-                    if (major == MFMediaType_Video && w > 0 && h > 0) {
-                        stream0Major = major;
-                        stream0Sub = sub;
-                        stream0W = w;
-                        stream0H = h;
-                        stream0Known = true;
-                        wchar_t mg[64], sg[64];
-                        GuidToW(major, mg, _countof(mg));
-                        GuidToW(sub, sg, _countof(sg));
-                        LogW(L"    stream0 currentType: major=%s sub=%s size=%ux%u (stride=%u for RGB32)", mg, sg, w, h, w * 4);
-                    }
-                    pCur = nullptr;
-                } else if (pCur) {
-                    pCur = nullptr;
-                }
-
-                ATL::CComPtr<IMFMediaType> pMT;
-                hr = pMTH->GetMediaTypeByIndex(0, &pMT);
-                if (SUCCEEDED(hr) && pMT) {
-                    GUID major{}, sub{};
-                    UINT32 w = 0, h = 0, num = 0, den = 0;
-                    pMT->GetGUID(MF_MT_MAJOR_TYPE, &major);
-                    pMT->GetGUID(MF_MT_SUBTYPE, &sub);
-                    MFGetAttributeSize(pMT, MF_MT_FRAME_SIZE, &w, &h);
-                    MFGetAttributeRatio(pMT, MF_MT_FRAME_RATE, &num, &den);
-                    wchar_t mg[64], sg[64];
-                    GuidToW(major, mg, _countof(mg));
-                    GuidToW(sub, sg, _countof(sg));
-                    LogW(L"    mediaType[0]: major=%s sub=%s size=%ux%u rate=%u/%u", mg, sg, w, h, num, den);
-                    pMT = nullptr;
-                } else {
-                    LogW(L"    GetMediaTypeByIndex(0): hr=0x%08X", hr);
-                }
-                pMTH = nullptr;
-            } else {
-                LogW(L"    GetMediaTypeHandler: hr=0x%08X", hr);
-            }
-            pSD = nullptr;
-        }
-        hr = pPD->SelectStream(0);
-        LogW(L"SelectStream(0): hr=0x%08X", hr);
-    }
+    hr = InspectStreams(pSource, reqW, reqH, wantNv12, s0, pPD);
     if (FAILED(hr)) {
         pPD = nullptr;
         pSource = nullptr;
         pAct = nullptr;
-        MFShutdown();
-        CoUninitialize();
         return 1;
     }
+
 
     // 4. Start (null stream ID, empty start position)
     PROPVARIANT vtStart;
@@ -646,8 +775,6 @@ static int RunDeviceMode(int numFrames, const wchar_t* nameFilter, UINT32 reqW, 
     if (FAILED(hr)) {
         pSource = nullptr;
         pAct = nullptr;
-        MFShutdown();
-        CoUninitialize();
         return 1;
     }
 
@@ -677,8 +804,6 @@ static int RunDeviceMode(int numFrames, const wchar_t* nameFilter, UINT32 reqW, 
         pSource->Shutdown();
         pSource = nullptr;
         pAct = nullptr;
-        MFShutdown();
-        CoUninitialize();
         return 1;
     }
 
@@ -714,95 +839,7 @@ static int RunDeviceMode(int numFrames, const wchar_t* nameFilter, UINT32 reqW, 
                      : L"MEStreamStarted not received within 5 s (continuing).");
     }
 
-    // 6. Pump samples: 10 frames, 2 s per frame
-    // (this pruned SDK's IMFMediaStream has no GetMediaType; the sample buffer
-    //  length is the evidence: 1280*720*4 = 3686400 bytes = RGB32 1280x720)
-    int framesReceived = 0;
-    ULONGLONG deadline = GetTickCount64() + 30000;
-    while (framesReceived < numFrames && GetTickCount64() < deadline) {
-        ATL::CComPtr<CToken> pToken;
-        pToken.Attach(new CToken());
-        hr = pStream->RequestSample(pToken);
-        if (FAILED(hr)) {
-            LogW(L"RequestSample(frame %d): hr=0x%08X", framesReceived, hr);
-            pToken = nullptr;
-            break;
-        }
-
-        bool got = false;
-        ULONGLONG st0 = GetTickCount64();
-        while (!got && (GetTickCount64() - st0) < 2000) {
-            ATL::CComPtr<IMFMediaEvent> pEvent;
-            hr = pStream->GetEvent(MF_EVENT_FLAG_NO_WAIT, &pEvent);
-            if (FAILED(hr)) { Sleep(20); continue; }
-            MediaEventType met;
-            pEvent->GetType(&met);
-            if (met == MEMediaSample) {
-                PROPVARIANT vt;
-                vt.vt = VT_UNKNOWN;
-                pEvent->GetValue(&vt);
-                ATL::CComPtr<IMFSample> pSample;
-                pSample = static_cast<IMFSample*>(vt.punkVal); // AddRef в operator=
-                PropVariantClear(&vt);
-
-                ATL::CComPtr<IMFMediaBuffer> pBuffer;
-                hr = pSample->ConvertToContiguousBuffer(&pBuffer);
-                if (SUCCEEDED(hr) && pBuffer) {
-                    BYTE* pBits = nullptr;
-                    DWORD maxLen = 0, curLen = 0;
-                    if (SUCCEEDED(pBuffer->Lock(&pBits, &maxLen, &curLen)) && pBits) {
-                        wchar_t hex[65];
-                        bool hashed = Sha256Hex(pBits, curLen, hex, _countof(hex));
-                        LogW(L"frame %d: curLen=%u (%llu KB) sha256=%s",
-                            framesReceived, curLen, (unsigned long long)(curLen / 1024), hashed ? hex : L"(hash failed)");
-                        wchar_t fname[512];
-                        // Save a BMP when the current type is RGB32 (size from the PD,
-                        // not hardcoded): reference VCamSample emits 1280x960 RGB32.
-                        bool rgb32 = stream0Known
-                            && stream0Major == MFMediaType_Video
-                            && stream0Sub == MFVideoFormat_RGB32
-                            && stream0W > 0 && stream0H > 0
-                            && curLen >= stream0W * stream0H * 4;
-                        bool nv12 = stream0Known
-                            && stream0Major == MFMediaType_Video
-                            && stream0Sub == MFVideoFormat_NV12
-                            && stream0W > 0 && stream0H > 0
-                            && curLen >= stream0W * stream0H * 3 / 2;
-                        if (rgb32) {
-                            swprintf_s(fname, L"%s_%03d.bmp", outputPrefix, framesReceived);
-                            SaveBMP(fname, pBits, (int)stream0W, (int)stream0H, (int)(stream0W * 4));
-                        } else if (nv12) {
-                            swprintf_s(fname, L"%s_%03d.bmp", outputPrefix, framesReceived);
-                            SaveNv12AsBmp(fname, pBits, (int)stream0W, (int)stream0H);
-                        } else {
-                            swprintf_s(fname, L"%s_%03d.raw", outputPrefix, framesReceived);
-                            FILE* f = _wfopen(fname, L"wb");
-                            if (f) {
-                                fwrite(pBits, 1, curLen, f);
-                                fclose(f);
-                                LogW(L"Saved raw: %s (%u bytes)", fname, curLen);
-                            }
-                        }
-                        // zero-check: first 64 bytes all zero?
-                        bool allZero64 = true;
-                        for (DWORD k = 0; k < 64 && k < curLen; ++k) if (pBits[k] != 0) { allZero64 = false; break; }
-                        if (allZero64) LogW(L"  WARNING: first 64 bytes are all zero");
-                    }
-                    pBuffer->Unlock();
-                    pBuffer = nullptr;
-                } else {
-                    LogW(L"frame %d: buffer access failed hr=0x%08X", framesReceived, hr);
-                }
-
-                pSample = nullptr;
-                framesReceived++;
-                got = true;
-            }
-            pEvent = nullptr;
-        }
-        if (!got) LogW(L"no MEMediaSample for frame %d within 2 s", framesReceived);
-        pToken = nullptr;
-    }
+    int framesReceived = PumpFrames(pStream, numFrames, outputPrefix, s0);
 
     LogW(L"total frames received: %d / %d", framesReceived, numFrames);
 
@@ -813,8 +850,6 @@ static int RunDeviceMode(int numFrames, const wchar_t* nameFilter, UINT32 reqW, 
     pSource->Shutdown();
     pSource = nullptr;
     pAct = nullptr;
-    MFShutdown();
-    CoUninitialize();
     return framesReceived >= numFrames ? 0 : 1;
 }
 

@@ -8,6 +8,10 @@
 
 #pragma comment(lib, "advapi32.lib")
 
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002 // Win10 1803+
+#endif
+
 namespace {
 
 void LogWriter(const std::wstring& msg)
@@ -30,6 +34,7 @@ FrameWriter::FrameWriter()
 FrameWriter::~FrameWriter()
 {
     Close();
+    if (hPaceTimer_) { CloseHandle(hPaceTimer_); hPaceTimer_ = nullptr; }
     if (csInit_) { DeleteCriticalSection(&cs_); csInit_ = false; }
 }
 
@@ -257,6 +262,16 @@ bool FrameWriter::PublishLocked()
     return true;
 }
 
+const uint8_t* FrameWriter::V2SrcLocked() const
+{
+    // Зеркало 720p: cacheV2_ не заполняется (экономим полный memcpy на кадр),
+    // в эфир идут те же байты, что уже лежат в cache_.
+    if (v2W_ == vcam::VCamWidth && v2H_ == vcam::VCamHeight &&
+        v2Stride_ == vcam::VCamStride)
+        return cache_.data();
+    return cacheV2_.data();
+}
+
 bool FrameWriter::PublishLockedV2()
 {
     if (!v2open_ || !viewV2_ || !pHeaderV2_ || !hasV2Frame_) return false;
@@ -279,7 +294,7 @@ bool FrameWriter::PublishLockedV2()
     pHeaderV2_->pixelFormat = (UINT32)vcam::VCamPixelFormat::RGB32;
     pHeaderV2_->frameSize = (UINT32)frameSize;
     pHeaderV2_->slotCount = vcam::VCamV2SlotCount;
-    memcpy(dst, cacheV2_.data(), frameSize);
+    memcpy(dst, V2SrcLocked(), frameSize);
     pHeaderV2_->frameWriteIndex = slot;
     LARGE_INTEGER counter;
     QueryPerformanceCounter(&counter);
@@ -299,8 +314,28 @@ void FrameWriter::Pace()
     LONGLONG interval = freq_.QuadPart * kFrameIntervalMs / 1000;
     LONGLONG target = lastEmit_ + interval;
     if (target > now.QuadPart) {
-        DWORD ms = (DWORD)((target - now.QuadPart) * 1000 / freq_.QuadPart);
-        if (ms > 0) Sleep(ms);
+        // Sleep() округляет до системного тика (~15.6 мс) и даёт джиттер кадров
+        // 30 FPS. High-resolution waitable timer (Win10 1803+) ждёт точнее;
+        // таймер создаётся лениво и переиспользуется, при отказе — прежний Sleep.
+        bool waited = false;
+        if (hPaceTimer_ == nullptr) {
+            hPaceTimer_ = CreateWaitableTimerExW(nullptr, nullptr,
+                CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+        }
+        if (hPaceTimer_ != nullptr) {
+            // Отрицательный due time — относительное время, 100 нс.
+            LARGE_INTEGER due;
+            due.QuadPart = -((target - now.QuadPart) * 10000000 / freq_.QuadPart);
+            if (due.QuadPart > -1) due.QuadPart = -1;
+            if (SetWaitableTimer(hPaceTimer_, &due, 0, nullptr, nullptr, FALSE)) {
+                WaitForSingleObject(hPaceTimer_, INFINITE);
+                waited = true;
+            }
+        }
+        if (!waited) {
+            DWORD ms = (DWORD)((target - now.QuadPart) * 1000 / freq_.QuadPart);
+            if (ms > 0) Sleep(ms);
+        }
         lastEmit_ = target;
     } else {
         lastEmit_ = now.QuadPart;
@@ -326,7 +361,7 @@ bool FrameWriter::WriteFrame(const uint8_t* bgrx, int stride)
     ok = PublishLocked();
     // v2-зеркало 720p-входа (Sub3 переведёт хосты на WriteFrameNative).
     if (v2open_ && cacheV2_.size() >= vcam::VCamFrameSize) {
-        memcpy(cacheV2_.data(), cache_.data(), vcam::VCamFrameSize);
+        // копия не нужна: V2SrcLocked при зеркале берёт cache_
         v2W_ = vcam::VCamWidth;
         v2H_ = vcam::VCamHeight;
         v2Stride_ = vcam::VCamStride;
@@ -374,7 +409,7 @@ bool FrameWriter::WriteFrameNative(const uint8_t* bgrx, int stride, uint32_t w, 
         uint32_t tw = 0, th = 0;
         if (ResolveV2Size(w, h, quality_, tw, th)) {
             if (tw == vcam::VCamWidth && th == vcam::VCamHeight) {
-                memcpy(cacheV2_.data(), cache_.data(), vcam::VCamFrameSize);
+                // зеркало 720p: копия не нужна, V2SrcLocked берёт cache_
                 v2Stride_ = vcam::VCamStride;
             } else if (tw == w && th == h && stride == (int)(w * 4)) {
                 memcpy(cacheV2_.data(), bgrx, (size_t)h * w * 4);

@@ -18,3 +18,4 @@ VirtualCameraMediaSource/third_party/**/*.lib
 VirtualCameraMediaSource/third_party/frei0r/bin/
 VirtualCameraMediaSource/third_party/frei0r/src/
 VirtualCameraMediaSource/third_party/frei0r/*.dll
+lib-info.md

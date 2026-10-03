@@ -222,6 +222,34 @@ public sealed class MainForm : Form
             Debug.WriteLine($"MainForm: no exe icon: {ex.Message}");
         }
 
+        SetupPreview();
+        SetupVideoPanel();
+        SetupCameraPanel();
+        SetupSourceRow();
+        SetupRecGroup();
+        SetupHostRow();
+        SetupCropFields();
+        SetupFxGroup();
+        SetupFooter();
+
+        Controls.AddRange(new Control[] { _preview, _cropView, _videoPanel, _cameraPanel, _pathLabel, _mediaLabel, _mediaCombo,
+            _qualityLabel, _qualityCombo, _fxGroup, _recGroup, _hotkeyHint,
+            _mode, _openButton, _fullSizeButton, _saveButton, _reloadButton, _hostStatusLabel, _hostButton, _helpButton,
+            _cropXLabel, _cropX, _cropYLabel, _cropY, _cropWLabel, _cropW, _cropHLabel, _cropH, _cropKeepAspect, _hintLabel });
+
+        SetupTabOrder();
+        SetupHostTimer();
+        WireEvents();
+
+        SubscribeDirtyTracking();
+        LoadCurrentSettings();
+        RefreshProfileList();
+        UpdateFxEnabledState();
+        UpdateLayout();
+        InitSettingsSync();
+    }
+    private void SetupPreview()
+    {
         _preview.Location = new Point(12, 12);
         _preview.Size = new Size(856, 455); // preview box; Zoom letterboxes 16:9 on black
         _preview.SizeMode = PictureBoxSizeMode.Zoom;
@@ -234,10 +262,10 @@ public sealed class MainForm : Form
         _cropView.Size = _preview.Size;
         _cropView.Visible = false;
         _cropView.SelectionChanged += OnCropSelectionChanged;
+    }
 
-        SetupVideoPanel();
-        SetupCameraPanel();
-
+    private void SetupSourceRow()
+    {
         _pathLabel.Location = new Point(12, 472);
         _pathLabel.Size = new Size(856, 20);
         _pathLabel.Text = "(файл не выбран)";
@@ -294,11 +322,10 @@ public sealed class MainForm : Form
         _saveButton.Text = "Сохранить настройки";
         _saveButton.Name = "saveButton";
         _saveButton.Click += OnSaveClicked;
+    }
 
-        // Ether recording group (below the effects group): file path +
-        // start/stop + REC indicator + record-hotkey hint.
-        SetupRecGroup();
-
+    private void SetupHostRow()
+    {
         // Manual reload from settings.json (always available; also the way out
         // when the file changed externally while the form is dirty).
         _reloadButton.Location = new Point(566, 1032);
@@ -324,7 +351,10 @@ public sealed class MainForm : Form
         _hotkeyHint.ForeColor = Color.DimGray;
         _hotkeyHint.Name = "hotkeyHint";
         _hotkeyHint.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+    }
 
+    private void SetupCropFields()
+    {
         int fieldY = 588;
         PlaceCropField(_cropXLabel, _cropX, 12, fieldY, "X");
         PlaceCropField(_cropYLabel, _cropY, 140, fieldY, "Y");
@@ -337,13 +367,10 @@ public sealed class MainForm : Form
         _cropKeepAspect.Size = new Size(200, 22);
         _cropKeepAspect.Text = "Сохранять пропорции";
         _cropKeepAspect.Visible = false;
+    }
 
-        // Effects section (always visible, below the crop fields row):
-        // GroupBox "Эффекты" with a header (backend switch) and a table
-        // (row = checkbox + slider + value). CheckBoxes/values are AutoSize,
-        // sliders stretch (Dock Fill) — nothing overlaps at 100%/125% DPI.
-        SetupFxGroup();
-
+    private void SetupFooter()
+    {
         _hintLabel.Location = new Point(12, 1034);
         _hintLabel.Size = new Size(548, 38);
         _hintLabel.ForeColor = Color.DimGray;
@@ -357,12 +384,10 @@ public sealed class MainForm : Form
         _helpButton.Name = "helpButton";
         _helpButton.Click += OnHelpClicked;
         _helpButton.Anchor = AnchorStyles.Right | AnchorStyles.Bottom;
+    }
 
-        Controls.AddRange(new Control[] { _preview, _cropView, _videoPanel, _cameraPanel, _pathLabel, _mediaLabel, _mediaCombo,
-            _qualityLabel, _qualityCombo, _fxGroup, _recGroup, _hotkeyHint,
-            _mode, _openButton, _fullSizeButton, _saveButton, _reloadButton, _hostStatusLabel, _hostButton, _helpButton,
-            _cropXLabel, _cropX, _cropYLabel, _cropY, _cropWLabel, _cropW, _cropHLabel, _cropH, _cropKeepAspect, _hintLabel });
-
+    private void SetupTabOrder()
+    {
         // М1: таб-порядок = визуальному (сверху вниз). AddRange выше идёт не
         // по визуали — выставляем TabIndex явно (только TabStop-контролы
         // реально участвуют в Tab, остальным индекс безвреден).
@@ -384,14 +409,20 @@ public sealed class MainForm : Form
         _recPathText.TabIndex = 0;
         _recBrowse.TabIndex = 1;
         _recButton.TabIndex = 2;
+    }
 
+    private void SetupHostTimer()
+    {
         _previewExe = FindPreviewExe();
         _hostExe = FindHostExe();
         _hostTimer.Interval = 1000;
         _hostTimer.Tick += (_, _) => UpdateHostStatus();
         _hostTimer.Start();
         UpdateHostStatus();
+    }
 
+    private void WireEvents()
+    {
         _mode.SelectedIndexChanged += (_, _) => UpdateLayout();
         _mediaCombo.SelectedIndexChanged += (_, _) =>
         {
@@ -401,14 +432,8 @@ public sealed class MainForm : Form
         _cameraCombo.SelectedIndexChanged += (_, _) => UpdateCameraPanel();
         _cameraRefresh.Click += OnCameraRefreshClicked;
         _controlsPanel.StatusMessage += UpdateCameraStatus;
-
-        SubscribeDirtyTracking();
-        LoadCurrentSettings();
-        RefreshProfileList();
-        UpdateFxEnabledState();
-        UpdateLayout();
-        InitSettingsSync();
     }
+
 
     private void SetupVideoPanel()
     {

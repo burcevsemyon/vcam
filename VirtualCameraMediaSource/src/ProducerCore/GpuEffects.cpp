@@ -543,7 +543,8 @@ void CpuRgbSplit(uint8_t* px, uint32_t w, uint32_t h, int level) {
     const int dx = (dx100 * level + 50) / 100;
     if (dx <= 0 || (uint32_t)dx >= w) return;
     const size_t rowBytes = (size_t)w * 4u;
-    std::vector<uint8_t> tmp(rowBytes); // throw → catch в ApplyEffects
+    static thread_local std::vector<uint8_t> tmp; // переиспользуем; throw -> catch в ApplyEffects
+    tmp.resize(rowBytes);
     for (uint32_t y = 0; y < h; ++y) {
         uint8_t* row = px + (size_t)y * rowBytes;
         std::memcpy(tmp.data(), row, rowBytes);
@@ -570,9 +571,11 @@ void CpuTracking(uint8_t* px, uint32_t w, uint32_t h, uint64_t frame,
     if (level <= 0) return;
     if (w < 16 || h < 16) return;
     const size_t rowBytes = (size_t)w * 4u;
-    std::vector<uint8_t> snap((size_t)h * rowBytes);
+    static thread_local std::vector<uint8_t> snap; // переиспользуем: без alloc на кадр
+    static thread_local std::vector<uint8_t> tmp;
+    snap.resize((size_t)h * rowBytes);
     std::memcpy(snap.data(), px, snap.size());
-    std::vector<uint8_t> tmp(rowBytes);
+    tmp.resize(rowBytes);
     uint32_t s = (uint32_t)SplitMix64(frame ^ 0x545241434BULL);
     if (s == 0) s = 0x452821E7u;
     const int bandsBase = 4 + (int)(XorShift32(s) % 5u);
@@ -619,42 +622,14 @@ void CpuTracking(uint8_t* px, uint32_t w, uint32_t h, uint64_t frame,
     }
 }
 
-bool ApplyEffects(uint8_t* bgrx, int stride, uint32_t w, uint32_t h,
-                  const FxFlags& fx) {
-    if (!bgrx || w == 0 || h == 0) return true;
-    const bool mirror = fx.mirror;
-    const bool grayscale = fx.grayscale;
-    const bool needGpu = mirror || grayscale;
-    bool noise = fx.noise;
-    bool scanlines = fx.scanlines;
-    bool rgbSplit = fx.rgbSplit;
-    bool tracking = fx.tracking;
-    if (fx.vhs) noise = scanlines = rgbSplit = tracking = true;
-    // Уровни — индивидуальные (VHS отдельного уровня не имеет, берёт те же).
-    // Уровень 0 при включённом тоггле ≈ эффект выключен (функции — no-op).
-    const int noiseLevel = fx.noiseLevel;
-    const int scanlinesLevel = fx.scanlinesLevel;
-    const int rgbSplitLevel = fx.rgbSplitLevel;
-    const int trackingLevel = fx.trackingLevel;
-    const bool wantCpu = (noise && noiseLevel > 0) ||
-                         (scanlines && scanlinesLevel > 0) ||
-                         (rgbSplit && rgbSplitLevel > 0) ||
-                         (tracking && trackingLevel > 0);
-    if (!needGpu && !wantCpu) return true;
-    if (stride != (int)(w * 4u)) return false; // только плотная упаковка
-    const size_t pixels = (size_t)w * h;
-    if (pixels == 0 || pixels > (size_t)16384 * 16384) return false;
-
-    State& st = FxState();
-    if (needGpu && IsDisabled(st)) return false;
-
-    // Пайпы + shared_ptr-копии под pipeMutex; сам Process — на GpuThread без
-    // мьютексов (копии держат цепочку живой даже при чужой пересборке).
-    // GPU-кусок — только при mirror/grayscale; чистый аналог работает и без
-    // GPU (Session 0), GL тогда не трогаем вообще.
-    bool gpuOk = !needGpu;
+// Пайпы + shared_ptr-копии под pipeMutex; сам Process — на GpuThread без
+// мьютексов (копии держат цепочку живой даже при чужой пересборке).
+// GPU-стадия mirror/grayscale: false — кадр не тронут (swap откачен).
+bool RunGpuEffects(State& st, uint8_t* bgrx, size_t pixels,
+                          uint32_t w, uint32_t h, int stride,
+                          bool mirror, bool grayscale) {
+    bool gpuOk = false;
     bool swapped = false;
-    if (needGpu) {
     std::shared_ptr<gpupixel::SourceRawData> src;
     std::shared_ptr<gpupixel::SinkRawData> snk;
     ScanInfo inputScan{};
@@ -753,7 +728,6 @@ bool ApplyEffects(uint8_t* bgrx, int stride, uint32_t w, uint32_t h,
             inputScan = ScanFrame(bgrx, pixels);
         }
     } // for attempt
-    } // if (needGpu)
     if (!gpuOk) {
         // Повтор тоже битый — липкий disabled, кадр не тронут (swap откачен).
         // Сюда же попадаем при обычном GPU-фейле: CPU-аналог пропускаем
@@ -762,6 +736,42 @@ bool ApplyEffects(uint8_t* bgrx, int stride, uint32_t w, uint32_t h,
         NoteFail(st, true);
         return false;
     }
+    return true;
+}
+
+bool ApplyEffects(uint8_t* bgrx, int stride, uint32_t w, uint32_t h,
+                  const FxFlags& fx) {
+    if (!bgrx || w == 0 || h == 0) return true;
+    const bool mirror = fx.mirror;
+    const bool grayscale = fx.grayscale;
+    const bool needGpu = mirror || grayscale;
+    bool noise = fx.noise;
+    bool scanlines = fx.scanlines;
+    bool rgbSplit = fx.rgbSplit;
+    bool tracking = fx.tracking;
+    if (fx.vhs) noise = scanlines = rgbSplit = tracking = true;
+    // Уровни — индивидуальные (VHS отдельного уровня не имеет, берёт те же).
+    // Уровень 0 при включённом тоггле ≈ эффект выключен (функции — no-op).
+    const int noiseLevel = fx.noiseLevel;
+    const int scanlinesLevel = fx.scanlinesLevel;
+    const int rgbSplitLevel = fx.rgbSplitLevel;
+    const int trackingLevel = fx.trackingLevel;
+    const bool wantCpu = (noise && noiseLevel > 0) ||
+                         (scanlines && scanlinesLevel > 0) ||
+                         (rgbSplit && rgbSplitLevel > 0) ||
+                         (tracking && trackingLevel > 0);
+    if (!needGpu && !wantCpu) return true;
+    if (stride != (int)(w * 4u)) return false; // только плотная упаковка
+    const size_t pixels = (size_t)w * h;
+    if (pixels == 0 || pixels > (size_t)16384 * 16384) return false;
+
+    State& st = FxState();
+    if (needGpu && IsDisabled(st)) return false;
+
+    // GPU-кусок — только при mirror/grayscale; чистый аналог работает и без
+    // GPU (Session 0), GL тогда не трогаем вообще.
+    if (needGpu && !RunGpuEffects(st, bgrx, pixels, w, h, stride, mirror, grayscale))
+        return false;
 
     // Помехи: backend cpu (штатный путь, бит-в-бит как раньше) или frei0r
     // (цепочка плагинов; недоступны → kNeedCpu → тот же CPU-путь + флаг

@@ -1483,6 +1483,117 @@ DWORD Step(Machine& m)
     return 0;
 }
 
+// Зависшие transient-файлы записи от краша: single-instance гарантирует,
+// что чужой записи нет — запись НЕ возобновляем, команду НЕ исполняем.
+// К2: чистим и недоеденный *.processing (краш между move и delete).
+void CleanupStaleRecordFiles()
+{
+    std::wstring cp = RecordCommandPath();
+    if (!cp.empty() && GetFileAttributesW(cp.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        DeleteFileW(cp.c_str());
+        Log(L"[host] record: stale command removed (not resuming after restart)");
+    }
+    if (!cp.empty()) {
+        std::wstring proc = cp + L".processing";
+        if (GetFileAttributesW(proc.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            DeleteFileW(proc.c_str());
+            Log(L"[host] record: stale command processing removed (not resuming after restart)");
+        }
+    }
+    std::wstring curPath;
+    long long curStarted = 0;
+    if (TryReadRecordState(curPath, curStarted)) {
+        ClearRecordState();
+        Log(L"[host] record: stale state removed (was: %s)", curPath.c_str());
+    }
+}
+
+// Свежие настройки: смена хоткеев — перерегистрация, смена источника/quality —
+// переоткрытие (BeginSwitch), fx — копия без перезапуска источника.
+void ApplySettingsDiff(Machine& m, HotkeySection& curHotkey,
+                       RecordHotkeySection& curRecHotkey)
+{
+    Settings s;
+    g_watcher.Current(s);
+    // Смена только хоткея — перерегистрация, без переоткрытия источника
+    // (Settings::operator== включает hotkey, поэтому watcher шлёт dirty).
+    if (s.hotkey != curHotkey) {
+        curHotkey = s.hotkey;
+        EnterCriticalSection(&g_hotkeyCs);
+        g_hotkey = s.hotkey;
+        LeaveCriticalSection(&g_hotkeyCs);
+        PostMessageW(g_hwnd, WM_REAPPLY_HOTKEY, 0, 0);
+    }
+    // Смена только хоткея записи — перерегистрация, без переоткрытия.
+    if (s.recordHotkey != curRecHotkey) {
+        curRecHotkey = s.recordHotkey;
+        EnterCriticalSection(&g_hotkeyCs);
+        g_recHotkey = s.recordHotkey;
+        LeaveCriticalSection(&g_hotkeyCs);
+        PostMessageW(g_hwnd, WM_REAPPLY_HOTKEY, 0, 0);
+    }
+    SourceConfig want = ToSourceConfig(s);
+    EnterCriticalSection(&g_hotkeyCs);
+    bool borrowed = g_hotkeyBorrowed;
+    LeaveCriticalSection(&g_hotkeyCs);
+    // Пользователь ушёл из borrowed-video вручную (не хоткеем):
+    // borrow снят, автовозврата не будет.
+    if (borrowed && want.type != L"video") {
+        EnterCriticalSection(&g_hotkeyCs);
+        g_hotkeyBorrowed = false;
+        g_hotkeyBorrowTickMs = 0; // B5
+        LeaveCriticalSection(&g_hotkeyCs);
+        ClearHotkeyState();
+        Log(L"[host] hotkey: manual switch away from borrowed video - borrow dropped");
+        borrowed = false;
+    }
+    // Заимствованное video играется один раз (конец файла = Ended() =
+    // авто-возврат); обычное video — луп как раньше.
+    if (borrowed && want.type == L"video") want.playOnce = true;
+    if (!m.hasTarget || want != m.target || s.quality != m.quality)
+        BeginSwitch(m, want, s.quality);
+    // Смена только эффектов — без переоткрытия источника: флаги
+    // подхватываются на лету (вотчер шлёт dirty через operator== с fx).
+    if (s.fx != m.fx) {
+        if (s.fx.backend != m.fx.backend) m.fxFreiLogged = false;
+        // М5: новый набор эффектов — новый one-shot шанс залогировать
+        // сбой (иначе флаг липкий навсегда с первой неудачи).
+        m.fxGpuLogged = false;
+        m.fx = s.fx;
+        Log(L"[host] effects: enabled=%d mirror=%d grayscale=%d noise=%d(%d) scanlines=%d(%d) rgbsplit=%d(%d) tracking=%d(%d) vhs=%d backend=%s",
+            (int)m.fx.enabled, (int)m.fx.mirror, (int)m.fx.grayscale, (int)m.fx.noise,
+            m.fx.noiseLevel, (int)m.fx.scanlines, m.fx.scanlinesLevel,
+            (int)m.fx.rgbSplit, m.fx.rgbSplitLevel, (int)m.fx.tracking,
+            m.fx.trackingLevel, (int)m.fx.vhs, m.fx.backend.c_str());
+    }
+    // record {path} / recordHotkey в operator== дают watcher-dirty, но
+    // переоткрытия не требуют (не входят в SourceConfig/quality/fx).
+}
+
+// Конец заимствованного ролика: авто-возврат на запомненный источник
+// через settings.json (watcher подхватит как обычное переключение).
+// B5: раньше — только Ended(). Битый ролик уходит в Fallback (open/
+// render fail), Ended не fires — borrow висел вечно и UI врал
+// «идёт видео». Теперь возврат и из Fallback + backstop-таймаут.
+void CheckBorrowedReturn(Machine& m, const std::wstring& settingsPath)
+{
+    EnterCriticalSection(&g_hotkeyCs);
+    bool borrowedNow = g_hotkeyBorrowed;
+    ULONGLONG borrowTick = g_hotkeyBorrowTickMs;
+    LeaveCriticalSection(&g_hotkeyCs);
+    if (borrowedNow) {
+        bool ended = m.src && m.src->Ended();
+        ULONGLONG nowBorrow = GetTickCount64();
+        bool timedOut = borrowTick != 0 && nowBorrow - borrowTick > kBorrowMaxMs;
+        if (ended)
+            AutoReturnBorrowedVideo(settingsPath, L"video ended");
+        else if (m.phase == Phase::Fallback)
+            AutoReturnBorrowedVideo(settingsPath, L"fallback during borrowed video");
+        else if (timedOut)
+            AutoReturnBorrowedVideo(settingsPath, L"borrow timeout");
+    }
+}
+
 DWORD WINAPI WorkerProc(LPVOID)
 {
     Machine m;
@@ -1502,29 +1613,7 @@ DWORD WINAPI WorkerProc(LPVOID)
         SetStatus(FallbackStatus(m.writerErr));
     }
 
-    // Зависшие transient-файлы записи от краша: single-instance гарантирует,
-    // что чужой записи нет — запись НЕ возобновляем, команду НЕ исполняем.
-    // К2: чистим и недоеденный *.processing (краш между move и delete).
-    {
-        std::wstring cp = RecordCommandPath();
-        if (!cp.empty() && GetFileAttributesW(cp.c_str()) != INVALID_FILE_ATTRIBUTES) {
-            DeleteFileW(cp.c_str());
-            Log(L"[host] record: stale command removed (not resuming after restart)");
-        }
-        if (!cp.empty()) {
-            std::wstring proc = cp + L".processing";
-            if (GetFileAttributesW(proc.c_str()) != INVALID_FILE_ATTRIBUTES) {
-                DeleteFileW(proc.c_str());
-                Log(L"[host] record: stale command processing removed (not resuming after restart)");
-            }
-        }
-        std::wstring curPath;
-        long long curStarted = 0;
-        if (TryReadRecordState(curPath, curStarted)) {
-            ClearRecordState();
-            Log(L"[host] record: stale state removed (was: %s)", curPath.c_str());
-        }
-    }
+    CleanupStaleRecordFiles();
 
     HANDLE waits[2] = { static_cast<HANDLE>(g_stop), static_cast<HANDLE>(g_dirty) };
     bool first = true;
@@ -1537,61 +1626,7 @@ DWORD WINAPI WorkerProc(LPVOID)
         if (r == WAIT_OBJECT_0) break;
         if (first || r == WAIT_OBJECT_0 + 1) {
             first = false;
-            Settings s;
-            g_watcher.Current(s);
-            // Смена только хоткея — перерегистрация, без переоткрытия источника
-            // (Settings::operator== включает hotkey, поэтому watcher шлёт dirty).
-            if (s.hotkey != curHotkey) {
-                curHotkey = s.hotkey;
-                EnterCriticalSection(&g_hotkeyCs);
-                g_hotkey = s.hotkey;
-                LeaveCriticalSection(&g_hotkeyCs);
-                PostMessageW(g_hwnd, WM_REAPPLY_HOTKEY, 0, 0);
-            }
-            // Смена только хоткея записи — перерегистрация, без переоткрытия.
-            if (s.recordHotkey != curRecHotkey) {
-                curRecHotkey = s.recordHotkey;
-                EnterCriticalSection(&g_hotkeyCs);
-                g_recHotkey = s.recordHotkey;
-                LeaveCriticalSection(&g_hotkeyCs);
-                PostMessageW(g_hwnd, WM_REAPPLY_HOTKEY, 0, 0);
-            }
-            SourceConfig want = ToSourceConfig(s);
-            EnterCriticalSection(&g_hotkeyCs);
-            bool borrowed = g_hotkeyBorrowed;
-            LeaveCriticalSection(&g_hotkeyCs);
-            // Пользователь ушёл из borrowed-video вручную (не хоткеем):
-            // borrow снят, автовозврата не будет.
-            if (borrowed && want.type != L"video") {
-                EnterCriticalSection(&g_hotkeyCs);
-                g_hotkeyBorrowed = false;
-                g_hotkeyBorrowTickMs = 0; // B5
-                LeaveCriticalSection(&g_hotkeyCs);
-                ClearHotkeyState();
-                Log(L"[host] hotkey: manual switch away from borrowed video - borrow dropped");
-                borrowed = false;
-            }
-            // Заимствованное video играется один раз (конец файла = Ended() =
-            // авто-возврат); обычное video — луп как раньше.
-            if (borrowed && want.type == L"video") want.playOnce = true;
-            if (!m.hasTarget || want != m.target || s.quality != m.quality)
-                BeginSwitch(m, want, s.quality);
-            // Смена только эффектов — без переоткрытия источника: флаги
-            // подхватываются на лету (вотчер шлёт dirty через operator== с fx).
-            if (s.fx != m.fx) {
-                if (s.fx.backend != m.fx.backend) m.fxFreiLogged = false;
-                // М5: новый набор эффектов — новый one-shot шанс залогировать
-                // сбой (иначе флаг липкий навсегда с первой неудачи).
-                m.fxGpuLogged = false;
-                m.fx = s.fx;
-                Log(L"[host] effects: enabled=%d mirror=%d grayscale=%d noise=%d(%d) scanlines=%d(%d) rgbsplit=%d(%d) tracking=%d(%d) vhs=%d backend=%s",
-                    (int)m.fx.enabled, (int)m.fx.mirror, (int)m.fx.grayscale, (int)m.fx.noise,
-                    m.fx.noiseLevel, (int)m.fx.scanlines, m.fx.scanlinesLevel,
-                    (int)m.fx.rgbSplit, m.fx.rgbSplitLevel, (int)m.fx.tracking,
-                    m.fx.trackingLevel, (int)m.fx.vhs, m.fx.backend.c_str());
-            }
-            // record {path} / recordHotkey в operator== дают watcher-dirty, но
-            // переоткрытия не требуют (не входят в SourceConfig/quality/fx).
+            ApplySettingsDiff(m, curHotkey, curRecHotkey);
         }
         // Команды записи UI/хоткея — каждую итерацию (дешёвый опрос файла).
         {
@@ -1603,26 +1638,7 @@ DWORD WINAPI WorkerProc(LPVOID)
             }
         }
         timeout = Step(m);
-        // Конец заимствованного ролика: авто-возврат на запомненный источник
-        // через settings.json (watcher подхватит как обычное переключение).
-        // B5: раньше — только Ended(). Битый ролик уходит в Fallback (open/
-        // render fail), Ended не fires — borrow висел вечно и UI врал
-        // «идёт видео». Теперь возврат и из Fallback + backstop-таймаут.
-        EnterCriticalSection(&g_hotkeyCs);
-        bool borrowedNow = g_hotkeyBorrowed;
-        ULONGLONG borrowTick = g_hotkeyBorrowTickMs;
-        LeaveCriticalSection(&g_hotkeyCs);
-        if (borrowedNow) {
-            bool ended = m.src && m.src->Ended();
-            ULONGLONG nowBorrow = GetTickCount64();
-            bool timedOut = borrowTick != 0 && nowBorrow - borrowTick > kBorrowMaxMs;
-            if (ended)
-                AutoReturnBorrowedVideo(settingsPath, L"video ended");
-            else if (m.phase == Phase::Fallback)
-                AutoReturnBorrowedVideo(settingsPath, L"fallback during borrowed video");
-            else if (timedOut)
-                AutoReturnBorrowedVideo(settingsPath, L"borrow timeout");
-        }
+        CheckBorrowedReturn(m, settingsPath);
     }
 
     // Запись обязана финализироваться (Finalize в Stop), иначе mp4 битый.

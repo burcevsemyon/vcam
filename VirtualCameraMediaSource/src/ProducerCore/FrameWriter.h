@@ -95,6 +95,9 @@ public:
 private:
     bool PublishLocked();
     bool PublishLockedV2();
+    // Источник кадра v2: при зеркале 720p байты уже лежат в cache_ — копия в
+    // cacheV2_ не нужна; FlushLast повторяет тот же выбор.
+    const uint8_t* V2SrcLocked() const;
     void Pace();
     bool OpenV2(std::wstring& err, SECURITY_ATTRIBUTES* sa);
     void CloseV2();
@@ -127,4 +130,5 @@ private:
     LARGE_INTEGER freq_ = {};
     LONGLONG startCount_ = 0;
     LONGLONG lastEmit_ = 0;
+    HANDLE hPaceTimer_ = nullptr; // high-resolution waitable timer для Pace()
 };

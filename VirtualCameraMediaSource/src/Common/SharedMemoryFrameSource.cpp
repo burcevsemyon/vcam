@@ -1,5 +1,6 @@
 #include "SharedMemoryFrameSource.h"
 #include <new>
+#include <vector>
 #include <sddl.h>
 #include <wchar.h>
 
@@ -32,23 +33,34 @@ struct CsGuard {
     ~CsGuard() { LeaveCriticalSection(cs); }
 };
 
+// Паттерн не зависит от кадра — рисуем один раз на размер и дальше копируем.
+// Вызывается только из FallbackFrame под m_cs, статический кэш безопасен.
 static void PaintNoSignalPattern(BYTE* pDest, UINT32 width, UINT32 height, UINT32 stride)
 {
-    for (UINT32 y = 0; y < height; ++y) {
-        for (UINT32 x = 0; x < width; ++x) {
-            BYTE* pPixel = pDest + (SIZE_T)y * stride + (SIZE_T)x * 4;
-            bool isBorder = (x < 6 || x >= width - 6 || y < 6 || y >= height - 6);
-            bool isGrid = ((x % 160 == 0) || (y % 160 == 0) || (x == width / 2) || (y == height / 2));
+    static std::vector<BYTE> s_cache;
+    static UINT32 s_w = 0, s_h = 0, s_stride = 0;
+    const size_t bytes = (size_t)stride * height;
+    if (s_cache.size() != bytes || s_w != width || s_h != height || s_stride != stride) {
+        s_cache.assign(bytes, 0);
+        BYTE* pBits = s_cache.data();
+        for (UINT32 y = 0; y < height; ++y) {
+            for (UINT32 x = 0; x < width; ++x) {
+                BYTE* pPixel = pBits + (SIZE_T)y * stride + (SIZE_T)x * 4;
+                bool isBorder = (x < 6 || x >= width - 6 || y < 6 || y >= height - 6);
+                bool isGrid = ((x % 160 == 0) || (y % 160 == 0) || (x == width / 2) || (y == height / 2));
 
-            if (isBorder) {
-                pPixel[0] = 50;  pPixel[1] = 120; pPixel[2] = 220; pPixel[3] = 0xFF; // Orange/Amber border
-            } else if (isGrid) {
-                pPixel[0] = 200; pPixel[1] = 200; pPixel[2] = 200; pPixel[3] = 0xFF; // White/Gray grid lines
-            } else {
-                pPixel[0] = 60;  pPixel[1] = 30;  pPixel[2] = 20;  pPixel[3] = 0xFF; // Dark blue/slate background
+                if (isBorder) {
+                    pPixel[0] = 50;  pPixel[1] = 120; pPixel[2] = 220; pPixel[3] = 0xFF; // Orange/Amber border
+                } else if (isGrid) {
+                    pPixel[0] = 200; pPixel[1] = 200; pPixel[2] = 200; pPixel[3] = 0xFF; // White/Gray grid lines
+                } else {
+                    pPixel[0] = 60;  pPixel[1] = 30;  pPixel[2] = 20;  pPixel[3] = 0xFF; // Dark blue/slate background
+                }
             }
         }
+        s_w = width; s_h = height; s_stride = stride;
     }
+    memcpy(pDest, s_cache.data(), bytes);
 }
 
 } // namespace
