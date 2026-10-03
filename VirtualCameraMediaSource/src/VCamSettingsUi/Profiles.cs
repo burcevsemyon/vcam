@@ -5,9 +5,11 @@ namespace VCamSettingsUi;
 // Named settings snapshots (source + static/video/camera sections + effects +
 // quality). Storage is a plain directory — %APPDATA%\VCam\profiles\*.json —
 // where each file is an ordinary Settings serialization (Settings.Load/Save
-// with an explicit path), so the C++ side needs no profile parser at all:
-// applying a profile = atomically writing it to settings.json, which the host
-// picks up via hot-reload as usual. The profile display name is the file name
+// with an explicit path), so the C++ side needs no profile parser at all.
+// Applying a profile (MainForm.ApplyProfile) writes ONLY its effects section
+// + root quality into the live settings.json — source sections stay untouched,
+// so the current source keeps streaming; the host picks the change up via
+// hot-reload as usual. The profile display name is the file name
 // without ".json" (Cyrillic names are fine on NTFS and share by plain copy).
 public static class Profiles
 {

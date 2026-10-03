@@ -58,15 +58,20 @@ public sealed class MainForm : Form
     private readonly CheckBox _fxEnabled = new();
 
     // Settings profiles (header row of the effects group): named snapshots
-    // (source + static/video/camera + effects + quality) stored as plain
-    // Settings files in %APPDATA%\VCam\profiles\. Apply = atomic write to
-    // settings.json (host hot-reload picks it up); the ComboBox selection
-    // alone never writes (explicit "Применить" only).
+    // stored as plain Settings files in %APPDATA%\VCam\profiles\. Apply
+    // writes ONLY the effects section + root quality into the live
+    // settings.json (source/static/video/camera sections stay untouched —
+    // the source switches by hand only); the host picks the change up via
+    // hot-reload. Choosing the ComboBox applies immediately (explicit user
+    // action, dirty is reset); "Применить" re-applies the same profile.
+    // Programmatic selection (RefreshProfileList/startup) runs under
+    // _refreshingProfiles and never applies.
     private readonly Label _profileLabel = new();
     private readonly ComboBox _profileCombo = new();
     private readonly Button _profileApply = new();
     private readonly Button _profileSave = new();
     private readonly Button _profileDelete = new();
+    private bool _refreshingProfiles; // programmatic combo set, not a choice
 
     // Effects section container: GroupBox "Эффекты" with a header row (backend
     // switch) and a TableLayoutPanel (row = checkbox + slider + value).
@@ -532,6 +537,9 @@ public sealed class MainForm : Form
         _profileCombo.DropDownStyle = ComboBoxStyle.DropDownList;
         _profileCombo.Name = "profileCombo";
         _profileCombo.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+        // User choice applies immediately (same path as "Применить");
+        // programmatic sets under _refreshingProfiles are ignored.
+        _profileCombo.SelectedIndexChanged += OnProfileComboChanged;
 
         _profileApply.Location = new Point(516, 4);
         _profileApply.Size = new Size(100, 30);
@@ -2091,6 +2099,7 @@ public sealed class MainForm : Form
 
         var prev = _suppressDirty;
         _suppressDirty = true;
+        _refreshingProfiles = true;
         try
         {
             _profileCombo.Items.Clear();
@@ -2103,14 +2112,29 @@ public sealed class MainForm : Form
         }
         finally
         {
+            _refreshingProfiles = false;
             _suppressDirty = prev;
         }
     }
 
-    // Apply = atomic write of the profile file to settings.json (the host
-    // picks it up via hot-reload as usual), then the same control mapping
-    // as startup/reload. A corrupt profile aborts with a message and never
-    // touches the live settings.
+    // User picked a profile in the ComboBox: apply immediately (explicit
+    // action — applies even when the form is dirty, dirty is reset).
+    // Programmatic sets (RefreshProfileList/startup) are flagged and ignored.
+    private void OnProfileComboChanged(object? sender, EventArgs e)
+    {
+        if (_refreshingProfiles || _suppressDirty) return;
+        var name = _profileCombo.SelectedItem as string;
+        if (string.IsNullOrEmpty(name)) return;
+        ApplyProfile(name);
+    }
+
+    // Apply = effects-only: read the live settings.json, replace its
+    // effects section + root quality from the profile, write back
+    // atomically. Source sections (source/static/video/camera) are never
+    // touched, so the current source keeps streaming; the host picks the
+    // new effects up via hot-reload. A corrupt profile aborts with a
+    // message and never touches the live settings; an unreadable live
+    // file also aborts (fail-soft defaults would nuke the source).
     private void OnProfileApplyClicked(object? sender, EventArgs e)
     {
         var name = _profileCombo.SelectedItem as string;
@@ -2120,11 +2144,15 @@ public sealed class MainForm : Form
                 MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
+        ApplyProfile(name);
+    }
 
-        Settings s;
+    private void ApplyProfile(string name)
+    {
+        Settings profile;
         try
         {
-            s = Profiles.LoadProfile(name);
+            profile = Profiles.LoadProfile(name);
         }
         catch (Exception ex)
         {
@@ -2133,9 +2161,39 @@ public sealed class MainForm : Form
             return;
         }
 
+        Settings live;
         try
         {
-            s.Save();
+            var text = ReadSettingsText();
+            live = string.IsNullOrWhiteSpace(text)
+                ? Settings.Load()
+                : Settings.LoadFromText(text);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Не удалось прочитать {Settings.FilePath} — профиль не применён:\n{ex.Message}", Text,
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+
+        live.FxEnabled = profile.FxEnabled;
+        live.FxMirror = profile.FxMirror;
+        live.FxGrayscale = profile.FxGrayscale;
+        live.FxNoise = profile.FxNoise;
+        live.FxScanlines = profile.FxScanlines;
+        live.FxRgbSplit = profile.FxRgbSplit;
+        live.FxTracking = profile.FxTracking;
+        live.FxVhs = profile.FxVhs;
+        live.FxNoiseLevel = profile.FxNoiseLevel;
+        live.FxScanlinesLevel = profile.FxScanlinesLevel;
+        live.FxRgbSplitLevel = profile.FxRgbSplitLevel;
+        live.FxTrackingLevel = profile.FxTrackingLevel;
+        live.FxBackend = profile.FxBackend;
+        live.Quality = profile.Quality;
+
+        try
+        {
+            live.Save();
         }
         catch (Exception ex)
         {
@@ -2147,7 +2205,7 @@ public sealed class MainForm : Form
         _suppressDirty = true;
         try
         {
-            ApplySettingsToControls(s);
+            ApplyFxToControls(live);
             UpdateFxEnabledState();
         }
         finally
@@ -2158,18 +2216,34 @@ public sealed class MainForm : Form
         _syncRetries = 0;
         _reloadButton.Text = "Обновить";
         _lastAppliedText = ReadSettingsText();
-        UpdateLayout();
 
-        var warn = (s.SourceType == SourceType.Static &&
-                    (string.IsNullOrEmpty(s.StaticPath) || !File.Exists(s.StaticPath)))
-                || (s.SourceType == SourceType.Video &&
-                    (string.IsNullOrEmpty(s.VideoPath) || !File.Exists(s.VideoPath)))
-                || (s.SourceType == SourceType.Camera &&
-                    string.IsNullOrEmpty(s.CameraId));
-        _hintLabel.ForeColor = warn ? Color.DarkGoldenrod : Color.ForestGreen;
-        _hintLabel.Text = warn
-            ? $"Профиль «{name}» применён, но его источник пуст — выберите файл/камеру и сохраните."
-            : $"Профиль «{name}» применён — хост подхватит его автоматически (~1 с).";
+        _hintLabel.ForeColor = Color.ForestGreen;
+        _hintLabel.Text = $"Профиль «{name}» применён (эффекты + качество) — источник не тронут, хост подхватит (~1 с).";
+    }
+
+    // Effects+quality mapping file -> controls, shared by profile apply.
+    // Must run under _suppressDirty (programmatic sets, not edits).
+    // Source sections are deliberately NOT touched here.
+    private void ApplyFxToControls(Settings s)
+    {
+        _qualityCombo.SelectedIndex = s.Quality == Quality.Fixed720p ? 1 : 0;
+        _fxEnabled.Checked = s.FxEnabled;
+        _fxMirror.Checked = s.FxMirror;
+        _fxGrayscale.Checked = s.FxGrayscale;
+        _fxNoise.Checked = s.FxNoise;
+        _fxScanlines.Checked = s.FxScanlines;
+        _fxRgbSplit.Checked = s.FxRgbSplit;
+        _fxTracking.Checked = s.FxTracking;
+        _fxVhs.Checked = s.FxVhs;
+        _fxNoiseLevel.Value = Math.Clamp(s.FxNoiseLevel, 0, 100);
+        _fxNoiseLevelVal.Text = _fxNoiseLevel.Value.ToString();
+        _fxScanlinesLevel.Value = Math.Clamp(s.FxScanlinesLevel, 0, 100);
+        _fxScanlinesLevelVal.Text = _fxScanlinesLevel.Value.ToString();
+        _fxRgbSplitLevel.Value = Math.Clamp(s.FxRgbSplitLevel, 0, 100);
+        _fxRgbSplitLevelVal.Text = _fxRgbSplitLevel.Value.ToString();
+        _fxTrackingLevel.Value = Math.Clamp(s.FxTrackingLevel, 0, 100);
+        _fxTrackingLevelVal.Text = _fxTrackingLevel.Value.ToString();
+        _fxBackend.SelectedIndex = s.FxBackend == "frei0r" ? 1 : 0;
     }
 
     private void OnProfileSaveClicked(object? sender, EventArgs e)
@@ -2199,7 +2273,7 @@ public sealed class MainForm : Form
 
         RefreshProfileList(name);
         _hintLabel.ForeColor = Color.ForestGreen;
-        _hintLabel.Text = $"Профиль «{name}» сохранён. Применение — кнопкой «Применить».";
+        _hintLabel.Text = $"Профиль «{name}» сохранён (снимок всех настроек). Выбор в списке применяет его эффекты сразу.";
     }
 
     private void OnProfileDeleteClicked(object? sender, EventArgs e)
