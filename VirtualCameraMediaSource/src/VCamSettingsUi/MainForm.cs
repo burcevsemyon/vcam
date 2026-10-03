@@ -1616,9 +1616,29 @@ public sealed class MainForm : Form
         // Лёгкий Save только record.path поверх диска (без валидации
         // source-секций из CollectSettingsFromControls — старт записи не
         // должен упираться в незаполненный источник).
+        // К1: битый settings.json НЕ затираем дефолтами — читаем строгим
+        // LoadFromText и отменяем старт при исключении (как ApplyProfile).
         try
         {
-            var s = Settings.Load();
+            var liveText = ReadSettingsText();
+            Settings s;
+            if (string.IsNullOrWhiteSpace(liveText))
+            {
+                s = new Settings(); // файла ещё нет — первый старт
+            }
+            else
+            {
+                try
+                {
+                    s = Settings.LoadFromText(liveText);
+                }
+                catch (Exception parseEx)
+                {
+                    MessageBox.Show(this, $"Файл настроек повреждён — путь записи не сохранён, запись не начата:\n{parseEx.Message}", Text,
+                        MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+            }
             s.RecordPath = path;
             s.Save();
             _dirty = false;
@@ -1973,9 +1993,29 @@ public sealed class MainForm : Form
     // that is not being edited stay untouched; overwrites the edited
     // section + type + effects + quality. Shared by "Сохранить настройки"
     // and "Сохранить…" (profile). Null = validation failed (shown already).
+    // К1: битый settings.json НЕ затираем дефолтами — читаем строгим
+    // LoadFromText и отменяем Save при исключении (как ApplyProfile).
     private (Settings Settings, string OkText, bool Warn)? CollectSettingsFromControls()
     {
-        var settings = Settings.Load();
+        Settings settings;
+        var liveText = ReadSettingsText();
+        if (string.IsNullOrWhiteSpace(liveText))
+        {
+            settings = new Settings(); // файла ещё нет — первое сохранение
+        }
+        else
+        {
+            try
+            {
+                settings = Settings.LoadFromText(liveText);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, $"Файл настроек повреждён — сохранение отменено, чтобы не затереть его значениями по умолчанию:\n{ex.Message}", Text,
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return null;
+            }
+        }
         settings.RecordPath = _recPathText.Text.Trim();
         settings.FxEnabled = _fxEnabled.Checked;
         settings.FxMirror = _fxMirror.Checked;
@@ -2130,11 +2170,11 @@ public sealed class MainForm : Form
         ApplyProfile(name);
     }
 
-    // Apply = FULL snapshot: the profile file's bytes (validated by parsing
-    // first) replace settings.json entirely — source, effects, everything.
-    // The host picks the change up via hot-reload; a source switch re-opens
-    // the source (~1 s — normal and predictable). A corrupt profile aborts
-    // with a message and never touches the live settings.
+    // Apply = эфирная часть профиля: источник (source/static/video/camera),
+    // quality и effects. Машинное (hotkey/recordHotkey/record/autostart)
+    // остаётся живым (К5) — см. ApplyProfile. Хост подхватывает смену через
+    // hot-reload; смена источника переоткрывает его (~1 с — нормально).
+    // Битый профиль отменяется с сообщением и живой файл не трогает.
     private void OnProfileApplyClicked(object? sender, EventArgs e)
     {
         var name = _profileCombo.SelectedItem as string;
@@ -2149,15 +2189,14 @@ public sealed class MainForm : Form
 
     private void ApplyProfile(string name)
     {
-        string profilePath;
         string text;
+        Settings prof;
         try
         {
-            profilePath = Profiles.PathFor(name);
-            text = File.ReadAllText(profilePath);
+            text = File.ReadAllText(Profiles.PathFor(name));
             // Validate before writing: a broken profile must never land in
             // the live settings (LoadFromText throws on malformed JSON).
-            _ = Settings.LoadFromText(text);
+            prof = Settings.LoadFromText(text);
         }
         catch (Exception ex)
         {
@@ -2166,10 +2205,34 @@ public sealed class MainForm : Form
             return;
         }
 
+        // К5: профиль = эффекты+источник (+quality/camera — эфирная часть),
+        // а хоткеи/путь записи/автозапуск — машинные: молча откатывать их
+        // побайтовой копией нельзя. Сохраняем живые значения из текущего
+        // settings.json. Живой файл бит/отсутствует — нечего сохранять,
+        // применяем профиль как есть (его отсутствующие секции и так дают
+        // дефолты через LoadFromText).
         try
         {
-            // Byte-for-byte: the live file becomes the profile file exactly.
-            File.Copy(profilePath, Settings.FilePath, overwrite: true);
+            var liveText = ReadSettingsText();
+            if (!string.IsNullOrWhiteSpace(liveText))
+            {
+                var live = Settings.LoadFromText(liveText);
+                prof.HotkeyModifiers = live.HotkeyModifiers;
+                prof.HotkeyVk = live.HotkeyVk;
+                prof.RecordHotkeyModifiers = live.RecordHotkeyModifiers;
+                prof.RecordHotkeyVk = live.RecordHotkeyVk;
+                prof.RecordPath = live.RecordPath;
+                prof.Autostart = live.Autostart;
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"MainForm: live settings unreadable on apply, using profile as-is: {ex.Message}");
+        }
+
+        try
+        {
+            prof.Save(Settings.FilePath);
         }
         catch (Exception ex)
         {
@@ -2180,13 +2243,14 @@ public sealed class MainForm : Form
 
         // Full control refresh (same mapping as startup/reload, source panels
         // included — the profile may have switched source/camera/video).
-        // The validated text is applied directly (no TOCTOU re-read); the
-        // watcher recognises the copy as our own write via _lastAppliedText.
-        ApplySettingsText(text);
+        // Применяем то, что реально записали (перечитываем, а не исходный
+        // текст профиля — машинные секции в файле остались живыми); watcher
+        // опознаёт запись как свою через _lastAppliedText внутри Apply.
+        ApplySettingsText(ReadSettingsText());
         UpdateFxEnabledState();
 
         _hintLabel.ForeColor = Color.ForestGreen;
-        _hintLabel.Text = $"Профиль «{name}» применён целиком — все настройки заменены из профиля (включая источник), хост подхватит (~1 с).";
+        _hintLabel.Text = $"Профиль «{name}» применён (источник, эффекты, качество — из профиля; горячие клавиши, путь записи и автозапуск — ваши, не тронуты), хост подхватит (~1 с).";
     }
 
     private void OnProfileSaveClicked(object? sender, EventArgs e)
@@ -2216,7 +2280,7 @@ public sealed class MainForm : Form
 
         RefreshProfileList(name);
         _hintLabel.ForeColor = Color.ForestGreen;
-        _hintLabel.Text = $"Профиль «{name}» сохранён (полный снимок всех настроек). Выбор в списке заменяет все настройки целиком.";
+        _hintLabel.Text = $"Профиль «{name}» сохранён (снимок эфира: источник, эффекты, качество). Выбор в списке применяет эфирную часть; горячие клавиши, путь записи и автозапуск не трогает.";
     }
 
     private void OnProfileDeleteClicked(object? sender, EventArgs e)

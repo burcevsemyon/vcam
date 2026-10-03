@@ -357,15 +357,29 @@ bool WriteRecordCommand(const std::wstring& cmd, const std::wstring& path)
 }
 
 // Читает и удаляет команду (только worker). true = команда была.
+// К2: атомарный захват через rename-в-обработку (cp -> *.processing +
+// чтение оттуда): команда, записанная UI между нашим чтением и удалением,
+// больше не теряется (старый read-then-delete её молча сносил).
+// Писатель кладёт команду через tmp+move, поэтому всё, что пришло после
+// нашего MoveFile, остаётся в cp до следующего опроса.
 bool ConsumeRecordCommand(std::wstring& cmd, std::wstring& path)
 {
     cmd.clear();
     path.clear();
     std::wstring cp = RecordCommandPath();
     if (cp.empty()) return false;
+    std::wstring proc = cp + L".processing";
+    // Нет файла — команды нет. REPLACE_EXISTING заодно подбирает зависший
+    // .processing от краша между move и delete.
+    if (!MoveFileWithProgressW(cp.c_str(), proc.c_str(), nullptr, nullptr,
+                               MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        return false;
     std::string json;
-    if (!ReadSmallFile(cp, json)) return false;
-    DeleteFileW(cp.c_str()); // прочитали — удаляем (повторов не будет)
+    if (!ReadSmallFile(proc, json)) {
+        DeleteFileW(proc.c_str());
+        return false;
+    }
+    DeleteFileW(proc.c_str()); // обработали — удаляем (повторов не будет)
     if (!ScanJsonString(json, "cmd", cmd)) return false;
     ScanJsonString(json, "path", path); // у stop пути может не быть — норма
     return !cmd.empty();
@@ -1343,11 +1357,19 @@ DWORD WINAPI WorkerProc(LPVOID)
 
     // Зависшие transient-файлы записи от краша: single-instance гарантирует,
     // что чужой записи нет — запись НЕ возобновляем, команду НЕ исполняем.
+    // К2: чистим и недоеденный *.processing (краш между move и delete).
     {
         std::wstring cp = RecordCommandPath();
         if (!cp.empty() && GetFileAttributesW(cp.c_str()) != INVALID_FILE_ATTRIBUTES) {
             DeleteFileW(cp.c_str());
             Log(L"[host] record: stale command removed (not resuming after restart)");
+        }
+        if (!cp.empty()) {
+            std::wstring proc = cp + L".processing";
+            if (GetFileAttributesW(proc.c_str()) != INVALID_FILE_ATTRIBUTES) {
+                DeleteFileW(proc.c_str());
+                Log(L"[host] record: stale command processing removed (not resuming after restart)");
+            }
         }
         std::wstring curPath;
         long long curStarted = 0;

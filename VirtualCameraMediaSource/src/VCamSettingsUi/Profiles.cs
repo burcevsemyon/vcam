@@ -7,11 +7,15 @@ namespace VCamSettingsUi;
 // plain files in %APPDATA%\VCam\profiles\*.json — each file is an ordinary
 // Settings serialization (Settings.Load/Save with an explicit path), so the
 // C++ side needs no profile parser at all.
-// Applying a profile (MainForm.ApplyProfile) replaces the live settings.json
-// with the profile file byte-for-byte (validated by parsing first) — source
-// included; the host picks the change up via hot-reload as usual. The profile
-// display name is the file name without ".json" (Cyrillic names are fine on
-// NTFS and share by plain copy).
+// Applying a profile (MainForm.ApplyProfile) replaces the ON-AIR part only
+// (source/static/video/camera + quality + effects); the machine-local part
+// (hotkey/recordHotkey/record/autostart) stays live (К5) — profiles never
+// silently roll back hotkeys or the record path. The host picks the change
+// up via hot-reload as usual. The profile display name is the file name
+// without ".json" (Cyrillic names are fine on NTFS and share by plain copy).
+// NOTE: shipped seeds always carry the machine sections (with defaults when
+// there was no live file) — LoadFromText also tolerates their absence
+// (defaults), so hand-written/old profiles without them still apply.
 public static class Profiles
 {
     public static string DefaultDirectoryPath => Path.Combine(Settings.DirectoryPath, "profiles");

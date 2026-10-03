@@ -403,6 +403,8 @@ public sealed class Settings
         return 100;
     }
 
+    // К4: insensitive как C++ ParseScaleMode/EqCI (обе стороны) — "FIT"/"Cover"
+    // дают тот же режим в UI и хосте; канон — нижний регистр.
     private static ScaleMode ParseScaleMode(string mode) =>
         string.Equals(mode, "cover", StringComparison.OrdinalIgnoreCase) ? ScaleMode.Cover
         : string.Equals(mode, "crop", StringComparison.OrdinalIgnoreCase) ? ScaleMode.Crop

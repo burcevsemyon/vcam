@@ -20,6 +20,17 @@
     "capture": "max"
   },
   "quality": "source",
+  "hotkey": {
+    "modifiers": 3,
+    "vk": 86
+  },
+  "recordHotkey": {
+    "modifiers": 3,
+    "vk": 82
+  },
+  "record": {
+    "path": ""
+  },
   "effects": {
     "enabled": false,
     "mirror": false,

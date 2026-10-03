@@ -4,6 +4,7 @@
 #include <atlbase.h>
 
 #include <cstdio>
+#include <cwctype>
 #include <string>
 
 namespace {
@@ -199,9 +200,30 @@ std::string EscapeJson(const std::wstring& w)
     return out;
 }
 
+// К4: ASCII case-insensitive compare (для JSON-токенов; C# —
+// OrdinalIgnoreCase). Юникод-фолдинг не нужен: токены строго ASCII.
+bool EqCI(const std::wstring& a, const wchar_t* b)
+{
+    size_t n = wcslen(b);
+    if (a.size() != n) return false;
+    for (size_t i = 0; i < n; ++i) {
+        wchar_t ca = a[i], cb = b[i];
+        if (ca >= L'A' && ca <= L'Z') ca = (wchar_t)(ca + (L'a' - L'A'));
+        if (cb >= L'A' && cb <= L'Z') cb = (wchar_t)(cb + (L'a' - L'A'));
+        if (ca != cb) return false;
+    }
+    return true;
+}
+
 bool ParseScaleMode(const std::wstring& m, std::wstring& out)
 {
-    if (m == L"fit" || m == L"cover" || m == L"crop") { out = m; return true; }
+    // К4: C# читает scaleMode через OrdinalIgnoreCase, C++ сравнивал exact —
+    // "FIT"/"Cover" давали fit в UI и cover в хосте. Унифицировано: обе
+    // стороны insensitive, канон — нижний регистр. Возврат как раньше:
+    // true = токен распознан, false = fallback fit.
+    if (EqCI(m, L"fit")) { out = L"fit"; return true; }
+    if (EqCI(m, L"cover")) { out = L"cover"; return true; }
+    if (EqCI(m, L"crop")) { out = L"crop"; return true; }
     out = L"fit";
     return false;
 }
@@ -311,9 +333,12 @@ void ParseLegacySchema(const std::string& json, Settings& s)
     JsonGetString(json, "mediaPath", mediaPath);
     JsonGetString(json, "mediaMode", mediaMode);
 
-    s.sourceType = (mediaMode == L"video") ? L"video" : L"static";
+    // К4: mediaMode — insensitive как в C# (там OrdinalIgnoreCase "video"),
+    // иначе legacy {"mediaMode":"Video"} давал static в хосте и video в UI.
+    const bool isVideo = EqCI(mediaMode, L"video");
+    s.sourceType = isVideo ? L"video" : L"static";
     s.st.path = imagePath;
-    if (s.st.path.empty() && mediaMode != L"video") s.st.path = mediaPath;
+    if (s.st.path.empty() && !isVideo) s.st.path = mediaPath;
 
     std::wstring sm;
     if (JsonGetString(json, "scaleMode", sm)) ParseScaleMode(sm, s.st.scaleMode);

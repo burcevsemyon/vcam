@@ -44,12 +44,14 @@
 #include "FreiEffects.h"
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <excpt.h>
 #include <future>
+#include <memory>
 #include <mutex>
 #include <queue>
 #include <thread>
@@ -313,7 +315,11 @@ struct State {
     struct Job {
         Thunk fn = nullptr;
         void* ctx = nullptr;
-        std::promise<bool>* done = nullptr;
+        // shared_ptr (а не голый &promise со стека вызывающего): при таймауте
+        // К3 вызывающий уходит, а worker позже всё равно сделает set_value —
+        // по висячему указателю это был бы UAF. Копия в очереди держит
+        // promise живым; set_value в пустоту безопасен.
+        std::shared_ptr<std::promise<bool>> done;
     };
     std::queue<Job> jobs;
     Pipe plain; // source -> sink (только зеркало)
@@ -379,6 +385,8 @@ void GpuWorkerLoop(State* st) {
 }
 
 // Выполнить thunk на GpuThread синхронно. false = нить/вызов сломаны.
+// К3: голый fu.get() без таймаута вешал worker host-кадра навсегда при
+// зависшем GL — ждём ~500 мс, дальше fail-open (false, кадр без эффектов).
 // stateMutex держится только на время постановки (во время ожидания свободен).
 bool RunOnGpuThread(State& st, Thunk fn, void* ctx) {
     std::unique_lock<std::mutex> lock(st.stateMutex);
@@ -391,12 +399,14 @@ bool RunOnGpuThread(State& st, Thunk fn, void* ctx) {
             return false;
         }
     }
-    std::promise<bool> pr;
-    std::future<bool> fu = pr.get_future();
-    st.jobs.push(State::Job{fn, ctx, &pr});
+    auto pr = std::make_shared<std::promise<bool>>();
+    std::future<bool> fu = pr->get_future();
+    st.jobs.push(State::Job{fn, ctx, pr});
     lock.unlock();
     st.cv.notify_one();
     try {
+        if (fu.wait_for(std::chrono::milliseconds(500)) != std::future_status::ready)
+            return false; // timeout: очередь держит свою копию pr — UAF нет
         return fu.get();
     } catch (...) {
         return false;
