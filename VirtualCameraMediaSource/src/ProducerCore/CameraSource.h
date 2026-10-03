@@ -10,6 +10,8 @@
 
 #include "ProducerApi.h"
 #include "VideoProcessorScaler.h"
+#include "CameraControls.h"
+#include "ControlServer.h"
 
 struct IMFSourceReader;
 struct IMFMediaSource;
@@ -58,4 +60,9 @@ private:
     bool comUp_ = false;         // парный CoInitializeEx/CoUninitialize
     std::wstring failReason_;
     VideoProcessorScaler mftScaler_; // GPU-скейл кэша; недоступен -> CPU-fallback
+    // Управление: QI IAM* с нашего же IMFMediaSource (второй ActivateObject не
+    // нужен) + pipe-сервер `\\.\pipe\VCamControl.v1` для виртуалки (Sub 2).
+    // Старт в Open (best effort — ошибка не роняет источник), стоп в Shutdown.
+    CameraControls controls_;
+    ControlServer controlServer_;
 };

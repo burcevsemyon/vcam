@@ -45,6 +45,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="MediaSource.h" />
+    <ClInclude Include="ControlProxyClient.h" />
     <ClInclude Include="Activator.h" />
     <ClInclude Include="MediaStream.h" />
     <ClInclude Include="ModuleLifetime.h" />
@@ -55,6 +56,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="MediaSource.cpp" />
+    <ClCompile Include="ControlProxyClient.cpp" />
     <ClCompile Include="Activator.cpp" />
     <ClCompile Include="MediaStream.cpp" />
     <ClCompile Include="MfGuids.cpp" />

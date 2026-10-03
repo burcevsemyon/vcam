@@ -8,6 +8,7 @@
 #include "GUIDs.h"
 #include "SampleAllocatorControl.h"
 #include "AttrLogProxy.h"
+#include "ControlProxyClient.h" // IAM-прокси поверх pipe-канала (Sub 2)
 #include <winrt/inspectable.h>
 
 class CMediaStream;
@@ -88,6 +89,11 @@ public:
 
 private:
     ~CMediaSource();
+
+    // IAM-прокси (Sub 2): время жизни — наше (члены); ссылки считают
+    // внешний источник (делегирование), Init — в FinalConstruct.
+    CProcAmpProxy m_procAmpProxy;
+    CCameraProxy m_camProxy;
 
     ATL::CComPtr<CMediaStream> m_pStream;           // owned
     ATL::CComPtr<IMFMediaEventQueue> m_pEventQueue; // owned

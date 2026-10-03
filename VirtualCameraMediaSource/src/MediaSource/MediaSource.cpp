@@ -84,6 +84,17 @@ HRESULT CMediaSource::QueryInterface(REFIID riid, void** ppvObject)
         AddRef();
         hr = S_OK;
     }
+    else if (riid == IID_IAMVideoProcAmp) {
+        // Тонкий прокси поверх pipe-канала (Sub 2): время жизни — внешник.
+        *ppvObject = static_cast<IAMVideoProcAmp*>(&m_procAmpProxy);
+        AddRef();
+        hr = S_OK;
+    }
+    else if (riid == IID_IAMCameraControl) {
+        *ppvObject = static_cast<IAMCameraControl*>(&m_camProxy);
+        AddRef();
+        hr = S_OK;
+    }
     else if (riid == IID_IInspectable ||
         riid == kIID_IInspectable_Canonical) {
         *ppvObject = static_cast<IInspectable*>(this);
@@ -141,6 +152,8 @@ STDMETHODIMP CMediaSource::GetIids(ULONG* iidCount, IID** iids)
         __uuidof(IMFGetService),
         __uuidof(IMFRealTimeClientEx),
         IID_IKsControl,
+        __uuidof(IAMVideoProcAmp),
+        __uuidof(IAMCameraControl),
         __uuidof(IInspectable),
     };
     const UINT count = _countof(s_iids);
@@ -441,6 +454,10 @@ HRESULT CMediaSource::GetService(REFGUID rSID, REFIID riid, void** ppv)
     VCamDiagLog(L"Src.GetService sid=%s riid=%s", sidStr, riidStr);
     if (ppv == nullptr) return E_POINTER;
     *ppv = nullptr;
+    // Реальные клиенты (Zoom и т.п.) просят IAM-контролы через GetService
+    // с нулевым/любым rSID — отдаём прокси (Sub 2). Остальное — как было.
+    if (riid == IID_IAMVideoProcAmp || riid == IID_IAMCameraControl)
+        return QueryInterface(riid, ppv);
     return MF_E_UNSUPPORTED_SERVICE;
 }
 
@@ -503,6 +520,13 @@ HRESULT CMediaSource::KsEvent(PKSEVENT Event, ULONG EventLength, LPVOID EventDat
 HRESULT CMediaSource::FinalConstruct()
 {
     VCamDiagLog(L"Src.FinalConstruct");
+    // Канонический IUnknown для IAM-прокси (делегирование ссылок/QI).
+    ATL::CComPtr<IUnknown> pUnk;
+    HRESULT hrInit = QueryInterface(IID_IUnknown, reinterpret_cast<void**>(&pUnk));
+    if (SUCCEEDED(hrInit) && pUnk != nullptr) {
+        m_procAmpProxy.Init(pUnk);
+        m_camProxy.Init(pUnk);
+    }
     HRESULT hr = MFCreateEventQueue(&m_pEventQueue);
     if (FAILED(hr)) return hr;
 

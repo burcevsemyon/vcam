@@ -361,6 +361,12 @@ bool CameraSource::Open(const SourceConfig& cfg, std::wstring& err)
 
     LogCamera(L"opened: " + DescribeTarget(cfg) + L" (" + std::to_wstring(capW_) + L"x" +
               std::to_wstring(capH_) + L")");
+    // Контролы — QI с нашего же источника (без второго ActivateObject);
+    // pipe-сервер для виртуалки — best effort: BUSY/ошибка не роняют источник.
+    controls_.Attach(mediaSrc_);
+    HRESULT hrCtl = controlServer_.Start(&controls_);
+    if (FAILED(hrCtl))
+        LogCamera(L"control server not started: " + HrHex(hrCtl));
     return true;
 }
 
@@ -416,6 +422,10 @@ bool CameraSource::Shutdown(DWORD timeoutMs)
     }
 
     stopEvent_.Close();
+    // Сервер управления — до освобождения источника: потоки pipe используют
+    // только IAM-указатели controls_, reader/mediaSrc им не нужны.
+    controlServer_.Stop();
+    controls_.Detach();
     reader_ = nullptr; // release before mediaSrc_/MFShutdown (order from 884a785)
     if (mediaSrc_) mediaSrc_->Shutdown();
     mediaSrc_ = nullptr;

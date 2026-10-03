@@ -9,6 +9,8 @@
 #include <vector>
 
 #include "CameraDevices.h"
+#include "CameraControls.h"
+#include "ControlServer.h"
 #include "FrameWriter.h"
 #include "ProducerApi.h"
 #include "Settings.h"
@@ -386,6 +388,12 @@ void PrintHelp()
     Log(L"  VCamProducerCli.exe run [--type static|video|camera] [--path <file>]");
     Log(L"                           [--device <id>] [--settings <path>]");
     Log(L"  VCamProducerCli.exe list-devices");
+    Log(L"  VCamProducerCli.exe list-controls [--device <id>] [--settings <path>]");
+    Log(L"  VCamProducerCli.exe get-control --domain <procamp|camera> --id <name|num>");
+    Log(L"                           [--device <id>] [--settings <path>]");
+    Log(L"  VCamProducerCli.exe set-control --domain <procamp|camera> --id <name|num>");
+    Log(L"                           --value <n> [--flags <auto|manual|num>]");
+    Log(L"                           [--device <id>] [--settings <path>]");
     Log(L"  VCamProducerCli.exe status [--settings <path>]");
     Log(L"  VCamProducerCli.exe            (no arguments - this help)");
     Log(L"");
@@ -414,6 +422,23 @@ void PrintHelp()
     Log(L"        human-readable header/notes go to stderr. No devices -> no stdout");
     Log(L"        rows, message on stderr, exit 0.");
     Log(L"");
+    Log(L"list-controls  Introspect physical camera controls (IAMVideoProcAmp +");
+    Log(L"        IAMCameraControl) WITHOUT starting the writer/run. Device: --device");
+    Log(L"        <id> or the camera section of settings.json. stdout: one control per");
+    Log(L"        line as \"<domain>\\t<name>\\t<id>\\t<min>\\t<max>\\t<step>\\t<def>");
+    Log(L"        \\t<caps>\\t<cur>\\t<flags>\\t<supported>\" (UTF-8, parse stdout only;");
+    Log(L"        header goes to stderr). No device/IAM -> no stdout rows, exit 0.");
+    Log(L"        Domain: procamp (brightness..gain) or camera (pan..focus); flags:");
+    Log(L"        1=auto, 2=manual; supported=1 if the driver gives a range.");
+    Log(L"");
+    Log(L"get-control  Read one control: --domain + --id (name or numeric id).");
+    Log(L"        stdout: \"<cur>\\t<flags>\" (UTF-8). Unsupported -> stderr, exit 1.");
+    Log(L"");
+    Log(L"set-control  Apply one control: --domain + --id + --value <n>, optional");
+    Log(L"        --flags <auto|manual|num> (default manual; a manual set over auto");
+    Log(L"        mode resets the mode to manual first, or the driver ignores it).");
+    Log(L"        stdout: \"<applied>\\t<flags>\" re-read from the device (UTF-8).");
+    Log(L"");
     Log(L"status  Print settings (path, schema, source.type, static/video/camera");
     Log(L"        sections, autostart), host state (VCamVideoStreamProducer.Instance");
     Log(L"        mutex) and the shared memory writer section state.");
@@ -427,11 +452,18 @@ struct Options {
     bool run = false;
     bool status = false;
     bool listDevices = false;
+    bool listControls = false;
+    bool getControl = false;
+    bool setControl = false;
     bool help = false;
     std::wstring type;
     std::wstring path;
     std::wstring device;
     std::wstring settings;
+    std::wstring domain;
+    std::wstring ctlId;
+    std::wstring value;
+    std::wstring flags;
 };
 
 bool ParseArgs(int argc, wchar_t* argv[], Options& o, std::wstring& err)
@@ -441,9 +473,13 @@ bool ParseArgs(int argc, wchar_t* argv[], Options& o, std::wstring& err)
         if (a == L"run") o.run = true;
         else if (a == L"status") o.status = true;
         else if (a == L"list-devices") o.listDevices = true;
+        else if (a == L"list-controls") o.listControls = true;
+        else if (a == L"get-control") o.getControl = true;
+        else if (a == L"set-control") o.setControl = true;
         else if (a == L"--help" || a == L"-h" || a == L"/?" || a == L"-?") o.help = true;
         else if (a == L"--type" || a == L"--path" || a == L"--device" ||
-                 a == L"--settings") {
+                 a == L"--settings" || a == L"--domain" || a == L"--id" ||
+                 a == L"--value" || a == L"--flags") {
             if (i + 1 >= argc) { err = a + L" requires a value"; return false; }
             std::wstring v = argv[++i];
             if (a == L"--type") {
@@ -457,6 +493,14 @@ bool ParseArgs(int argc, wchar_t* argv[], Options& o, std::wstring& err)
             } else if (a == L"--device") {
                 if (v.empty()) { err = L"--device requires a non-empty value"; return false; }
                 o.device = v;
+            } else if (a == L"--domain") {
+                o.domain = v;
+            } else if (a == L"--id") {
+                o.ctlId = v;
+            } else if (a == L"--value") {
+                o.value = v;
+            } else if (a == L"--flags") {
+                o.flags = v;
             } else {
                 o.settings = v;
             }
@@ -525,6 +569,172 @@ int CmdListDevices()
             if (c == L'\t' || c == L'\n' || c == L'\r') c = L' ';
         Log(L"%s\t%s", id.c_str(), name.c_str());
     }
+    return 0;
+}
+
+// Устройство для control-команд: --device <id> или секция camera из settings.
+// Пусто (оба пустые) -> ошибка выбора, НЕ первое устройство.
+bool ResolveControlDevice(const std::wstring& settingsPath,
+                          const std::wstring& deviceOverride, std::wstring& id,
+                          std::wstring& name)
+{
+    if (!deviceOverride.empty()) {
+        id = deviceOverride;
+        name.clear();
+        return true;
+    }
+    Settings s;
+    if (s.Load(settingsPath)) {
+        id = s.cam.id;
+        name = s.cam.name;
+    }
+    return !id.empty() || !name.empty();
+}
+
+const wchar_t* ControlDomainName(CameraControlDomain d)
+{
+    return d == CameraControlDomain::ProcAmp ? L"procamp" : L"camera";
+}
+
+int CmdListControls(const std::wstring& settingsPath,
+                    const std::wstring& deviceOverride)
+{
+    std::wstring id, name;
+    if (!ResolveControlDevice(settingsPath, deviceOverride, id, name)) {
+        LogErr(L"[cli] list-controls: camera not selected (--device or the "
+               L"camera section of settings.json)");
+        return 1;
+    }
+    CameraControls ctl;
+    std::wstring err;
+    if (!ctl.Open(id, name, err)) {
+        LogErr(L"[cli] list-controls: %s", err.c_str());
+        return 1;
+    }
+    std::vector<CameraControlDesc> v = ctl.List();
+    ctl.Close();
+    if (v.empty()) {
+        LogErr(L"[cli] list-controls: no IAMVideoProcAmp/IAMCameraControl on this "
+               L"device (empty, not an error)");
+        return 0;
+    }
+    LogErr(L"[cli] %d control(s) - stdout rows: "
+           L"<domain>\\t<name>\\t<id>\\t<min>\\t<max>\\t<step>\\t<def>\\t<caps>"
+           L"\\t<cur>\\t<flags>\\t<supported>",
+            (int)v.size());
+    for (const CameraControlDesc& d : v) {
+        Log(L"%s\t%s\t%ld\t%ld\t%ld\t%ld\t%ld\t%ld\t%ld\t%ld\t%d",
+            ControlDomainName(d.domain), d.name.c_str(), d.id, d.minValue,
+            d.maxValue, d.step, d.defaultValue, d.capsFlags, d.curValue,
+            d.curFlags, d.supported ? 1 : 0);
+    }
+    return 0;
+}
+
+bool ParseLongArg(const std::wstring& s, long& out)
+{
+    if (s.empty()) return false;
+    wchar_t* end = nullptr;
+    out = wcstol(s.c_str(), &end, 10);
+    return end != nullptr && *end == L'\0';
+}
+
+int CmdGetControl(const std::wstring& settingsPath,
+                  const std::wstring& deviceOverride, const std::wstring& domain,
+                  const std::wstring& ctlId)
+{
+    CameraControlDomain dom;
+    if (!ParseCameraControlDomain(domain, dom)) {
+        LogErr(L"error: --domain must be 'procamp' or 'camera', got: %s",
+               domain.c_str());
+        return 2;
+    }
+    long propId = 0;
+    std::wstring propName;
+    if (!ParseCameraControlId(dom, ctlId, propId, propName)) {
+        LogErr(L"error: unknown --id for domain %s: %s", domain.c_str(),
+               ctlId.c_str());
+        return 2;
+    }
+    std::wstring id, name;
+    if (!ResolveControlDevice(settingsPath, deviceOverride, id, name)) {
+        LogErr(L"[cli] get-control: camera not selected (--device or the camera "
+               L"section of settings.json)");
+        return 1;
+    }
+    CameraControls ctl;
+    std::wstring err;
+    if (!ctl.Open(id, name, err)) {
+        LogErr(L"[cli] get-control: %s", err.c_str());
+        return 1;
+    }
+    CameraControlDesc d;
+    bool ok = ctl.Get(dom, propId, d);
+    ctl.Close();
+    if (!ok || !d.supported) {
+        LogErr(L"[cli] get-control: %s/%s is not supported by this device",
+               domain.c_str(), propName.c_str());
+        return 1;
+    }
+    LogErr(L"[cli] %s/%s range [%ld..%ld] step %ld def %ld caps %ld",
+           domain.c_str(), propName.c_str(), d.minValue, d.maxValue, d.step,
+           d.defaultValue, d.capsFlags);
+    Log(L"%ld\t%ld", d.curValue, d.curFlags);
+    return 0;
+}
+
+int CmdSetControl(const std::wstring& settingsPath,
+                  const std::wstring& deviceOverride, const std::wstring& domain,
+                  const std::wstring& ctlId, const std::wstring& value,
+                  const std::wstring& flags)
+{
+    CameraControlDomain dom;
+    if (!ParseCameraControlDomain(domain, dom)) {
+        LogErr(L"error: --domain must be 'procamp' or 'camera', got: %s",
+               domain.c_str());
+        return 2;
+    }
+    long propId = 0;
+    std::wstring propName;
+    if (!ParseCameraControlId(dom, ctlId, propId, propName)) {
+        LogErr(L"error: unknown --id for domain %s: %s", domain.c_str(),
+               ctlId.c_str());
+        return 2;
+    }
+    long val = 0;
+    if (!ParseLongArg(value, val)) {
+        LogErr(L"error: --value must be an integer, got: %s", value.c_str());
+        return 2;
+    }
+    long fl = 0x2; // manual по умолчанию (см. CameraControls::Set)
+    if (!flags.empty() && !ParseCameraControlFlags(dom, flags, fl)) {
+        LogErr(L"error: --flags must be 'auto', 'manual' or a number, got: %s",
+               flags.c_str());
+        return 2;
+    }
+    std::wstring id, name;
+    if (!ResolveControlDevice(settingsPath, deviceOverride, id, name)) {
+        LogErr(L"[cli] set-control: camera not selected (--device or the camera "
+               L"section of settings.json)");
+        return 1;
+    }
+    CameraControls ctl;
+    std::wstring err;
+    if (!ctl.Open(id, name, err)) {
+        LogErr(L"[cli] set-control: %s", err.c_str());
+        return 1;
+    }
+    long applied = 0, appliedFlags = 0;
+    HRESULT hr = ctl.Set(dom, propId, val, fl, applied, appliedFlags);
+    ctl.Close();
+    if (FAILED(hr)) {
+        LogErr(L"[cli] set-control: %s/%s failed: 0x%08X", domain.c_str(),
+               propName.c_str(), (unsigned)hr);
+        return 1;
+    }
+    LogErr(L"[cli] %s/%s set %ld (flags %ld) -> applied %ld (flags %ld)",
+           domain.c_str(), propName.c_str(), val, fl, applied, appliedFlags);
+    Log(L"%ld\t%ld", applied, appliedFlags);
     return 0;
 }
 
@@ -611,30 +821,64 @@ int wmain(int argc, wchar_t* argv[])
         PrintHelp();
         return 0;
     }
-    int cmdCount = (o.run ? 1 : 0) + (o.status ? 1 : 0) + (o.listDevices ? 1 : 0);
+    int cmdCount = (o.run ? 1 : 0) + (o.status ? 1 : 0) + (o.listDevices ? 1 : 0) +
+                   (o.listControls ? 1 : 0) + (o.getControl ? 1 : 0) +
+                   (o.setControl ? 1 : 0);
     if (cmdCount == 0) {
         if (argc <= 1) {
             PrintHelp();
             return 0;
         }
-        LogErr(L"error: expected command 'run', 'status' or 'list-devices'");
+        LogErr(L"error: expected command 'run', 'status', 'list-devices', "
+               L"'list-controls', 'get-control' or 'set-control'");
         PrintHelp();
         return 2;
     }
     if (cmdCount > 1) {
-        LogErr(L"error: commands 'run', 'status' and 'list-devices' are mutually exclusive");
+        LogErr(L"error: commands 'run', 'status', 'list-devices', 'list-controls', "
+               L"'get-control' and 'set-control' are mutually exclusive");
         return 2;
     }
-    if (!o.run && (!o.type.empty() || !o.path.empty() || !o.device.empty())) {
+    const bool isControlCmd = o.listControls || o.getControl || o.setControl;
+    if (!o.run && !isControlCmd &&
+        (!o.type.empty() || !o.path.empty() || !o.device.empty())) {
         LogErr(L"error: --type/--path/--device are only valid with 'run'");
+        return 2;
+    }
+    if (isControlCmd && (!o.type.empty() || !o.path.empty())) {
+        LogErr(L"error: --type/--path are only valid with 'run'");
+        return 2;
+    }
+    if ((o.getControl || o.setControl) && o.domain.empty()) {
+        LogErr(L"error: get-control/set-control require --domain <procamp|camera>");
+        return 2;
+    }
+    if ((o.getControl || o.setControl) && o.ctlId.empty()) {
+        LogErr(L"error: get-control/set-control require --id <name|num>");
+        return 2;
+    }
+    if (o.setControl && o.value.empty()) {
+        LogErr(L"error: set-control requires --value <n>");
+        return 2;
+    }
+    if (!o.domain.empty() || !o.ctlId.empty() || !o.value.empty() ||
+        !o.flags.empty()) {
+        if (!isControlCmd) {
+            LogErr(L"error: --domain/--id/--value/--flags are only valid with "
+                   L"get-control/set-control");
+            return 2;
+        }
+    }
+    if (!o.flags.empty() && !o.setControl) {
+        LogErr(L"error: --flags is only valid with 'set-control'");
         return 2;
     }
     if (!o.path.empty() && !o.device.empty()) {
         LogErr(L"error: --path and --device are mutually exclusive");
         return 2;
     }
-    if (!o.device.empty() && o.type != L"camera") {
-        LogErr(L"error: --device requires --type camera");
+    if (!o.device.empty() && o.type != L"camera" && !isControlCmd) {
+        LogErr(L"error: --device requires --type camera (or a control command)");
         return 2;
     }
 
@@ -646,6 +890,12 @@ int wmain(int argc, wchar_t* argv[])
         LogErr(L"error: cannot resolve settings path (APPDATA is empty?)");
         return 1;
     }
+    if (o.listControls) return CmdListControls(settingsPath, o.device);
+    if (o.getControl)
+        return CmdGetControl(settingsPath, o.device, o.domain, o.ctlId);
+    if (o.setControl)
+        return CmdSetControl(settingsPath, o.device, o.domain, o.ctlId, o.value,
+                             o.flags);
     g_fixType = o.type;
     if (!o.device.empty()) {
         g_fixPath = o.device;

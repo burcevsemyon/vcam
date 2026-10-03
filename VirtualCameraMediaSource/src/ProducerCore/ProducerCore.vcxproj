@@ -38,6 +38,8 @@
   <ItemGroup>
     <ClCompile Include="CameraDevices.cpp" />
     <ClCompile Include="CameraSource.cpp" />
+    <ClCompile Include="CameraControls.cpp" />
+    <ClCompile Include="ControlServer.cpp" />
     <ClCompile Include="FrameWriter.cpp" />
     <ClCompile Include="Settings.cpp" />
     <ClCompile Include="SettingsWatcher.cpp" />
@@ -49,6 +51,8 @@
   <ItemGroup>
     <ClInclude Include="CameraDevices.h" />
     <ClInclude Include="CameraSource.h" />
+    <ClInclude Include="CameraControls.h" />
+    <ClInclude Include="ControlServer.h" />
     <ClInclude Include="FrameWriter.h" />
     <ClInclude Include="Settings.h" />
     <ClInclude Include="SettingsWatcher.h" />
