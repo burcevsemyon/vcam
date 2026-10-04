@@ -24,80 +24,6 @@ public sealed class MainForm : Form
     private readonly Label _qualityLabel = new();
     private readonly ComboBox _qualityCombo = new();
 
-    // Host post-fx (phase vcam-effects + analog): mirror + grayscale +
-    // analog interferences (noise/scanlines/rgbsplit/tracking/vhs),
-    // trio (gateweave/glow/denoise — только backend frei0r),
-    // section "effects". Two rows of checkboxes (y=600/622).
-    private readonly CheckBox _fxMirror = new();
-    private readonly CheckBox _fxGrayscale = new();
-    private readonly CheckBox _fxNoise = new();
-    private readonly CheckBox _fxScanlines = new();
-    private readonly CheckBox _fxRgbSplit = new();
-    private readonly CheckBox _fxTracking = new();
-    private readonly CheckBox _fxGateweave = new();
-    private readonly CheckBox _fxGlow = new();
-    private readonly CheckBox _fxDenoise = new();
-    private readonly CheckBox _fxVhs = new();
-
-    // Analog interference intensity sliders (TrackBar 0-100) next to the
-    // interference checkboxes; section "effects" levels. VHS has no own
-    // slider: it uses these four individual levels.
-    private readonly TrackBar _fxNoiseLevel = new();
-    private readonly TrackBar _fxScanlinesLevel = new();
-    private readonly TrackBar _fxRgbSplitLevel = new();
-    private readonly TrackBar _fxTrackingLevel = new();
-    private readonly TrackBar _fxGateweaveLevel = new();
-    private readonly TrackBar _fxGlowLevel = new();
-    private readonly TrackBar _fxDenoiseLevel = new();
-    private readonly Label _fxNoiseLevelVal = new();
-    private readonly Label _fxScanlinesLevelVal = new();
-    private readonly Label _fxRgbSplitLevelVal = new();
-    private readonly Label _fxTrackingLevelVal = new();
-    private readonly Label _fxGateweaveLevelVal = new();
-    private readonly Label _fxGlowLevelVal = new();
-    private readonly Label _fxDenoiseLevelVal = new();
-
-    // Trio-hint: виден при backend CPU — объясняет серые строки
-    // (без молчаливых no-op: на CPU трио пропускается хостом).
-    private readonly Label _fxTrioHint = new();
-
-    // Analog interference backend (ComboBox in the effects group header):
-    // CPU (default, no DLLs) | frei0r (frei0r plugin chain, falls back to
-    // CPU when the DLLs are missing).
-    private readonly ComboBox _fxBackend = new();
-    private readonly Label _fxBackendLabel = new();
-
-    // Effects master switch (header row of the effects group): false = the
-    // host skips ApplyFx entirely. Unchecked grays out the rows below.
-    private readonly CheckBox _fxEnabled = new();
-
-    // Settings profiles (header row of the effects group): named FULL snapshots
-    // stored as plain Settings files in %APPDATA%\VCam\profiles\. "Сохранить…"
-    // writes the current settings as-is under a name; choosing the ComboBox
-    // (or "Применить") replaces settings.json with the profile file
-    // byte-for-byte — source, effects, everything — so a source switch
-    // re-opens the source (~1 s, normal and predictable). The host picks the
-    // change up via hot-reload as usual. Choosing the ComboBox applies
-    // immediately (explicit user action, dirty is reset); "Применить"
-    // re-applies the same profile.
-    // Programmatic selection (RefreshProfileList/startup) runs under
-    // _refreshingProfiles and never applies.
-    private readonly Label _profileLabel = new();
-    private readonly ComboBox _profileCombo = new();
-    private readonly Button _profileApply = new();
-    private readonly Button _profileSave = new();
-    private readonly Button _profileDelete = new();
-    private bool _refreshingProfiles; // programmatic combo set, not a choice
-
-    // Effects section container: GroupBox "Эффекты" with a header row (backend
-    // switch) and a TableLayoutPanel (row = checkbox + slider + value).
-    // Table layout (AutoSize checkbox/value columns) keeps all 7 checkboxes +
-    // 4 sliders + backend visible without overlaps at 100% and 125% DPI —
-    // fixed X positions used to overlap once the font scaled up.
-    private readonly GroupBox _fxGroup = new();
-    private readonly Panel _fxHeader = new();
-    private readonly TableLayoutPanel _fxTable = new();
-
     // Info panel replacing the picture preview in video mode.
     private readonly Panel _videoPanel = new();
     private readonly Label _videoTitle = new();
@@ -164,7 +90,7 @@ public sealed class MainForm : Form
     // there is no editor — a wrong value falls back to Ctrl+Alt+V in host+UI.
     private readonly Label _hotkeyHint = new();
 
-    // Ether recording to .mp4 (host SinkWriter, frames with effects applied):
+    // Ether recording to .mp4 (host SinkWriter, frames as broadcast):
     // path box (default in settings "record"), browse, start/stop button,
     // REC indicator. The on/off STATE is transient
     // (%APPDATA%\VCam\record_state.json, written by the host, NOT settings);
@@ -210,19 +136,16 @@ public sealed class MainForm : Form
     private static readonly string[] MediaNames = { "статичная картинка", "видеоролик", "физическая камера" };
     private static readonly string[] QualityNames = { "натив (source)", "720p (fixed)" };
     private static readonly string[] CaptureNames = { "Максимум", "720p", "1080p" };
-    private static readonly string[] FxBackendNames = { "CPU", "frei0r" };
 
     public MainForm()
     {
         Text = "VCam — настройки трансляции";
-        // Sizable (was FixedDialog): the effects table needs the extra height,
-        // and users on 125%+ DPI can grow the window instead of clipping.
         FormBorderStyle = FormBorderStyle.Sizable;
         MaximizeBox = true;
         MinimizeBox = true;
         StartPosition = FormStartPosition.CenterScreen;
-        ClientSize = new Size(880, 1184);
-        MinimumSize = new Size(900, 1234);
+        ClientSize = new Size(880, 784);
+        MinimumSize = new Size(900, 834);
         Font = new Font("Segoe UI", 9f);
         try
         {
@@ -243,11 +166,10 @@ public sealed class MainForm : Form
         SetupRecGroup();
         SetupHostRow();
         SetupCropFields();
-        SetupFxGroup();
         SetupFooter();
 
         Controls.AddRange(new Control[] { _preview, _cropView, _videoPanel, _cameraPanel, _pathLabel, _mediaLabel, _mediaCombo,
-            _qualityLabel, _qualityCombo, _fxGroup, _recGroup, _hotkeyHint,
+            _qualityLabel, _qualityCombo, _recGroup, _hotkeyHint,
             _mode, _openButton, _fullSizeButton, _saveButton, _reloadButton, _hostStatusLabel, _hostButton, _helpButton,
             _cropXLabel, _cropX, _cropYLabel, _cropY, _cropWLabel, _cropW, _cropHLabel, _cropH, _cropKeepAspect, _hintLabel });
 
@@ -257,8 +179,6 @@ public sealed class MainForm : Form
 
         SubscribeDirtyTracking();
         LoadCurrentSettings();
-        RefreshProfileList();
-        UpdateFxEnabledState();
         UpdateLayout();
         InitSettingsSync();
     }
@@ -342,7 +262,7 @@ public sealed class MainForm : Form
     {
         // Manual reload from settings.json (always available; also the way out
         // when the file changed externally while the form is dirty).
-        _reloadButton.Location = new Point(566, 1032);
+        _reloadButton.Location = new Point(566, 632);
         _reloadButton.Size = new Size(116, 40);
         _reloadButton.Text = "Обновить";
         _reloadButton.Name = "reloadButton";
@@ -385,14 +305,14 @@ public sealed class MainForm : Form
 
     private void SetupFooter()
     {
-        _hintLabel.Location = new Point(12, 1034);
+        _hintLabel.Location = new Point(12, 634);
         _hintLabel.Size = new Size(548, 38);
         _hintLabel.ForeColor = Color.DimGray;
         _hintLabel.Text = $"Настройки: {Settings.FilePath} — хост VCam подхватит их автоматически (~1 с).";
         _hintLabel.Name = "hintLabel";
         _hintLabel.Anchor = AnchorStyles.Left | AnchorStyles.Bottom;
 
-        _helpButton.Location = new Point(688, 1032);
+        _helpButton.Location = new Point(688, 632);
         _helpButton.Size = new Size(180, 40);
         _helpButton.Text = "Справка…";
         _helpButton.Name = "helpButton";
@@ -411,7 +331,7 @@ public sealed class MainForm : Form
             _mediaCombo, _openButton, _qualityCombo, _saveButton,
             _mode, _fullSizeButton, _hostButton,
             _cropX, _cropY, _cropW, _cropH, _cropKeepAspect,
-            _fxGroup, _recGroup, _reloadButton, _helpButton,
+            _recGroup, _reloadButton, _helpButton,
         };
         for (var ti = 0; ti < tabVisual.Length; ti++) tabVisual[ti].TabIndex = ti;
         _videoPanel.TabIndex = 2;
@@ -477,7 +397,7 @@ public sealed class MainForm : Form
             "Смена файла подхватывается автоматически (~1 с), без перезапуска.\r\n" +
             "Обычное видео крутится по кругу; ролик, вызванный горячей клавишей, " +
             "играет один раз и возвращает предыдущий источник.\r\n" +
-            "Встроенное превью картинки — без эффектов, эффекты смотри в VCamPreview.";
+            "Встроенное превью картинки — то же, что идёт в эфир.";
 
         _previewButton.Location = new Point(16, 184);
         _previewButton.Size = new Size(380, 40);
@@ -581,193 +501,11 @@ public sealed class MainForm : Form
               _cameraIdLabel, _controlsPanel, _cameraHint, _cameraStatus });
     }
 
-    // Effects GroupBox + table: header (backend switch) on top, 10 rows
-    // (checkbox + slider + value) below. All checkbox/value cells are AutoSize
-    // so longer labels at 125% DPI widen their column instead of overlapping
-    // the neighbour (the old fixed-X layout clipped/overlapped).
-    private void SetupFxGroup()
-    {
-        _fxGroup.Location = new Point(12, 614);
-        _fxGroup.Size = new Size(856, 400);
-        _fxGroup.Text = "Эффекты";
-        _fxGroup.Name = "fxGroup";
-        _fxGroup.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
-
-        _fxHeader.Dock = DockStyle.Top;
-        _fxHeader.Height = 70;
-        _fxHeader.Name = "fxHeader";
-
-        // Row 1: profile picker (label + combo + apply/save/delete). The
-        // combo stretches; the buttons keep fixed widths on the right.
-        _profileLabel.AutoSize = true;
-        _profileLabel.Location = new Point(10, 9);
-        _profileLabel.Text = "Профиль:";
-        _profileLabel.Name = "profileLabel";
-
-        _profileCombo.Location = new Point(80, 5);
-        _profileCombo.Size = new Size(430, 28);
-        _profileCombo.DropDownStyle = ComboBoxStyle.DropDownList;
-        _profileCombo.Name = "profileCombo";
-        _profileCombo.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
-        // User choice applies immediately (same path as "Применить");
-        // programmatic sets under _refreshingProfiles are ignored.
-        _profileCombo.SelectedIndexChanged += OnProfileComboChanged;
-
-        _profileApply.Location = new Point(516, 4);
-        _profileApply.Size = new Size(100, 30);
-        _profileApply.Text = "Применить";
-        _profileApply.Name = "profileApply";
-        _profileApply.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        _profileApply.Click += OnProfileApplyClicked;
-
-        _profileSave.Location = new Point(622, 4);
-        _profileSave.Size = new Size(118, 30);
-        _profileSave.Text = "Сохранить…";
-        _profileSave.Name = "profileSave";
-        _profileSave.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        _profileSave.Click += OnProfileSaveClicked;
-
-        _profileDelete.Location = new Point(746, 4);
-        _profileDelete.Size = new Size(96, 30);
-        _profileDelete.Text = "Удалить";
-        _profileDelete.Name = "profileDelete";
-        _profileDelete.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        _profileDelete.Click += OnProfileDeleteClicked;
-
-        // Row 2: master switch + backend in a FlowLayoutPanel. Everything
-        // below grays out while the master is off (see UpdateFxEnabledState).
-        // М2: было фикс X=220 для "Backend:" — при >150% DPI текст
-        // "Эффекты включены" реально шире и наезжал на Backend. Flow
-        // сдвигает Backend вправо по фактической ширине чекбокса.
-        var fxRow2 = new FlowLayoutPanel
-        {
-            Location = new Point(6, 37),
-            Size = new Size(840, 30),
-            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
-            FlowDirection = FlowDirection.LeftToRight,
-            WrapContents = false,
-            Name = "fxHeaderRow2",
-        };
-        _fxEnabled.AutoSize = true;
-        _fxEnabled.Text = "Эффекты включены";
-        _fxEnabled.Checked = true;
-        _fxEnabled.Name = "fxEnabled";
-        _fxEnabled.Margin = new Padding(4, 4, 12, 4);
-
-        _fxBackendLabel.AutoSize = true;
-        _fxBackendLabel.Text = "Backend:";
-        _fxBackendLabel.Name = "fxBackendLabel";
-        _fxBackendLabel.Margin = new Padding(0, 6, 4, 4);
-
-        _fxBackend.Size = new Size(110, 28);
-        _fxBackend.DropDownStyle = ComboBoxStyle.DropDownList;
-        _fxBackend.Items.AddRange(FxBackendNames);
-        _fxBackend.SelectedIndex = 0;
-        _fxBackend.Name = "fxBackend";
-        _fxBackend.Margin = new Padding(0, 2, 4, 4);
-
-        // Хинт про CPU-ограничение трио: виден только при backend CPU
-        // (см. UpdateFxEnabledState). Серый — как соседние хинты формы.
-        _fxTrioHint.AutoSize = true;
-        _fxTrioHint.Text = "Плёнка/Свечение/Шумодав — только frei0r";
-        _fxTrioHint.ForeColor = Color.DimGray;
-        _fxTrioHint.Name = "fxTrioHint";
-        _fxTrioHint.Margin = new Padding(8, 6, 4, 4);
-        fxRow2.Controls.AddRange(new Control[] { _fxEnabled, _fxBackendLabel, _fxBackend, _fxTrioHint });
-        _fxHeader.Controls.AddRange(new Control[] { _profileLabel, _profileCombo,
-            _profileApply, _profileSave, _profileDelete });
-        _fxHeader.Controls.Add(fxRow2);
-
-        _fxTable.Dock = DockStyle.Fill;
-        _fxTable.Name = "fxTable";
-        _fxTable.ColumnCount = 3;
-        _fxTable.RowCount = 10;
-        _fxTable.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        _fxTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
-        _fxTable.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        for (var r = 0; r < 10; r++)
-            _fxTable.RowStyles.Add(new RowStyle(SizeType.Percent, 100f / 10f));
-
-        SetupFxCheck(_fxMirror, "Зеркало", "fxMirror");
-        SetupFxCheck(_fxGrayscale, "Ч/Б", "fxGrayscale");
-        SetupFxCheck(_fxNoise, "Шум", "fxNoise");
-        SetupFxCheck(_fxScanlines, "Сканлайны", "fxScanlines");
-        SetupFxCheck(_fxRgbSplit, "RGB-сдвиг", "fxRgbSplit");
-        SetupFxCheck(_fxTracking, "Трекинг", "fxTracking");
-        SetupFxCheck(_fxGateweave, "Плёнка", "fxGateweave");
-        SetupFxCheck(_fxGlow, "Свечение", "fxGlow");
-        SetupFxCheck(_fxDenoise, "Шумодав", "fxDenoise");
-        SetupFxCheck(_fxVhs, "VHS (пресет)", "fxVhs");
-
-        SetupFxLevel(_fxNoiseLevel, _fxNoiseLevelVal, "fxNoiseLevel");
-        SetupFxLevel(_fxScanlinesLevel, _fxScanlinesLevelVal, "fxScanlinesLevel");
-        SetupFxLevel(_fxRgbSplitLevel, _fxRgbSplitLevelVal, "fxRgbSplitLevel");
-        SetupFxLevel(_fxTrackingLevel, _fxTrackingLevelVal, "fxTrackingLevel");
-        SetupFxLevel(_fxGateweaveLevel, _fxGateweaveLevelVal, "fxGateweaveLevel");
-        SetupFxLevel(_fxGlowLevel, _fxGlowLevelVal, "fxGlowLevel");
-        SetupFxLevel(_fxDenoiseLevel, _fxDenoiseLevelVal, "fxDenoiseLevel");
-
-        // Rows: mirror / grayscale / noise / scanlines / rgbsplit /
-        // tracking / gateweave / glow / denoise / vhs.
-        AddFxRow(0, _fxMirror, null, null);
-        AddFxRow(1, _fxGrayscale, null, null);
-        AddFxRow(2, _fxNoise, _fxNoiseLevel, _fxNoiseLevelVal);
-        AddFxRow(3, _fxScanlines, _fxScanlinesLevel, _fxScanlinesLevelVal);
-        AddFxRow(4, _fxRgbSplit, _fxRgbSplitLevel, _fxRgbSplitLevelVal);
-        AddFxRow(5, _fxTracking, _fxTrackingLevel, _fxTrackingLevelVal);
-        AddFxRow(6, _fxGateweave, _fxGateweaveLevel, _fxGateweaveLevelVal);
-        AddFxRow(7, _fxGlow, _fxGlowLevel, _fxGlowLevelVal);
-        AddFxRow(8, _fxDenoise, _fxDenoiseLevel, _fxDenoiseLevelVal);
-        AddFxRow(9, _fxVhs, null, null);
-
-        // М1 (продолжение): таб-порядок внутри шапки и таблицы — по визуали:
-        // профиль → мастер → backend → строки сверху вниз (чекбокс → слайдер).
-        _profileCombo.TabIndex = 0;
-        _profileApply.TabIndex = 1;
-        _profileSave.TabIndex = 2;
-        _profileDelete.TabIndex = 3;
-        _fxEnabled.TabIndex = 0;
-        _fxBackend.TabIndex = 1;
-        var fxTab = new Control[]
-        {
-            _fxMirror, _fxGrayscale,
-            _fxNoise, _fxNoiseLevel, _fxScanlines, _fxScanlinesLevel,
-            _fxRgbSplit, _fxRgbSplitLevel, _fxTracking, _fxTrackingLevel,
-            _fxGateweave, _fxGateweaveLevel, _fxGlow, _fxGlowLevel,
-            _fxDenoise, _fxDenoiseLevel, _fxVhs,
-        };
-        for (var fi = 0; fi < fxTab.Length; fi++) fxTab[fi].TabIndex = fi;
-
-        _fxGroup.Controls.Add(_fxTable);
-        _fxGroup.Controls.Add(_fxHeader);
-    }
-
-    // Master switch gray-out: while the effects are disabled the rows below
-    // (and the backend picker) are read-only. Only sets Enabled (no Checked
-    // changes), so it never dirties the form and is safe under _suppressDirty.
-    // Trio (gateweave/glow/denoise) — только backend frei0r: при CPU их строки
-    // серые + хинт в шапке (хост такие пропускает с one-shot логом —
-    // молчаливых no-op нет ни через UI, ни через ручной settings.json).
-    private void UpdateFxEnabledState()
-    {
-        var on = _fxEnabled.Checked;
-        foreach (var c in new Control[] { _fxMirror, _fxGrayscale, _fxNoise,
-            _fxScanlines, _fxRgbSplit, _fxTracking, _fxVhs,
-            _fxNoiseLevel, _fxScanlinesLevel, _fxRgbSplitLevel, _fxTrackingLevel,
-            _fxBackend })
-            c.Enabled = on;
-        var trioOn = on && CurrentBackend == "frei0r";
-        foreach (var c in new Control[] { _fxGateweave, _fxGlow, _fxDenoise,
-            _fxGateweaveLevel, _fxGlowLevel, _fxDenoiseLevel })
-            c.Enabled = trioOn;
-        _fxTrioHint.Visible = on && CurrentBackend != "frei0r";
-    }
-
     // Ether recording group: file path + browse + start/stop + REC line +
-    // record-hotkey hint. Below the effects group (fx bottom = 912).
+    // record-hotkey hint. Below the crop fields.
     private void SetupRecGroup()
     {
-        _recGroup.Location = new Point(12, 1018);
+        _recGroup.Location = new Point(12, 614);
         _recGroup.Size = new Size(856, 110);
         _recGroup.Text = "Запись эфира";
         _recGroup.Name = "recGroup";
@@ -823,54 +561,6 @@ public sealed class MainForm : Form
             _recPathLabel, _recPathText, _recBrowse, _recButton, _recStatus, _recHint });
     }
 
-    private static void SetupFxCheck(CheckBox box, string text, string name)
-    {
-        box.AutoSize = true;
-        box.Text = text;
-        box.Name = name;
-        box.Anchor = AnchorStyles.Left;
-        box.Margin = new Padding(6, 3, 6, 3);
-    }
-
-    private void AddFxRow(int row, CheckBox box, TrackBar? bar, Label? val)
-    {
-        box.Dock = DockStyle.Fill;
-        _fxTable.Controls.Add(box, 0, row);
-        if (bar is not null && val is not null)
-        {
-            bar.Dock = DockStyle.Fill;
-            _fxTable.Controls.Add(bar, 1, row);
-            val.Dock = DockStyle.Fill;
-            _fxTable.Controls.Add(val, 2, row);
-        }
-    }
-
-    // Intensity slider 0-100 next to an interference checkbox: compact
-    // TrackBar (no ticks) + numeric value label. Scroll updates the label.
-    // Geometry is owned by the effects table (Dock Fill); no coordinates here.
-    private void SetupFxLevel(TrackBar bar, Label val, string name)
-    {
-        bar.Minimum = 0;
-        bar.Maximum = 100;
-        bar.TickStyle = TickStyle.None;
-        bar.SmallChange = 5;
-        bar.LargeChange = 10;
-        bar.Value = 100;
-        bar.Name = name;
-        bar.Margin = new Padding(6, 0, 6, 0);
-        val.AutoSize = true;
-        val.MinimumSize = new Size(30, 0);
-        val.Text = "100";
-        val.TextAlign = ContentAlignment.MiddleLeft;
-        val.Name = name + "Val";
-        val.Margin = new Padding(0, 3, 6, 3);
-        bar.Scroll += (_, _) => val.Text = bar.Value.ToString();
-        // ValueChanged covers Scroll + keyboard + programmatic sets; the label
-        // stays in sync and user edits set the dirty flag (programmatic sets
-        // during Load/reload are suppressed via _suppressDirty).
-        bar.ValueChanged += (_, _) => { val.Text = bar.Value.ToString(); MarkDirty(); };
-    }
-
     // Any user edit after Load/Save marks the form dirty; while dirty the
     // auto-reload from settings.json is blocked (warning instead) so external
     // changes never silently discard what the user is editing.
@@ -882,21 +572,11 @@ public sealed class MainForm : Form
 
     private void SubscribeDirtyTracking()
     {
-        foreach (var c in new[] { _fxMirror, _fxGrayscale, _fxNoise, _fxScanlines,
-                                   _fxRgbSplit, _fxTracking,
-                                   _fxGateweave, _fxGlow, _fxDenoise,
-                                   _fxVhs, _cropKeepAspect })
+        foreach (var c in new[] { _cropKeepAspect })
             c.CheckedChanged += (_, _) => MarkDirty();
-        // Master switch: user edits set the dirty flag (suppressed during
-        // Load/reload); the gray-out below always follows the checkbox.
-        _fxEnabled.CheckedChanged += (_, _) => { UpdateFxEnabledState(); MarkDirty(); };
-        // TrackBars are covered in SetupFxLevel (ValueChanged).
         _mode.SelectedIndexChanged += (_, _) => MarkDirty();
         _mediaCombo.SelectedIndexChanged += (_, _) => MarkDirty();
         _qualityCombo.SelectedIndexChanged += (_, _) => MarkDirty();
-        // Backend switch: кроме dirty — пересчёт серых строк трио
-        // (UpdateFxEnabledState сам dirty не ставит — безопасен).
-        _fxBackend.SelectedIndexChanged += (_, _) => { UpdateFxEnabledState(); MarkDirty(); };
         _captureCombo.SelectedIndexChanged += (_, _) => MarkDirty();
         _cameraCombo.SelectedIndexChanged += (_, _) => MarkDirty();
         // Crop fields: programmatic sync runs under _updatingCropFields.
@@ -1316,36 +996,6 @@ public sealed class MainForm : Form
             _ => 0,
         };
         _qualityCombo.SelectedIndex = s.Quality == Quality.Fixed720p ? 1 : 0;
-        _fxEnabled.Checked = s.FxEnabled;
-        _fxMirror.Checked = s.FxMirror;
-        _fxGrayscale.Checked = s.FxGrayscale;
-        _fxNoise.Checked = s.FxNoise;
-        _fxScanlines.Checked = s.FxScanlines;
-        _fxRgbSplit.Checked = s.FxRgbSplit;
-        _fxTracking.Checked = s.FxTracking;
-        _fxGateweave.Checked = s.FxGateweave;
-        _fxGlow.Checked = s.FxGlow;
-        _fxDenoise.Checked = s.FxDenoise;
-        _fxVhs.Checked = s.FxVhs;
-        _fxNoiseLevel.Value = Math.Clamp(s.FxNoiseLevel, 0, 100);
-        _fxNoiseLevelVal.Text = _fxNoiseLevel.Value.ToString();
-        _fxScanlinesLevel.Value = Math.Clamp(s.FxScanlinesLevel, 0, 100);
-        _fxScanlinesLevelVal.Text = _fxScanlinesLevel.Value.ToString();
-        _fxRgbSplitLevel.Value = Math.Clamp(s.FxRgbSplitLevel, 0, 100);
-        _fxRgbSplitLevelVal.Text = _fxRgbSplitLevel.Value.ToString();
-        _fxTrackingLevel.Value = Math.Clamp(s.FxTrackingLevel, 0, 100);
-        _fxTrackingLevelVal.Text = _fxTrackingLevel.Value.ToString();
-        _fxGateweaveLevel.Value = Math.Clamp(s.FxGateweaveLevel, 0, 100);
-        _fxGateweaveLevelVal.Text = _fxGateweaveLevel.Value.ToString();
-        _fxGlowLevel.Value = Math.Clamp(s.FxGlowLevel, 0, 100);
-        _fxGlowLevelVal.Text = _fxGlowLevel.Value.ToString();
-        _fxDenoiseLevel.Value = Math.Clamp(s.FxDenoiseLevel, 0, 100);
-        _fxDenoiseLevelVal.Text = _fxDenoiseLevel.Value.ToString();
-        _fxBackend.SelectedIndex = s.FxBackend == "frei0r" ? 1 : 0;
-        // Backend приехал из файла — серые строки трио пересчитать сразу
-        // (SelectedIndexChanged под _suppressDirty тоже стреляет, но
-        // прямой вызов — страховка при том же индексе).
-        UpdateFxEnabledState();
         _mediaCombo.SelectedIndex = s.SourceType switch
         {
             // В3: неизвестный будущий токен показываем как static (комбо его
@@ -1364,9 +1014,9 @@ public sealed class MainForm : Form
         }
         else
         {
-            // Missing file (or an applied profile pointing at one): remember
-            // the path anyway so a later save writes exactly what is on disk,
-            // and drop the stale picture so the preview never lies.
+            // Missing file: remember the path anyway so a later save writes
+            // exactly what is on disk, and drop the stale picture so the
+            // preview never lies.
             _sourcePath = s.StaticPath ?? "";
             _cropView.Image = null;
             if (_sourceImage is not null)
@@ -1402,9 +1052,6 @@ public sealed class MainForm : Form
     };
 
     private Quality CurrentQuality => _qualityCombo.SelectedIndex == 1 ? Quality.Fixed720p : Quality.Source;
-
-    // Backend ComboBox: index 1 = frei0r, anything else = cpu.
-    private string CurrentBackend => _fxBackend.SelectedIndex == 1 ? "frei0r" : "cpu";
 
     // DropDownList => index always 0..2; anything unexpected maps to Max.
     private CaptureMode CurrentCapture => _captureCombo.SelectedIndex switch
@@ -1790,7 +1437,7 @@ public sealed class MainForm : Form
         // source-секций из CollectSettingsFromControls — старт записи не
         // должен упираться в незаполненный источник).
         // К1: битый settings.json НЕ затираем дефолтами — читаем строгим
-        // LoadFromText и отменяем старт при исключении (как ApplyProfile).
+        // LoadFromText и отменяем старт при исключении.
         try
         {
             var liveText = ReadSettingsText();
@@ -2101,11 +1748,9 @@ public sealed class MainForm : Form
         }
     }
 
-    // М6: встроенное превью — исходник БЕЗ эффектов (только Fit/Cover).
-    // Полноценный ApplyFx сюда не тянем сознательно: эффекты живут в
-    // нативном ProducerCore (C++ GpuEffects/frei0r), тянуть их в UI-процесс
-    // ради превью — дорого и рискованно для perf/стабильности; вместо этого
-    // одна строка в хинтах (см. _videoInfoLabel + HelpTexts «Эффекты»).
+    // Встроенное превью — исходник как есть (только Fit/Cover): кадр эфира
+    // совпадает с превью (пост-процессинга в хосте сейчас нет — только
+    // no-op хук PostProcessFrame под будущую обработку).
     private void UpdatePreview()
     {
         if (_sourceImage is null) return;
@@ -2189,10 +1834,10 @@ public sealed class MainForm : Form
     // Builds Settings from the controls (old OnSaveClicked body, unchanged
     // mapping): starts from what is on disk so autostart and the section
     // that is not being edited stay untouched; overwrites the edited
-    // section + type + effects + quality. Shared by "Сохранить настройки"
-    // and "Сохранить…" (profile). Null = validation failed (shown already).
+    // section + type + quality. Shared by "Сохранить настройки".
+    // Null = validation failed (shown already).
     // К1: битый settings.json НЕ затираем дефолтами — читаем строгим
-    // LoadFromText и отменяем Save при исключении (как ApplyProfile).
+    // LoadFromText и отменяем Save при исключении.
     private (Settings Settings, string OkText, bool Warn)? CollectSettingsFromControls()
     {
         Settings settings;
@@ -2215,25 +1860,6 @@ public sealed class MainForm : Form
             }
         }
         settings.RecordPath = _recPathText.Text.Trim();
-        settings.FxEnabled = _fxEnabled.Checked;
-        settings.FxMirror = _fxMirror.Checked;
-        settings.FxGrayscale = _fxGrayscale.Checked;
-        settings.FxNoise = _fxNoise.Checked;
-        settings.FxScanlines = _fxScanlines.Checked;
-        settings.FxRgbSplit = _fxRgbSplit.Checked;
-        settings.FxTracking = _fxTracking.Checked;
-        settings.FxGateweave = _fxGateweave.Checked;
-        settings.FxGlow = _fxGlow.Checked;
-        settings.FxDenoise = _fxDenoise.Checked;
-        settings.FxVhs = _fxVhs.Checked;
-        settings.FxNoiseLevel = _fxNoiseLevel.Value;
-        settings.FxScanlinesLevel = _fxScanlinesLevel.Value;
-        settings.FxRgbSplitLevel = _fxRgbSplitLevel.Value;
-        settings.FxTrackingLevel = _fxTrackingLevel.Value;
-        settings.FxGateweaveLevel = _fxGateweaveLevel.Value;
-        settings.FxGlowLevel = _fxGlowLevel.Value;
-        settings.FxDenoiseLevel = _fxDenoiseLevel.Value;
-        settings.FxBackend = CurrentBackend;
 
         if (CurrentSourceType == SourceTypes.Video)
         {
@@ -2329,241 +1955,6 @@ public sealed class MainForm : Form
             MessageBox.Show(this, $"Не удалось сохранить настройки:\n{ex.Message}", Text,
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
-    }
-
-    // Rebuilds the profile ComboBox (seeded on first launch). Keeps the
-    // requested selection when possible, otherwise the previous one. Never
-    // writes settings.json, never dirties the form.
-    private void RefreshProfileList(string? select = null)
-    {
-        string? keep = select ?? _profileCombo.SelectedItem as string;
-        List<string> names;
-        try
-        {
-            Profiles.EnsureSeeded();
-            names = Profiles.List();
-        }
-        catch (Exception ex)
-        {
-            Debug.WriteLine($"MainForm: profiles unavailable: {ex.Message}");
-            return;
-        }
-
-        var prev = _suppressDirty;
-        _suppressDirty = true;
-        _refreshingProfiles = true;
-        try
-        {
-            _profileCombo.Items.Clear();
-            foreach (var n in names)
-                _profileCombo.Items.Add(n);
-            if (keep is not null && names.Contains(keep, StringComparer.Ordinal))
-                _profileCombo.SelectedItem = keep;
-            else if (names.Count > 0)
-                _profileCombo.SelectedIndex = 0;
-        }
-        finally
-        {
-            _refreshingProfiles = false;
-            _suppressDirty = prev;
-        }
-    }
-
-    // User picked a profile in the ComboBox: apply immediately (explicit
-    // action — applies even when the form is dirty, dirty is reset).
-    // Programmatic sets (RefreshProfileList/startup) are flagged and ignored.
-    private void OnProfileComboChanged(object? sender, EventArgs e)
-    {
-        if (_refreshingProfiles || _suppressDirty) return;
-        var name = _profileCombo.SelectedItem as string;
-        if (string.IsNullOrEmpty(name)) return;
-        ApplyProfile(name);
-    }
-
-    // Apply = эфирная часть профиля: источник (source/static/video/camera),
-    // quality и effects. Машинное (hotkey/recordHotkey/record/autostart)
-    // остаётся живым (К5) — см. ApplyProfile. Хост подхватывает смену через
-    // hot-reload; смена источника переоткрывает его (~1 с — нормально).
-    // Битый профиль отменяется с сообщением и живой файл не трогает.
-    private void OnProfileApplyClicked(object? sender, EventArgs e)
-    {
-        var name = _profileCombo.SelectedItem as string;
-        if (string.IsNullOrEmpty(name))
-        {
-            MessageBox.Show(this, "Нет профилей — сохраните текущий кнопкой «Сохранить…».", Text,
-                MessageBoxButtons.OK, MessageBoxIcon.Information);
-            return;
-        }
-        ApplyProfile(name);
-    }
-
-    private void ApplyProfile(string name)
-    {
-        string text;
-        Settings prof;
-        try
-        {
-            text = File.ReadAllText(Profiles.PathFor(name));
-            // Validate before writing: a broken profile must never land in
-            // the live settings (LoadFromText throws on malformed JSON).
-            prof = Settings.LoadFromText(text);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(this, $"Не удалось прочитать профиль «{name}»:\n{ex.Message}", Text,
-                MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return;
-        }
-
-        // К5: профиль = эффекты+источник (+quality/camera — эфирная часть),
-        // а хоткеи/путь записи/автозапуск — машинные: молча откатывать их
-        // побайтовой копией нельзя. Сохраняем живые значения из текущего
-        // settings.json. Живой файл бит/отсутствует — нечего сохранять,
-        // применяем профиль как есть (его отсутствующие секции и так дают
-        // дефолты через LoadFromText).
-        try
-        {
-            var liveText = ReadSettingsText();
-            if (!string.IsNullOrWhiteSpace(liveText))
-            {
-                var live = Settings.LoadFromText(liveText);
-                prof.HotkeyModifiers = live.HotkeyModifiers;
-                prof.HotkeyVk = live.HotkeyVk;
-                prof.RecordHotkeyModifiers = live.RecordHotkeyModifiers;
-                prof.RecordHotkeyVk = live.RecordHotkeyVk;
-                prof.RecordPath = live.RecordPath;
-                prof.Autostart = live.Autostart;
-            }
-        }
-        catch (Exception ex)
-        {
-            Debug.WriteLine($"MainForm: live settings unreadable on apply, using profile as-is: {ex.Message}");
-        }
-
-        try
-        {
-            // М4: пишем валидированный объект одной записью (prof.Save —
-            // атомарный tmp+move, см. В6). Старого File.Copy валидированного
-            // текста здесь больше нет — TOCTOU «проверил одно, записал
-            // другое» закрыт ещё в К5; живые hotkey/record/autostart
-            // смержены выше и сохраняются этой же записью.
-            prof.Save(Settings.FilePath);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(this, $"Не удалось применить профиль «{name}»:\n{ex.Message}", Text,
-                MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return;
-        }
-
-        // Full control refresh (same mapping as startup/reload, source panels
-        // included — the profile may have switched source/camera/video).
-        // Применяем то, что реально записали (перечитываем, а не исходный
-        // текст профиля — машинные секции в файле остались живыми); watcher
-        // опознаёт запись как свою через _lastAppliedText внутри Apply.
-        ApplySettingsText(ReadSettingsText());
-        UpdateFxEnabledState();
-
-        _hintLabel.ForeColor = Color.ForestGreen;
-        _hintLabel.Text = $"Профиль «{name}» применён (источник, эффекты, качество — из профиля; горячие клавиши, путь записи и автозапуск — ваши, не тронуты), хост подхватит (~1 с).";
-    }
-
-    private void OnProfileSaveClicked(object? sender, EventArgs e)
-    {
-        var current = _profileCombo.SelectedItem as string ?? "";
-        var name = PromptProfileName(current);
-        if (name is null) return; // cancelled
-
-        var built = CollectSettingsFromControls();
-        if (built is null) return;
-
-        if (Profiles.Exists(name) &&
-            MessageBox.Show(this, $"Профиль «{name}» уже есть. Перезаписать?", Text,
-                MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
-            return;
-
-        try
-        {
-            Profiles.SaveProfile(name, built.Value.Settings);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(this, $"Не удалось сохранить профиль «{name}»:\n{ex.Message}", Text,
-                MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return;
-        }
-
-        RefreshProfileList(name);
-        _hintLabel.ForeColor = Color.ForestGreen;
-        _hintLabel.Text = $"Профиль «{name}» сохранён (снимок эфира: источник, эффекты, качество). Выбор в списке применяет эфирную часть; горячие клавиши, путь записи и автозапуск не трогает.";
-    }
-
-    private void OnProfileDeleteClicked(object? sender, EventArgs e)
-    {
-        var name = _profileCombo.SelectedItem as string;
-        if (string.IsNullOrEmpty(name)) return;
-        if (MessageBox.Show(this, $"Удалить профиль «{name}»?", Text,
-                MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
-            return;
-
-        try
-        {
-            Profiles.DeleteProfile(name);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(this, $"Не удалось удалить профиль «{name}»:\n{ex.Message}", Text,
-                MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return;
-        }
-
-        RefreshProfileList();
-        _hintLabel.ForeColor = Color.DimGray;
-        _hintLabel.Text = $"Профиль «{name}» удалён.";
-    }
-
-    // Minimal name prompt (WinForms has no built-in input box): modal dialog
-    // with a TextBox, OK/Cancel. Null = cancelled.
-    private string? PromptProfileName(string initial)
-    {
-        using var dlg = new Form
-        {
-            Text = "Сохранить профиль",
-            FormBorderStyle = FormBorderStyle.FixedDialog,
-            StartPosition = FormStartPosition.CenterParent,
-            ClientSize = new Size(360, 110),
-            MaximizeBox = false,
-            MinimizeBox = false,
-            ShowInTaskbar = false,
-        };
-        var box = new TextBox
-        {
-            Location = new Point(12, 12),
-            Size = new Size(336, 28),
-            Text = initial,
-            MaxLength = 80,
-        };
-        box.SelectAll();
-        var ok = new Button
-        {
-            Location = new Point(192, 56),
-            Size = new Size(75, 32),
-            Text = "OK",
-            DialogResult = DialogResult.OK,
-        };
-        var cancel = new Button
-        {
-            Location = new Point(273, 56),
-            Size = new Size(75, 32),
-            Text = "Отмена",
-            DialogResult = DialogResult.Cancel,
-        };
-        dlg.Controls.AddRange(new Control[] { box, ok, cancel });
-        dlg.AcceptButton = ok;
-        dlg.CancelButton = cancel;
-        if (dlg.ShowDialog(this) != DialogResult.OK) return null;
-        var clean = Profiles.Sanitize(box.Text);
-        return string.IsNullOrEmpty(clean) ? null : clean;
     }
 
     protected override void OnFormClosed(FormClosedEventArgs e)
