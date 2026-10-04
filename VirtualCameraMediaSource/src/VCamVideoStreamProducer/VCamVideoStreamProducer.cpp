@@ -18,7 +18,6 @@
 #include "ProducerApi.h"
 #include "Settings.h"
 #include "SettingsWatcher.h"
-#include "GpuEffects.h"
 #include "SharedMemoryContract.h"
 #include "MappedViewOfFilePtr.h"
 
@@ -161,7 +160,7 @@ void ClearHotkeyState()
 }
 
 // --- Запись эфира в .mp4 (секции record {path} + recordHotkey в settings).
-// Кадры — v1-кэш FrameWriter ПОСЛЕ ApplyFx (с эффектами), 720p RGB32→H.264.
+// Кадры — v1-кэш FrameWriter с хука PostProcessFrame, 720p RGB32→H.264.
 // Управление: UI пишет record_command.json (старт/стоп), хост пишет
 // record_state.json (идёт/путь/старт); оба transient в %APPDATA%\VCam.
 // Рекордер трогает ТОЛЬКО worker-поток (команда хоткея с main-потока идёт
@@ -1138,7 +1137,8 @@ struct Machine {
     FrameWriter writer;
     bool writerOpen = false;
     std::wstring writerErr;
-    // Запись эфира в .mp4: кадры v1-кэша writer'а после ApplyFx (с эффектами).
+    // Запись эфира в .mp4: кадры v1-кэша writer'а с хука PostProcessFrame
+    // (сейчас — чистые кадры источника, без обработки).
     // Смена источника (BeginSwitch) рекордер не трогает — тот же файл дальше.
     Mp4Recorder rec;
     bool recErrLogged = false;   // one-shot лог ошибки записи (fail-open)
@@ -1147,16 +1147,6 @@ struct Machine {
     SourceConfig target;
     bool hasTarget = false;
     std::wstring quality = L"source"; // Settings.quality; смена -> переоткрытие
-    // Эффекты (Settings.fx): применяются после RenderOne перед WriteOne;
-    // смена только эффектов — без переоткрытия источника.
-    EffectsSection fx;
-    // М5: оба one-shot флага сбрасываются при смене fx (см. ниже
-    // s.fx != m.fx): раньше fxGpuLogged был липким навсегда, а у
-    // fxFreiLogged сброс был только по backend — повторный сбой новой
-    // конфигурации молчал.
-    bool fxGpuLogged = false;  // one-shot лог fail-open эффектов
-    bool fxFreiLogged = false; // one-shot лог CPU-fallback backend frei0r
-    bool fxCpuTrioLogged = false; // one-shot хинт: трио на backend cpu пропущено
     Phase phase = Phase::Switch;
     ULONGLONG switchStart = 0;
     ULONGLONG nextAttempt = 0;
@@ -1264,7 +1254,7 @@ void StopRecording(Machine& m, const std::wstring& reason)
 }
 
 // Один эфирный кадр в запись: вызывается после УСПЕШНОГО WriteOne, т.е. кэш
-// writer'а свежий и уже с эффектами. Ошибка записи — стоп записи, эфир живёт.
+// writer'а свежий (кадры с хука PostProcessFrame). Ошибка записи — стоп записи, эфир живёт.
 void RecordEtherFrame(Machine& m)
 {
     if (!m.rec.IsOpen()) return;
@@ -1287,55 +1277,19 @@ void RecordEtherFrame(Machine& m)
     }
 }
 
-// Эффекты хоста: после успешного RenderOne, перед WriteOne, над m.buf
-// (буфер плотно упакован frameW x frameH BGRX — stride frameW*4).
-// Единая точка для всех фаз (Switch/Active/Fallback-restore).
-// Исполнитель — GpuEffects (GPU mirror/grayscale + CPU-аналог помех);
-// false = fail-open: кадр без изменений.
-void ApplyFx(Machine& m)
+// Точка врезки пост-процессинга кадра: вызывается после успешного RenderOne,
+// перед WriteOne, над m.buf — единая точка для всех фаз (Switch/Active/Fallback-restore).
+// Формат кадра: плотно упакованный BGRX (byte0=B), width x height, stride == width*4
+// (обычно 1280x720, stride 5120; при нативном источнике — его размер в пределах cap 4K).
+// Сейчас — no-op: будущий пост-процессинг вставлять здесь (in-place преобразование
+// bgrx перед записью в общую память; запись Mp4Recorder берёт кадры ниже по цепочке).
+void PostProcessFrame(uint8_t* bgrx, int stride, uint32_t w, uint32_t h)
 {
-    if (!m.fx.enabled) return; // мастер-выключатель: эффекты скипаются целиком
-    vcam::effects::FxFlags f;
-    f.mirror = m.fx.mirror;
-    f.grayscale = m.fx.grayscale;
-    f.noise = m.fx.noise;
-    f.scanlines = m.fx.scanlines;
-    f.rgbSplit = m.fx.rgbSplit;
-    f.tracking = m.fx.tracking;
-    f.vhs = m.fx.vhs;
-    f.gateweave = m.fx.gateweave;
-    f.glow = m.fx.glow;
-    f.denoise = m.fx.denoise;
-    f.noiseLevel = m.fx.noiseLevel;
-    f.scanlinesLevel = m.fx.scanlinesLevel;
-    f.rgbSplitLevel = m.fx.rgbSplitLevel;
-    f.trackingLevel = m.fx.trackingLevel;
-    f.gateweaveLevel = m.fx.gateweaveLevel;
-    f.glowLevel = m.fx.glowLevel;
-    f.denoiseLevel = m.fx.denoiseLevel;
-    f.backend = m.fx.backend;
-    // Трио без CPU-аналогов: на backend cpu пропускаются — один раз
-    // объясняем в лог (иначе ручной settings.json давал бы молчаливый no-op;
-    // через UI такое не включается — строки серые).
-    if (f.backend != L"frei0r" &&
-        ((f.gateweave && f.gateweaveLevel > 0) ||
-         (f.glow && f.glowLevel > 0) || (f.denoise && f.denoiseLevel > 0)) &&
-        !m.fxCpuTrioLogged) {
-        m.fxCpuTrioLogged = true;
-        Log(L"[host] effects: gateweave/glow/denoise — только backend frei0r, на CPU пропущены");
-    }
-    const bool ok = vcam::effects::ApplyEffects(m.buf.data(), (int)(m.frameW * 4),
-                                                m.frameW, m.frameH, f);
-    if (!ok && !m.fxGpuLogged) {
-        m.fxGpuLogged = true;
-        Log(L"[host] effects: сбой эффектов, кадры идут без них (fail-open)");
-    }
-    // frei0r недоступен (нет DLL/init fail) — помехи посчитаны CPU, кадр
-    // в эфире; логируем один раз (флаг сбрасывается при смене fx/backend).
-    if (ok && vcam::effects::TakeFreiFallbackFlag() && !m.fxFreiLogged) {
-        m.fxFreiLogged = true;
-        Log(L"[host] effects: backend frei0r недоступен, помехи на CPU (fail-open)");
-    }
+    (void)bgrx;
+    (void)stride;
+    (void)w;
+    (void)h;
+    // no-op: задел под будущий пост-процессинг, кадр идёт как есть.
 }
 
 // Один кадр из src: натив при известном NativeSize, иначе legacy 720p-путь
@@ -1431,7 +1385,7 @@ DWORD Step(Machine& m)
 
         std::wstring rerr;
         if (RenderOne(m.src.get(), m, rerr)) {
-            ApplyFx(m);
+            PostProcessFrame(m.buf.data(), (int)(m.frameW * 4), m.frameW, m.frameH);
             bool written = WriteOne(m);
             if (written) RecordEtherFrame(m);
             m.phase = Phase::Active;
@@ -1454,7 +1408,7 @@ DWORD Step(Machine& m)
     case Phase::Active: {
         std::wstring rerr;
         if (m.src && RenderOne(m.src.get(), m, rerr)) {
-            ApplyFx(m);
+            PostProcessFrame(m.buf.data(), (int)(m.frameW * 4), m.frameW, m.frameH);
             if (WriteOne(m)) {
                 RecordEtherFrame(m);
                 return 0;
@@ -1476,7 +1430,7 @@ DWORD Step(Machine& m)
                     std::wstring rerr;
                     if (RenderOne(cand.get(), m, rerr)) {
                         m.src = std::move(cand);
-                        ApplyFx(m);
+                        PostProcessFrame(m.buf.data(), (int)(m.frameW * 4), m.frameW, m.frameH);
                         if (WriteOne(m)) RecordEtherFrame(m);
                         m.phase = Phase::Active;
                         SetActiveStatus(m);
@@ -1526,7 +1480,7 @@ void CleanupStaleRecordFiles()
 }
 
 // Свежие настройки: смена хоткеев — перерегистрация, смена источника/quality —
-// переоткрытие (BeginSwitch), fx — копия без перезапуска источника.
+// переоткрытие (BeginSwitch).
 void ApplySettingsDiff(Machine& m, HotkeySection& curHotkey,
                        RecordHotkeySection& curRecHotkey)
 {
@@ -1569,25 +1523,8 @@ void ApplySettingsDiff(Machine& m, HotkeySection& curHotkey,
     if (borrowed && want.type == L"video") want.playOnce = true;
     if (!m.hasTarget || want != m.target || s.quality != m.quality)
         BeginSwitch(m, want, s.quality);
-    // Смена только эффектов — без переоткрытия источника: флаги
-    // подхватываются на лету (вотчер шлёт dirty через operator== с fx).
-    if (s.fx != m.fx) {
-        if (s.fx.backend != m.fx.backend) m.fxFreiLogged = false;
-        // М5: новый набор эффектов — новый one-shot шанс залогировать
-        // сбой (иначе флаг липкий навсегда с первой неудачи).
-        m.fxGpuLogged = false;
-        m.fxCpuTrioLogged = false;
-        m.fx = s.fx;
-        Log(L"[host] effects: enabled=%d mirror=%d grayscale=%d noise=%d(%d) scanlines=%d(%d) rgbsplit=%d(%d) tracking=%d(%d) gateweave=%d(%d) glow=%d(%d) denoise=%d(%d) vhs=%d backend=%s",
-            (int)m.fx.enabled, (int)m.fx.mirror, (int)m.fx.grayscale, (int)m.fx.noise,
-            m.fx.noiseLevel, (int)m.fx.scanlines, m.fx.scanlinesLevel,
-            (int)m.fx.rgbSplit, m.fx.rgbSplitLevel, (int)m.fx.tracking,
-            m.fx.trackingLevel, (int)m.fx.gateweave, m.fx.gateweaveLevel,
-            (int)m.fx.glow, m.fx.glowLevel, (int)m.fx.denoise, m.fx.denoiseLevel,
-            (int)m.fx.vhs, m.fx.backend.c_str());
-    }
     // record {path} / recordHotkey в operator== дают watcher-dirty, но
-    // переоткрытия не требуют (не входят в SourceConfig/quality/fx).
+    // переоткрытия не требуют (не входят в SourceConfig/quality).
 }
 
 // Конец заимствованного ролика: авто-возврат на запомненный источник
@@ -1666,7 +1603,6 @@ DWORD WINAPI WorkerProc(LPVOID)
     if (m.rec.IsOpen()) StopRecording(m, L"выход хоста");
     CloseSource(m);
     m.writer.Close();
-    vcam::effects::ShutdownEffects();
     Log(L"[host] worker stopped");
     return 0;
 }

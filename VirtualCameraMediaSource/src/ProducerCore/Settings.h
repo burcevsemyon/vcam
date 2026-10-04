@@ -78,53 +78,6 @@ struct RecordSection {
     bool operator!=(const RecordSection& o) const { return !(*this == o); }
 };
 
-struct EffectsSection {
-    bool enabled = true;    // мастер-выключатель: false = хост скипает ApplyFx целиком
-    bool mirror = false;    // зеркало по горизонтали
-    bool grayscale = false; // Ч/Б (Rec.709 luma, исполнитель — GPUPixel)
-    // Аналоговые помехи (исполнитель — CPU в GpuEffects.cpp, после GPU):
-    bool noise = false;     // RGB/белый шум (±60/канал, анимирован по кадрам)
-    bool scanlines = false; // чересстрочные линии (нечётные строки ×0.35)
-    bool rgbSplit = false;  // хроматическая аберрация (R/B-разъезд по X)
-    bool tracking = false;  // трекинг-глитч (сдвинутые полосы, движутся)
-    bool vhs = false;       // VHS-пресет: все четыре помехи сразу (OR)
-    // Третья тройка — только backend frei0r (CPU-аналогов нет; на cpu
-    // пропускаются с one-shot хинтом хоста, в VHS не входят):
-    bool gateweave = false; // дрожание плёнки (амплитуда сдвига кадра)
-    bool glow = false;      // свечение светов (сила screen-blend)
-    bool denoise = false;   // шумодав hqdn3d (сила сглаживания)
-    // Степень помех 0–100 (индивидуальные уровни; VHS использует их же,
-    // отдельного vhsLevel нет). Отсутствует в JSON → 100, кламп при чтении.
-    // Уровень 0 при включённом тоггле ≈ эффект выключен.
-    int noiseLevel = 100;      // амплитуда шума ±(level% от ±60)
-    int scanlinesLevel = 100;  // глубина затемнения нечётных строк
-    int rgbSplitLevel = 100;   // dx сдвига (100 → 6/12/24 по ширине)
-    int trackingLevel = 100;   // число/ширина полос (0 → нет полос)
-    int gateweaveLevel = 100;  // размах дрожания (100 → ±10px)
-    int glowLevel = 100;       // радиус/сила свечения (100 → kernel ~32px@1280)
-    int denoiseLevel = 100;    // сила шумодава (100 → Dist25=100)
-    // Исполнитель помех: L"cpu" (default, без DLL) | L"frei0r" (цепочка
-    // frei0r-плагинов, нет DLL → fail-open на CPU). Только эти два токена
-    // проходят, остальное (включая отсутствие) → cpu.
-    std::wstring backend = L"cpu";
-
-    bool operator==(const EffectsSection& o) const
-    {
-        return enabled == o.enabled && mirror == o.mirror &&
-                grayscale == o.grayscale &&
-               noise == o.noise && scanlines == o.scanlines &&
-               rgbSplit == o.rgbSplit && tracking == o.tracking &&
-               vhs == o.vhs && gateweave == o.gateweave && glow == o.glow &&
-               denoise == o.denoise && noiseLevel == o.noiseLevel &&
-               scanlinesLevel == o.scanlinesLevel &&
-               rgbSplitLevel == o.rgbSplitLevel &&
-               trackingLevel == o.trackingLevel &&
-               gateweaveLevel == o.gateweaveLevel && glowLevel == o.glowLevel &&
-               denoiseLevel == o.denoiseLevel && backend == o.backend;
-    }
-    bool operator!=(const EffectsSection& o) const { return !(*this == o); }
-};
-
 struct Settings {
     std::wstring sourceType = L"static"; // L"static" | L"video" | L"camera"
     StaticSection st;
@@ -135,9 +88,6 @@ struct Settings {
     // default) | L"fixed720p" (v2 = 720p, лесенка только вниз).
     // Cap натива — 4K константа (vcam::VCamNativeCapW/H), UI нет.
     std::wstring quality = L"source";
-    // Эффекты хоста (секция effects): смена только эффектов — без переоткрытия
-    // источника (отдельная ветка в WorkerProc, см. BeginSwitch по target/quality).
-    EffectsSection fx;
     // Глобальный хоткей (секция hotkey): смена — только перерегистрация
     // RegisterHotKey, без переоткрытия источника.
     HotkeySection hotkey;
@@ -150,8 +100,8 @@ struct Settings {
     bool operator==(const Settings& o) const
     {
         return sourceType == o.sourceType && st == o.st && video == o.video &&
-                cam == o.cam && autostart == o.autostart && quality == o.quality &&
-                fx == o.fx && hotkey == o.hotkey &&
+               cam == o.cam && autostart == o.autostart && quality == o.quality &&
+               hotkey == o.hotkey &&
                 recordHotkey == o.recordHotkey && record == o.record;
     }
     bool operator!=(const Settings& o) const { return !(*this == o); }

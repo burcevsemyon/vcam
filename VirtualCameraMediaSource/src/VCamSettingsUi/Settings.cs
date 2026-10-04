@@ -17,16 +17,9 @@ namespace VCamSettingsUi;
 //     "hotkey": { "modifiers": int 1-15, "vk": int 0x08-0xFE },
 //     "recordHotkey": { "modifiers": int 1-15, "vk": int 0x08-0xFE },
 //     "record": { "path": "..." },
-//     "effects": { "enabled": bool, "mirror": bool, "grayscale": bool,
-//                "noise": bool, "scanlines": bool, "rgbsplit": bool,
-//                "tracking": bool, "vhs": bool,
-//                "gateweave": bool, "glow": bool, "denoise": bool,
-//                "noiseLevel": int 0-100,
-//                "scanlinesLevel": int, "rgbsplitLevel": int,
-//                "trackingLevel": int,
-//                "gateweaveLevel": int, "glowLevel": int, "denoiseLevel": int,
-//                "backend": "cpu" | "frei0r" },
 //     "autostart": bool }
+// Unknown sections (e.g. legacy "effects" from older versions) are ignored
+// on read and dropped on save — old files never fail to load.
 // Empty camera section (id and name both "") -> host shows NO SIGNAL until a
 // device is chosen. Load also accepts the legacy flat format
 // (imagePath/mediaMode/mediaPath/scaleMode/crop*) and migrates it with the
@@ -41,7 +34,7 @@ public enum ScaleMode
 }
 
 // Which section feeds the camera: source.type in settings.json.
-// В3: raw-строка (как FxBackend строкой, а не enum) — C++ хранит токен
+// В3: raw-строка (C++ хранит токен verbatim), хост по неизвестному уходит в
 // verbatim (Settings.cpp ParseNewSchema), хост по неизвестному уходит в
 // fallback, но токен живёт. Известные — канон нижнего регистра
 // (insensitive как раньше); будущие неизвестные — verbatim обратно в Save,
@@ -125,41 +118,6 @@ public sealed class Settings
     // The recording STATE (on/off) never lives here — only the transient
     // %APPDATA%\VCam\record_state.json the host writes while recording.
     public string RecordPath { get; set; } = "";
-
-    // Section "effects" (host post-fx): mirrors EffectsSection on the C++ side.
-    // Legacy files without the section migrate to enabled + all-false.
-    // enabled = master switch (host skips ApplyFx entirely when false).
-    // vhs = VHS preset (host ORs all four interferences at once).
-    public bool FxEnabled { get; set; } = true;
-    public bool FxMirror { get; set; }
-    public bool FxGrayscale { get; set; }
-    public bool FxNoise { get; set; }
-    public bool FxScanlines { get; set; }
-    public bool FxRgbSplit { get; set; }
-    public bool FxTracking { get; set; }
-    public bool FxVhs { get; set; }
-
-    // Third trio — frei0r-backend only (no CPU counterparts; skipped on cpu).
-    // Not part of the VHS preset. Missing key -> false, like the old toggles.
-    public bool FxGateweave { get; set; }
-    public bool FxGlow { get; set; }
-    public bool FxDenoise { get; set; }
-
-    // Analog interference intensity 0-100 (mirrors EffectsSection levels on
-    // the C++ side). Missing key -> 100, clamped on read. Level 0 with the
-    // toggle on ~= effect off. VHS has no own level: it uses these four.
-    public int FxNoiseLevel { get; set; } = 100;
-    public int FxScanlinesLevel { get; set; } = 100;
-    public int FxRgbSplitLevel { get; set; } = 100;
-    public int FxTrackingLevel { get; set; } = 100;
-    public int FxGateweaveLevel { get; set; } = 100;
-    public int FxGlowLevel { get; set; } = 100;
-    public int FxDenoiseLevel { get; set; } = 100;
-
-    // Analog interference backend (mirrors EffectsSection.backend on the C++
-    // side): only "frei0r" passes, anything else (incl. missing) is "cpu".
-    // Legacy files without the key migrate to "cpu".
-    public string FxBackend { get; set; } = "cpu";
 
     // Section "camera" capture: mirrors Settings::ParseCapture on the C++ side —
     // only "720p"/"1080p" pass, anything else (incl. missing) is Max.
@@ -261,28 +219,8 @@ public sealed class Settings
                 if (root.TryGetProperty("record", out var rc) && rc.ValueKind == JsonValueKind.Object)
                     s.RecordPath = GetString(rc, "path");
 
-                if (root.TryGetProperty("effects", out var fx) && fx.ValueKind == JsonValueKind.Object)
-                {
-                    s.FxEnabled = GetBoolDefaultTrue(fx, "enabled");
-                    s.FxMirror = GetBool(fx, "mirror");
-                    s.FxGrayscale = GetBool(fx, "grayscale");
-                    s.FxNoise = GetBool(fx, "noise");
-                    s.FxScanlines = GetBool(fx, "scanlines");
-                    s.FxRgbSplit = GetBool(fx, "rgbsplit");
-                    s.FxTracking = GetBool(fx, "tracking");
-                    s.FxVhs = GetBool(fx, "vhs");
-                    s.FxGateweave = GetBool(fx, "gateweave");
-                    s.FxGlow = GetBool(fx, "glow");
-                    s.FxDenoise = GetBool(fx, "denoise");
-                    s.FxNoiseLevel = GetLevel(fx, "noiseLevel");
-                    s.FxScanlinesLevel = GetLevel(fx, "scanlinesLevel");
-                    s.FxRgbSplitLevel = GetLevel(fx, "rgbsplitLevel");
-                    s.FxTrackingLevel = GetLevel(fx, "trackingLevel");
-                    s.FxGateweaveLevel = GetLevel(fx, "gateweaveLevel");
-                    s.FxGlowLevel = GetLevel(fx, "glowLevel");
-                    s.FxDenoiseLevel = GetLevel(fx, "denoiseLevel");
-                    s.FxBackend = ParseBackend(GetString(fx, "backend"));
-                }
+                // Legacy "effects" section (older versions): ignored — old
+                // files load without errors, a later Save drops the section.
 
                 if (root.TryGetProperty("autostart", out var au))
                     s.Autostart = au.ValueKind != JsonValueKind.False;
@@ -372,28 +310,6 @@ public sealed class Settings
             {
                 ["path"] = RecordPath,
             },
-            ["effects"] = new Dictionary<string, object>
-            {
-                ["enabled"] = FxEnabled,
-                ["mirror"] = FxMirror,
-                ["grayscale"] = FxGrayscale,
-                ["noise"] = FxNoise,
-                ["scanlines"] = FxScanlines,
-                ["rgbsplit"] = FxRgbSplit,
-                ["tracking"] = FxTracking,
-                ["vhs"] = FxVhs,
-                ["gateweave"] = FxGateweave,
-                ["glow"] = FxGlow,
-                ["denoise"] = FxDenoise,
-                ["noiseLevel"] = FxNoiseLevel,
-                ["scanlinesLevel"] = FxScanlinesLevel,
-                ["rgbsplitLevel"] = FxRgbSplitLevel,
-                ["trackingLevel"] = FxTrackingLevel,
-                ["gateweaveLevel"] = FxGateweaveLevel,
-                ["glowLevel"] = FxGlowLevel,
-                ["denoiseLevel"] = FxDenoiseLevel,
-                ["backend"] = FxBackend == "frei0r" ? "frei0r" : "cpu",
-            },
             ["autostart"] = Autostart,
         };
 
@@ -446,28 +362,6 @@ public sealed class Settings
     private static bool GetBool(JsonElement obj, string name) =>
         obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.True;
 
-    // Mirrors C++ JsonGetBool(..., default true) exactly: missing key or a
-    // non-bool token -> true; only an explicit false disables.
-    private static bool GetBoolDefaultTrue(JsonElement obj, string name) =>
-        !obj.TryGetProperty(name, out var v) || v.ValueKind != JsonValueKind.False;
-
-    // Mirrors the C++ ClampLevel exactly: missing/non-numeric -> 100,
-    // out-of-range -> clamp 0-100.
-    // В2: дробные числа C++ JsonGetInt читает как truncate (50.5→50 — цифры
-    // до '.'), а TryGetInt32 на них проваливается. Поэтому fallback — double
-    // с Truncate (к нулю, как разбор цифр C++), затем clamp.
-    private static int GetLevel(JsonElement obj, string name)
-    {
-        if (obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number)
-        {
-            if (v.TryGetInt32(out var n))
-                return Math.Clamp(n, 0, 100);
-            if (v.TryGetDouble(out var d) && double.IsFinite(d))
-                return Math.Clamp((int)Math.Truncate(d), 0, 100);
-        }
-        return 100;
-    }
-
     // В3: известные токены — канон нижнего регистра (insensitive, как раньше
     // и как C++ K4-нормализация scaleMode); неизвестные будущие — verbatim;
     // пусто/нет — "static" (как C++ fallback).
@@ -495,12 +389,6 @@ public sealed class Settings
     private static Quality ParseQuality(string quality) =>
         string.Equals(quality, "fixed720p", StringComparison.Ordinal) ? Quality.Fixed720p
         : Quality.Source;
-
-    // Mirrors the C++ effects.backend parsing exactly: only "frei0r" passes
-    // (ordinal), everything else (missing/garbage/future tokens) is "cpu".
-    private static string ParseBackend(string backend) =>
-        string.Equals(backend, "frei0r", StringComparison.Ordinal) ? "frei0r"
-        : "cpu";
 
     // Mirrors the C++ hotkey parsing exactly: modifiers 1-15 pass, vk
     // 0x08-0xFE passes, anything else (missing/garbage/0) is Ctrl+Alt+V.
