@@ -5,6 +5,7 @@
 #include "MediaSource.h"
 #include "SharedMemoryContract.h"
 #include "SharedMemoryFrameSource.h"
+#include "CriticalSectionGuard.h"
 #include "FrameCopy.h"
 #include <mfapi.h>
 #include <Mferror.h>
@@ -725,14 +726,17 @@ bool CMediaStream::AcquireV2Frame(UINT32* pW, UINT32* pH, UINT32* pStride)
     // Стейджинг — фиксированный max-размер один раз (как m_pNv12Scratch):
     // указатель после первой аллокации не меняется, поэтому конкурентные
     // доставщики не получают UAF (realloc по диметрам запрещён).
-    EnterCriticalSection(&m_cs);
-    if (m_pV2Staging == nullptr) {
-        m_pV2Staging.reset(new (std::nothrow) BYTE[vcam::VCamV2MaxFrameSize]);
-        m_cbV2Staging = (m_pV2Staging != nullptr) ? (SIZE_T)vcam::VCamV2MaxFrameSize : 0;
+    BYTE* pStaging = nullptr;
+    SIZE_T cbStaging = 0;
+    {
+        vcam::CsGuard guard(&m_cs);
+        if (m_pV2Staging == nullptr) {
+            m_pV2Staging.reset(new (std::nothrow) BYTE[vcam::VCamV2MaxFrameSize]);
+            m_cbV2Staging = (m_pV2Staging != nullptr) ? (SIZE_T)vcam::VCamV2MaxFrameSize : 0;
+        }
+        pStaging = m_pV2Staging.get();
+        cbStaging = m_cbV2Staging;
     }
-    BYTE* pStaging = m_pV2Staging.get();
-    const SIZE_T cbStaging = m_cbV2Staging;
-    LeaveCriticalSection(&m_cs);
     if (pStaging == nullptr) return false;
     UINT32 aw = 0, ah = 0, as = 0;
     if (!m_v2.Acquire(pStaging, cbStaging, &aw, &ah, &as, vcam::VCamReadyTimeoutMs))
@@ -888,9 +892,10 @@ HRESULT CMediaStream::DeliverNextSample(IUnknown* pToken)
         m_lastDeliverNv12 = useNv12;
     }
 
-    EnterCriticalSection(&m_cs);
-    if (m_pNv12Scratch == nullptr) m_pNv12Scratch.reset(new (std::nothrow) BYTE[vcam::VCamFrameSize]);
-    LeaveCriticalSection(&m_cs);
+    {
+        vcam::CsGuard guard(&m_cs);
+        if (m_pNv12Scratch == nullptr) m_pNv12Scratch.reset(new (std::nothrow) BYTE[vcam::VCamFrameSize]);
+    }
 
     // v2 первым: свежий валидный натив-кадр. Нет/мусор/таймаут — СТАРЫЙ
     // v1-путь ниже бит-в-бит (регресс D/E-логики).

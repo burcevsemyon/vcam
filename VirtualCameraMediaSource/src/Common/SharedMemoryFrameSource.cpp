@@ -6,6 +6,7 @@
 
 #include "FrameCopy.h"
 #include "SectionHeaderInit.h"
+#include "CriticalSectionGuard.h"
 
 namespace {
 
@@ -26,12 +27,6 @@ bool IsRetryableOpenError(DWORD win32Error)
 {
     return win32Error == ERROR_FILE_NOT_FOUND || win32Error == ERROR_ACCESS_DENIED;
 }
-
-struct CsGuard {
-    CRITICAL_SECTION* cs;
-    explicit CsGuard(CRITICAL_SECTION* c) : cs(c) { EnterCriticalSection(c); }
-    ~CsGuard() { LeaveCriticalSection(cs); }
-};
 
 // Паттерн не зависит от кадра — рисуем один раз на размер и дальше копируем.
 // Вызывается только из FallbackFrame под m_cs, статический кэш безопасен.
@@ -182,7 +177,7 @@ HRESULT SharedMemoryFrameSource::AcquireFrame(BYTE* pDest, DWORD timeoutMs)
     vcam::VCamSectionHeader* pHeader;
     LONGLONG startSeq = 0;
     {
-        CsGuard guard(&m_cs);
+        vcam::CsGuard guard(&m_cs);
         if (!m_bInit || m_bShutDown) return E_UNEXPECTED;
         offline = m_bOffline;
         hReady = m_hReadyEvent;
@@ -213,7 +208,7 @@ HRESULT SharedMemoryFrameSource::AcquireFrame(BYTE* pDest, DWORD timeoutMs)
 
     // Фаза 3 (под локом): кэш/маппинг/копирование — как и раньше, но уже без
     // удержания лока во время ожидания.
-    CsGuard guard(&m_cs);
+    vcam::CsGuard guard(&m_cs);
     if (!m_bInit || m_bShutDown) return FallbackFrame(pDest);
     if (offline) {
         return FallbackFrame(pDest);
@@ -272,13 +267,12 @@ HRESULT SharedMemoryFrameSource::FallbackFrame(BYTE* pDest)
 
 void SharedMemoryFrameSource::Shutdown()
 {
-    EnterCriticalSection(&m_cs);
-    if (m_bShutDown) { LeaveCriticalSection(&m_cs); return; }
+    vcam::CsGuard guard(&m_cs);
+    if (m_bShutDown) { return; }
     m_bShutDown = true;
     m_bInit = false;
     m_view.Close(); m_pHeader = nullptr;
     m_pCache.reset();
     m_hReadyEvent.Close();
     m_hSection.Close();
-    LeaveCriticalSection(&m_cs);
 }

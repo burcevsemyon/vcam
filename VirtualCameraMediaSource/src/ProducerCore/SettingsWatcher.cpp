@@ -3,6 +3,8 @@
 #include <atlbase.h>
 #include <cstring>
 
+#include "CriticalSectionGuard.h"
+
 namespace {
 
 bool ReadUtf8File(const std::wstring& path, std::string& out)
@@ -45,11 +47,12 @@ bool SettingsWatcher::Start(const std::wstring& path, ChangeCallback cb)
     std::string raw;
     if (!ReadUtf8File(path_, raw)) raw.clear();
 
-    EnterCriticalSection(&cs_);
-    current_ = s;
-    hasCurrent_ = loaded;
-    lastRaw_ = raw;
-    LeaveCriticalSection(&cs_);
+    {
+        vcam::CsGuard guard(&cs_);
+        current_ = s;
+        hasCurrent_ = loaded;
+        lastRaw_ = raw;
+    }
 
     stopEvent_.Attach(CreateEventW(nullptr, TRUE, FALSE, nullptr));
     if (!stopEvent_) return false;
@@ -74,10 +77,9 @@ void SettingsWatcher::Stop()
 
 bool SettingsWatcher::Current(Settings& out) const
 {
-    EnterCriticalSection(&cs_);
+    vcam::CsGuard guard(&cs_);
     out = current_;
     bool ok = hasCurrent_;
-    LeaveCriticalSection(&cs_);
     return ok;
 }
 
@@ -95,24 +97,28 @@ void SettingsWatcher::PollLoop()
         std::string raw;
         if (!ReadUtf8File(path_, raw)) {
             // Файл исчез: сбрасываем базу, чтобы повторное появление сработало.
-            EnterCriticalSection(&cs_);
-            lastRaw_.clear();
-            LeaveCriticalSection(&cs_);
+            {
+                vcam::CsGuard guard(&cs_);
+                lastRaw_.clear();
+            }
             continue;
         }
 
-        EnterCriticalSection(&cs_);
-        bool same = (raw == lastRaw_);
-        LeaveCriticalSection(&cs_);
+        bool same = false;
+        {
+            vcam::CsGuard guard(&cs_);
+            same = (raw == lastRaw_);
+        }
         if (same) continue;
 
         Sleep(200); // debounce: let the writer finish
         if (!ReadUtf8File(path_, raw)) continue;
 
-        EnterCriticalSection(&cs_);
-        same = (raw == lastRaw_);
-        if (!same) lastRaw_ = raw;
-        LeaveCriticalSection(&cs_);
+        {
+            vcam::CsGuard guard(&cs_);
+            same = (raw == lastRaw_);
+            if (!same) lastRaw_ = raw;
+        }
         if (same) continue;
 
         Settings s;
@@ -120,11 +126,12 @@ void SettingsWatcher::PollLoop()
 
         bool changed;
         ChangeCallback cb;
-        EnterCriticalSection(&cs_);
-        changed = (!hasCurrent_ || s != current_);
-        if (changed) { current_ = s; hasCurrent_ = true; }
-        cb = cb_;
-        LeaveCriticalSection(&cs_);
+        {
+            vcam::CsGuard guard(&cs_);
+            changed = (!hasCurrent_ || s != current_);
+            if (changed) { current_ = s; hasCurrent_ = true; }
+            cb = cb_;
+        }
 
         if (changed && cb) {
             try {

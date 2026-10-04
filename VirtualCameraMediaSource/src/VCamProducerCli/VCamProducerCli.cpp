@@ -10,6 +10,7 @@
 
 #include "CameraDevices.h"
 #include "CameraControls.h"
+#include "CliPipelineEngine.h"
 #include "ControlServer.h"
 #include "FrameWriter.h"
 #include "ProducerApi.h"
@@ -217,214 +218,6 @@ void PrintV2SectionState()
     }
 }
 
-enum class Phase { Switch, Active, Fallback };
-
-void FlushOrSleep(FrameWriter& w)
-{
-    if (!w.FlushLast()) Sleep(kFrameMs);
-}
-
-struct Machine {
-    FrameWriter writer;
-    bool writerOpen = false;
-    std::wstring writerErr;
-    std::unique_ptr<IFrameSource> src;
-    SourceConfig target;
-    bool hasTarget = false;
-    std::wstring quality = L"source"; // Settings.quality; смена -> переоткрытие
-    Phase phase = Phase::Switch;
-    ULONGLONG switchStart = 0;
-    ULONGLONG nextAttempt = 0;
-    std::vector<uint8_t> buf; // кадр frameW x frameH BGRX (stride frameW*4)
-    uint32_t frameW = vcam::VCamWidth;
-    uint32_t frameH = vcam::VCamHeight;
-    bool nativeKnown = false; // NativeSize отдавал размер (иначе 720p-путь)
-};
-
-void CloseSource(Machine& m)
-{
-    if (m.src) {
-        m.src->Close();
-        m.src.reset();
-    }
-}
-
-// Буфер под WxH BGRX (stride W*4). false = мусор размера / сверх cap / OOM.
-bool EnsureFrameBuf(Machine& m, uint32_t w, uint32_t h)
-{
-    if (w == 0 || h == 0 || w > vcam::VCamNativeCapW || h > vcam::VCamNativeCapH)
-        return false;
-    uint64_t need = (uint64_t)h * w * 4;
-    if (need == 0 || need > vcam::VCamV2MaxFrameSize) return false;
-    if (m.frameW != w || m.frameH != h || m.buf.size() < need) {
-        try {
-            m.buf.resize((size_t)need);
-        } catch (...) {
-            return false;
-        }
-        m.frameW = w;
-        m.frameH = h;
-    }
-    return true;
-}
-
-bool WriteOne(Machine& m)
-{
-    if (!m.writerOpen) return false;
-    if (m.nativeKnown)
-        return m.writer.WriteFrameNative(m.buf.data(), (int)(m.frameW * 4),
-                                         m.frameW, m.frameH);
-    return m.writer.WriteFrame(m.buf.data(), (int)vcam::VCamStride);
-}
-
-// Один кадр из src: натив при известном NativeSize, иначе legacy 720p-путь
-// (старт 720p, пока размер неизвестен — video до первого кадра; v2 при этом
-// зеркалит 720p). false = кадра сейчас нет (caller ждёт/уходит в fallback).
-bool RenderOne(IFrameSource* src, Machine& m, std::wstring& rerr)
-{
-    uint32_t nw = 0, nh = 0;
-    if (src->NativeSize(nw, nh) && nw != 0 && nh != 0 &&
-        nw <= vcam::VCamNativeCapW && nh <= vcam::VCamNativeCapH &&
-        EnsureFrameBuf(m, nw, nh)) {
-        if (!src->Render(m.buf.data(), (int)(nw * 4), nw, nh, rerr)) return false;
-        m.nativeKnown = true;
-        return true;
-    }
-    if (!EnsureFrameBuf(m, vcam::VCamWidth, vcam::VCamHeight)) {
-        rerr = L"frame buffer alloc failed";
-        return false;
-    }
-    if (!src->Render(m.buf.data(), (int)vcam::VCamStride, rerr)) return false;
-    m.nativeKnown = false;
-    return true;
-}
-
-void EnterFallback(Machine& m, const std::wstring& reason)
-{
-    CloseSource(m);
-    m.phase = Phase::Fallback;
-    m.nextAttempt = GetTickCount64() + kFallbackRetryMs;
-    Log(L"[cli] no signal: %s (frame is not written - camera fallback)", reason.c_str());
-}
-
-void BeginSwitch(Machine& m, const SourceConfig& want, const std::wstring& quality)
-{
-    const std::wstring wantLabel = TargetLabel(want);
-    const std::wstring wasLabel = m.hasTarget ? TargetLabel(m.target) : L"-";
-    Log(L"[cli] switch: type=%s path=%s quality=%s (was type=%s path=%s quality=%s)",
-        want.type.c_str(), wantLabel.c_str(), quality.c_str(),
-        m.hasTarget ? m.target.type.c_str() : L"-", wasLabel.c_str(),
-        m.hasTarget ? m.quality.c_str() : L"-");
-    CloseSource(m);
-    m.target = want;
-    // Нормализация как в FrameWriter::SetQuality/Settings::ParseQuality:
-    // только fixed720p проходит, остальное -> source.
-    m.quality = (quality == L"fixed720p") ? L"fixed720p" : L"source";
-    m.writer.SetQuality(m.quality);
-    m.nativeKnown = false; // размер нового источника неизвестен -> старт 720p
-    m.hasTarget = true;
-    m.phase = Phase::Switch;
-    m.switchStart = GetTickCount64();
-    m.nextAttempt = m.switchStart;
-}
-
-// Шаг state machine (ядро то же, что у VCamVideoStreamProducer). Возвращает, сколько
-// мс можно ждать до следующего шага.
-DWORD Step(Machine& m)
-{
-    ULONGLONG now = GetTickCount64();
-    switch (m.phase) {
-    case Phase::Switch: {
-        if (!m.src) {
-            if (now < m.nextAttempt) {
-                FlushOrSleep(m.writer);
-                return 0;
-            }
-            auto cand = CreateSource(m.target.type);
-            if (!cand) {
-                EnterFallback(m, L"unknown source type: " + m.target.type);
-                return 0;
-            }
-            std::wstring err;
-            if (cand->Open(m.target, err)) {
-                m.src = std::move(cand);
-                Log(L"[cli] source opened: type=%s path=%s",
-                    m.target.type.c_str(), TargetLabel(m.target).c_str());
-            } else {
-                m.nextAttempt = now + kOpenRetryMs;
-                Log(L"[cli] open failed: %s", err.c_str());
-                if (now - m.switchStart >= kSwitchWindowMs) {
-                    EnterFallback(m, L"open failed: " + err);
-                    return 0;
-                }
-                FlushOrSleep(m.writer);
-                return 0;
-            }
-        }
-
-        std::wstring rerr;
-        if (RenderOne(m.src.get(), m, rerr)) {
-            bool written = WriteOne(m);
-            m.phase = Phase::Active;
-            Log(L"[cli] active: type=%s path=%s%s [%s %ux%u quality=%s]",
-                m.target.type.c_str(), TargetLabel(m.target).c_str(),
-                written ? L"" : L" (write failed)",
-                m.nativeKnown ? L"native" : L"720p",
-                m.frameW, m.frameH, m.quality.c_str());
-            return 0;
-        }
-        if (now - m.switchStart >= kSwitchWindowMs) {
-            EnterFallback(m, L"source produces no frames: " + (rerr.empty() ? L"?" : rerr));
-            return 0;
-        }
-        FlushOrSleep(m.writer);
-        return 0;
-    }
-
-    case Phase::Active: {
-        std::wstring rerr;
-        if (m.src && RenderOne(m.src.get(), m, rerr)) {
-            if (WriteOne(m))
-                return 0;
-            Sleep(kFrameMs);
-            return 0;
-        }
-        EnterFallback(m, rerr.empty() ? L"source produces no frames" : rerr);
-        return 0;
-    }
-
-    case Phase::Fallback: {
-        if (now >= m.nextAttempt) {
-            m.nextAttempt = now + kFallbackRetryMs;
-            auto cand = CreateSource(m.target.type);
-            if (cand) {
-                std::wstring err;
-                if (cand->Open(m.target, err)) {
-                    std::wstring rerr;
-                    if (RenderOne(cand.get(), m, rerr)) {
-                        m.src = std::move(cand);
-                        WriteOne(m);
-                        m.phase = Phase::Active;
-                        Log(L"[cli] signal restored: type=%s path=%s [%s %ux%u quality=%s]",
-                            m.target.type.c_str(), TargetLabel(m.target).c_str(),
-                            m.nativeKnown ? L"native" : L"720p",
-                            m.frameW, m.frameH, m.quality.c_str());
-                        return 0;
-                    }
-                } else {
-                    Log(L"[cli] retry open failed: %s", err.c_str());
-                }
-                cand->Close();
-            }
-        }
-        DWORD wait = 0;
-        if (m.nextAttempt > now) wait = (DWORD)(m.nextAttempt - now);
-        return wait > 500 ? 500 : wait;
-    }
-    }
-    return 0;
-}
-
 SourceConfig ResolveTarget(const Settings& s)
 {
     SourceConfig want = ToSourceConfig(s, g_fixType.empty() ? s.sourceType : g_fixType);
@@ -437,21 +230,8 @@ SourceConfig ResolveTarget(const Settings& s)
 
 DWORD WINAPI WorkerProc(LPVOID)
 {
-    Machine m;
-    m.buf.resize(vcam::VCamFrameSize);
-
-    std::wstring err;
-    m.writerOpen = m.writer.Open(err);
-    if (m.writerOpen) {
-        Log(L"[cli] shared memory writer ready (%s)", m.writer.SectionOpenedAs().c_str());
-        if (m.writer.IsV2Open())
-            Log(L"[cli] v2 writer ready (%s)", m.writer.V2SectionOpenedAs().c_str());
-        else
-            Log(L"[cli] v2 writer unavailable (v1-only mode)");
-    } else {
-        m.writerErr = err.empty() ? L"writer open failed" : err;
-        Log(L"[cli] writer open failed: %s", err.c_str());
-    }
+    CliPipelineEngine engine;
+    engine.Open();
 
     HANDLE waits[2] = { static_cast<HANDLE>(g_stop), static_cast<HANDLE>(g_dirty) };
     bool first = true;
@@ -471,14 +251,13 @@ DWORD WINAPI WorkerProc(LPVOID)
                 }
             }
             SourceConfig want = ResolveTarget(s);
-            if (!m.hasTarget || want != m.target || s.quality != m.quality)
-                BeginSwitch(m, want, s.quality);
+            if (!engine.HasTarget() || want != engine.Target() || s.quality != engine.Quality())
+                engine.SetTarget(want, s.quality);
         }
-        timeout = Step(m);
+        timeout = engine.Step();
     }
 
-    CloseSource(m);
-    m.writer.Close();
+    engine.Close();
     Log(L"[cli] writer closed, worker stopped");
     return 0;
 }

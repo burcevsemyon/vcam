@@ -11,6 +11,7 @@
 #include <cstring>
 
 #include "FrameCopy.h"
+#include "CriticalSectionGuard.h"
 #include "ImageLayout.h"
 #include "SharedMemoryContract.h"
 #include "WinUtil.h"
@@ -274,22 +275,24 @@ VideoFileSource::~VideoFileSource()
 
 void VideoFileSource::SetFailed(const std::wstring& reason)
 {
-    EnterCriticalSection(&cs_);
-    failed_ = true;
-    failReason_ = reason;
-    frameReady_ = false;
-    LeaveCriticalSection(&cs_);
+    {
+        vcam::CsGuard guard(&cs_);
+        failed_ = true;
+        failReason_ = reason;
+        frameReady_ = false;
+    }
     LogVideo(L"failed: " + reason);
 }
 
 bool VideoFileSource::Open(const SourceConfig& cfg, std::wstring& err)
 {
     bool reuse = false;
-    EnterCriticalSection(&cs_);
-    // Закончившийся play-once с тем же конфигом не переиспользуем: он уже
-    // отдал "ended" и кадров не даст — нужен новый проход с начала файла.
-    reuse = open_ && !failed_ && !ended_ && cfg == cfg_;
-    LeaveCriticalSection(&cs_);
+    {
+        vcam::CsGuard guard(&cs_);
+        // Закончившийся play-once с тем же конфигом не переиспользуем: он уже
+        // отдал "ended" и кадров не даст — нужен новый проход с начала файла.
+        reuse = open_ && !failed_ && !ended_ && cfg == cfg_;
+    }
     if (reuse) return true;
 
     // Текущий decode-поток обязан остановиться, иначе Open перезаписал бы
@@ -304,15 +307,16 @@ bool VideoFileSource::Open(const SourceConfig& cfg, std::wstring& err)
     // frame_ аллоцируется в DecodeLoop, когда ридер согласует нативный размер:
     // до первого кадра NativeSize=false, Render=false (нет данных).
     cfg_ = cfg;
-    EnterCriticalSection(&cs_);
-    frame_.clear();
-    frameW_ = frameH_ = 0;
-    frameReady_ = false;
-    failed_ = false;
-    failReason_.clear();
-    playOnce_ = cfg.playOnce;
-    ended_ = false;
-    LeaveCriticalSection(&cs_);
+    {
+        vcam::CsGuard guard(&cs_);
+        frame_.clear();
+        frameW_ = frameH_ = 0;
+        frameReady_ = false;
+        failed_ = false;
+        failReason_.clear();
+        playOnce_ = cfg.playOnce;
+        ended_ = false;
+    }
 
     stopEvent_.Attach(CreateEventW(nullptr, TRUE, FALSE, nullptr));
     if (!stopEvent_) {
@@ -336,13 +340,14 @@ bool VideoFileSource::Render(uint8_t* bgrx, int stride, std::wstring& err)
     if (!bgrx || stride < (int)vcam::VCamStride) { err = L"invalid target buffer"; return false; }
 
     bool ready = false;
-    EnterCriticalSection(&cs_);
-    if (!open_) err = L"video source is not open";
-    else if (failed_) err = failReason_;
-    else if (ended_) err = L"ended";
-    else if (!frameReady_) err = L"no frame decoded yet";
-    else ready = ScaleFrameTo720pLocked(bgrx, (LONG)stride);
-    LeaveCriticalSection(&cs_);
+    {
+        vcam::CsGuard guard(&cs_);
+        if (!open_) err = L"video source is not open";
+        else if (failed_) err = failReason_;
+        else if (ended_) err = L"ended";
+        else if (!frameReady_) err = L"no frame decoded yet";
+        else ready = ScaleFrameTo720pLocked(bgrx, (LONG)stride);
+    }
     return ready;
 }
 
@@ -356,41 +361,40 @@ bool VideoFileSource::Render(uint8_t* dst, int stride, uint32_t w, uint32_t h,
     }
 
     bool ready = false;
-    EnterCriticalSection(&cs_);
-    if (!open_) err = L"video source is not open";
-    else if (failed_) err = failReason_;
-    else if (ended_) err = L"ended";
-    else if (!frameReady_) err = L"no frame decoded yet";
-    else if (w == frameW_ && h == frameH_) {
-        vcam::CopyFrameRowwise(dst, (size_t)stride, frame_.data(), (size_t)frameW_ * 4,
-                               frameW_, frameH_, vcam::VCamPixelSize);
-        ready = true;
-    } else if (w == vcam::VCamWidth && h == vcam::VCamHeight) {
-        ready = ScaleFrameTo720pLocked(dst, (LONG)stride);
-    } else {
-        vcam::LetterboxBilinearEx(frame_.data(), frameW_, frameH_, (LONG)(frameW_ * 4),
-                                  dst, w, h, (LONG)stride);
-        ready = true;
+    {
+        vcam::CsGuard guard(&cs_);
+        if (!open_) err = L"video source is not open";
+        else if (failed_) err = failReason_;
+        else if (ended_) err = L"ended";
+        else if (!frameReady_) err = L"no frame decoded yet";
+        else if (w == frameW_ && h == frameH_) {
+            vcam::CopyFrameRowwise(dst, (size_t)stride, frame_.data(), (size_t)frameW_ * 4,
+                                   frameW_, frameH_, vcam::VCamPixelSize);
+            ready = true;
+        } else if (w == vcam::VCamWidth && h == vcam::VCamHeight) {
+            ready = ScaleFrameTo720pLocked(dst, (LONG)stride);
+        } else {
+            vcam::LetterboxBilinearEx(frame_.data(), frameW_, frameH_, (LONG)(frameW_ * 4),
+                                      dst, w, h, (LONG)stride);
+            ready = true;
+        }
     }
-    LeaveCriticalSection(&cs_);
     return ready;
 }
 
 bool VideoFileSource::NativeSize(uint32_t& w, uint32_t& h)
 {
-    EnterCriticalSection(&cs_);
+    vcam::CsGuard guard(&cs_);
     bool ok = open_ && !failed_ && frameReady_ && frameW_ != 0 && frameH_ != 0;
     w = ok ? frameW_ : vcam::VCamWidth;
     h = ok ? frameH_ : vcam::VCamHeight;
-    LeaveCriticalSection(&cs_);
     return ok;
 }
 
 bool VideoFileSource::Ended() const
 {
-    EnterCriticalSection(const_cast<CRITICAL_SECTION*>(&cs_));
+    vcam::CsGuard guard(&cs_);
     bool e = ended_;
-    LeaveCriticalSection(const_cast<CRITICAL_SECTION*>(&cs_));
     return e;
 }
 
@@ -409,14 +413,15 @@ bool VideoFileSource::Shutdown(DWORD timeoutMs)
     }
     stopEvent_.Close();
 
-    EnterCriticalSection(&cs_);
-    open_ = false;
-    frameReady_ = false;
-    failed_ = false;
-    failReason_.clear();
-    playOnce_ = false;
-    ended_ = false;
-    LeaveCriticalSection(&cs_);
+    {
+        vcam::CsGuard guard(&cs_);
+        open_ = false;
+        frameReady_ = false;
+        failed_ = false;
+        failReason_.clear();
+        playOnce_ = false;
+        ended_ = false;
+    }
 
     frame_.clear();
     frame_.shrink_to_fit();
@@ -496,31 +501,32 @@ void VideoFileSource::DecodeLoop()
                 BYTE* data = nullptr;
                 DWORD maxLen = 0, curLen = 0;
                 if (SUCCEEDED(buf->Lock(&data, &maxLen, &curLen)) && data) {
-                    EnterCriticalSection(&cs_);
-                    // Первый сэмпл фиксирует нативные размеры (кламп к cap);
-                    // frame_ дальше только перезаписывается (ридер размер не меняет).
-                    if (frameW_ == 0 || frameH_ == 0) {
-                        UINT fw = vs.outW, fh = vs.outH;
-                        FitCap(vs.outW, vs.outH, fw, fh);
-                        try {
-                            frame_.resize((size_t)fw * fh * 4);
-                        } catch (...) {
-                            frame_.clear();
-                            fw = fh = 0;
+                    {
+                        vcam::CsGuard guard(&cs_);
+                        // Первый сэмпл фиксирует нативные размеры (кламп к cap);
+                        // frame_ дальше только перезаписывается (ридер размер не меняет).
+                        if (frameW_ == 0 || frameH_ == 0) {
+                            UINT fw = vs.outW, fh = vs.outH;
+                            FitCap(vs.outW, vs.outH, fw, fh);
+                            try {
+                                frame_.resize((size_t)fw * fh * 4);
+                            } catch (...) {
+                                frame_.clear();
+                                fw = fh = 0;
+                            }
+                            frameW_ = fw;
+                            frameH_ = fh;
+                            if (fw && fh) {
+                                LogVideo(L"native frame: " + std::to_wstring(vs.outW) + L"x" +
+                                         std::to_wstring(vs.outH) + L" -> " +
+                                         std::to_wstring(fw) + L"x" + std::to_wstring(fh));
+                            }
                         }
-                        frameW_ = fw;
-                        frameH_ = fh;
-                        if (fw && fh) {
-                            LogVideo(L"native frame: " + std::to_wstring(vs.outW) + L"x" +
-                                     std::to_wstring(vs.outH) + L" -> " +
-                                     std::to_wstring(fw) + L"x" + std::to_wstring(fh));
+                        if (!frame_.empty()) {
+                            RenderToFrame(data, vs.outW, vs.outH, vs.stride);
+                            frameReady_ = true;
                         }
                     }
-                    if (!frame_.empty()) {
-                        RenderToFrame(data, vs.outW, vs.outH, vs.stride);
-                        frameReady_ = true;
-                    }
-                    LeaveCriticalSection(&cs_);
                     buf->Unlock();
                 }
                 buf = nullptr;
@@ -532,9 +538,10 @@ void VideoFileSource::DecodeLoop()
             if (playOnce) {
                 // Один проход сыгран: кадров больше не будет, seek не делаем.
                 // Последний кадр остаётся в frame_, но Render даёт "ended".
-                EnterCriticalSection(&cs_);
-                ended_ = true;
-                LeaveCriticalSection(&cs_);
+                {
+                    vcam::CsGuard guard(&cs_);
+                    ended_ = true;
+                }
                 LogVideo(L"end of stream (play-once, no loop)");
                 break;
             }

@@ -42,12 +42,31 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="HostPipelineEngine.cpp" />
     <ClCompile Include="Mp4Recorder.cpp" />
     <ClCompile Include="VCamVideoStreamProducer.cpp" />
+    <ClCompile Include="HostLogging.cpp" />
+    <ClCompile Include="HostRecording.cpp" />
+    <ClCompile Include="HostHotkey.cpp" />
+    <ClCompile Include="HostCameraLifecycle.cpp" />
+    <ClCompile Include="HostAutostart.cpp" />
+    <ClCompile Include="HostStatus.cpp" />
+    <ClCompile Include="HostUtils.cpp" />
+    <ClCompile Include="HostTray.cpp" />
     <ResourceCompile Include="version.rc" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="HostPipelineEngine.h" />
     <ClInclude Include="Mp4Recorder.h" />
+    <ClInclude Include="HostGlobals.h" />
+    <ClInclude Include="HostLogging.h" />
+    <ClInclude Include="HostRecording.h" />
+    <ClInclude Include="HostHotkey.h" />
+    <ClInclude Include="HostCameraLifecycle.h" />
+    <ClInclude Include="HostAutostart.h" />
+    <ClInclude Include="HostStatus.h" />
+    <ClInclude Include="HostUtils.h" />
+    <ClInclude Include="HostTray.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\ProducerCore\ProducerCore.vcxproj">

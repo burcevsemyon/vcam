@@ -3,6 +3,7 @@
 #include <sddl.h>
 
 #include "FrameCopy.h"
+#include "CriticalSectionGuard.h"
 #include "ImageLayout.h"
 #include "SectionHeaderInit.h"
 
@@ -354,21 +355,22 @@ bool FrameWriter::WriteFrame(const uint8_t* bgrx, int stride)
     }
 
     bool ok;
-    EnterCriticalSection(&cs_);
-    vcam::CopyFrameRowwise(cache_.data(), vcam::VCamStride, bgrx, (size_t)stride,
-                           vcam::VCamWidth, vcam::VCamHeight, vcam::VCamPixelSize);
-    hasFrame_ = true;
-    ok = PublishLocked();
-    // v2-зеркало 720p-входа (Sub3 переведёт хосты на WriteFrameNative).
-    if (v2open_ && cacheV2_.size() >= vcam::VCamFrameSize) {
-        // копия не нужна: V2SrcLocked при зеркале берёт cache_
-        v2W_ = vcam::VCamWidth;
-        v2H_ = vcam::VCamHeight;
-        v2Stride_ = vcam::VCamStride;
-        hasV2Frame_ = true;
-        PublishLockedV2();
+    {
+        vcam::CsGuard guard(&cs_);
+        vcam::CopyFrameRowwise(cache_.data(), vcam::VCamStride, bgrx, (size_t)stride,
+                               vcam::VCamWidth, vcam::VCamHeight, vcam::VCamPixelSize);
+        hasFrame_ = true;
+        ok = PublishLocked();
+        // v2-зеркало 720p-входа (Sub3 переведёт хосты на WriteFrameNative).
+        if (v2open_ && cacheV2_.size() >= vcam::VCamFrameSize) {
+            // копия не нужна: V2SrcLocked при зеркале берёт cache_
+            v2W_ = vcam::VCamWidth;
+            v2H_ = vcam::VCamHeight;
+            v2Stride_ = vcam::VCamStride;
+            hasV2Frame_ = true;
+            PublishLockedV2();
+        }
     }
-    LeaveCriticalSection(&cs_);
 
     if (!ok) {
         LogWriter(L"WriteFrame: publish failed");
@@ -391,7 +393,8 @@ bool FrameWriter::WriteFrameNative(const uint8_t* bgrx, int stride, uint32_t w, 
     }
 
     bool ok;
-    EnterCriticalSection(&cs_);
+    {
+        vcam::CsGuard guard(&cs_);
     // v1: даунскейл натива до 720p letterbox (MFT, fallback CPU); вход уже
     // 720p-packed — прямое копирование как в WriteFrame.
     if (w == vcam::VCamWidth && h == vcam::VCamHeight && stride == (int)vcam::VCamStride) {
@@ -425,7 +428,7 @@ bool FrameWriter::WriteFrameNative(const uint8_t* bgrx, int stride, uint32_t w, 
             PublishLockedV2();
         }
     }
-    LeaveCriticalSection(&cs_);
+    }
 
     if (!ok) {
         LogWriter(L"WriteFrameNative: publish failed");
@@ -443,10 +446,11 @@ bool FrameWriter::FlushLast()
     }
 
     bool ok;
-    EnterCriticalSection(&cs_);
-    ok = hasFrame_ && PublishLocked();
-    if (v2open_ && hasV2Frame_) PublishLockedV2();
-    LeaveCriticalSection(&cs_);
+    {
+        vcam::CsGuard guard(&cs_);
+        ok = hasFrame_ && PublishLocked();
+        if (v2open_ && hasV2Frame_) PublishLockedV2();
+    }
 
     if (!ok) {
         LogWriter(L"FlushLast: no cached frame");

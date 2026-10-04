@@ -41,7 +41,11 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="CliPipelineEngine.cpp" />
     <ClCompile Include="VCamProducerCli.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="CliPipelineEngine.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\ProducerCore\ProducerCore.vcxproj">

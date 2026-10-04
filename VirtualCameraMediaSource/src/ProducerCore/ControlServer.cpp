@@ -13,6 +13,7 @@
 #include <utility>
 
 #include "CameraControls.h"
+#include "CriticalSectionGuard.h"
 #include "SharedMemoryContract.h"
 #include "WinUtil.h"
 
@@ -260,9 +261,8 @@ ControlServer::~ControlServer()
 HRESULT ControlServer::Start(CameraControls* controls)
 {
     if (!controls) return E_INVALIDARG;
-    EnterCriticalSection(&cs_);
+    vcam::CsGuard guard(&cs_);
     if (running_) {
-        LeaveCriticalSection(&cs_);
         return S_FALSE;
     }
     // Единственный сервер в системе (иначе два держателя камеры делили бы
@@ -271,17 +271,14 @@ HRESULT ControlServer::Start(CameraControls* controls)
     ATL::CHandle m(CreateMutexW(nullptr, FALSE, kMutexName));
     if (!m) {
         DWORD e = GetLastError();
-        LeaveCriticalSection(&cs_);
         return HRESULT_FROM_WIN32(e);
     }
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
-        LeaveCriticalSection(&cs_);
         return HRESULT_FROM_WIN32(ERROR_PIPE_BUSY);
     }
     ATL::CHandle stop(CreateEventW(nullptr, TRUE, FALSE, nullptr));
     if (!stop) {
         DWORD e = GetLastError();
-        LeaveCriticalSection(&cs_);
         return HRESULT_FROM_WIN32(e);
     }
     controls_ = controls;
@@ -296,59 +293,57 @@ HRESULT ControlServer::Start(CameraControls* controls)
         stopEvent_ = nullptr;
         mutex_ = nullptr;
         controls_ = nullptr;
-        LeaveCriticalSection(&cs_);
         return HRESULT_FROM_WIN32(e);
     }
     acceptThread_ = t.Detach();
     running_ = true;
-    LeaveCriticalSection(&cs_);
     return S_OK;
 }
 
 void ControlServer::Stop()
 {
     HANDLE accept = nullptr;
-    EnterCriticalSection(&cs_);
-    if (!running_) {
-        LeaveCriticalSection(&cs_);
-        return;
+    {
+        vcam::CsGuard guard(&cs_);
+        if (!running_) {
+            return;
+        }
+        stopping_ = true;
+        if (stopEvent_) SetEvent(stopEvent_);
+        accept = acceptThread_;
+        acceptThread_ = nullptr;
+        // Рвём висящие ReadFile клиентов, чтобы их потоки вышли и join не висел.
+        for (const Client& c : clients_) {
+            if (c.pipe) DisconnectNamedPipe(c.pipe);
+        }
     }
-    stopping_ = true;
-    if (stopEvent_) SetEvent(stopEvent_);
-    accept = acceptThread_;
-    acceptThread_ = nullptr;
-    // Рвём висящие ReadFile клиентов, чтобы их потоки вышли и join не висел.
-    for (const Client& c : clients_) {
-        if (c.pipe) DisconnectNamedPipe(c.pipe);
-    }
-    LeaveCriticalSection(&cs_);
 
     if (accept) {
         WaitForSingleObject(accept, INFINITE);
         CloseHandle(accept);
     }
-    EnterCriticalSection(&cs_);
-    for (const Client& c : clients_) {
-        if (c.thread) {
-            WaitForSingleObject(c.thread, INFINITE);
-            CloseHandle(c.thread);
+    {
+        vcam::CsGuard guard(&cs_);
+        for (const Client& c : clients_) {
+            if (c.thread) {
+                WaitForSingleObject(c.thread, INFINITE);
+                CloseHandle(c.thread);
+            }
+            // pipe-хэндл закрывает сам поток клиента (ClientProc).
         }
-        // pipe-хэндл закрывает сам поток клиента (ClientProc).
+        clients_.clear();
+        if (stopEvent_) { CloseHandle(stopEvent_); stopEvent_ = nullptr; }
+        if (mutex_) { CloseHandle(mutex_); mutex_ = nullptr; }
+        controls_ = nullptr;
+        running_ = false;
+        stopping_ = false;
     }
-    clients_.clear();
-    if (stopEvent_) { CloseHandle(stopEvent_); stopEvent_ = nullptr; }
-    if (mutex_) { CloseHandle(mutex_); mutex_ = nullptr; }
-    controls_ = nullptr;
-    running_ = false;
-    stopping_ = false;
-    LeaveCriticalSection(&cs_);
 }
 
 bool ControlServer::IsRunning() const
 {
-    EnterCriticalSection(const_cast<LPCRITICAL_SECTION>(&cs_));
+    vcam::CsGuard guard(&cs_);
     bool r = running_;
-    LeaveCriticalSection(const_cast<LPCRITICAL_SECTION>(&cs_));
     return r;
 }
 
@@ -395,9 +390,11 @@ void ControlServer::AcceptLoop()
                 (L"[ControlServer] CreateNamedPipe failed: " + WinErr(e) + L"\n")
                     .c_str());
             Sleep(500);
-            EnterCriticalSection(&cs_);
-            bool stop = stopping_;
-            LeaveCriticalSection(&cs_);
+            bool stop = false;
+            {
+                vcam::CsGuard guard(&cs_);
+                stop = stopping_;
+            }
             if (stop) break;
             continue;
         }
@@ -418,16 +415,20 @@ void ControlServer::AcceptLoop()
             e = ERROR_PIPE_CONNECTED;
         } else if (!cc && e != ERROR_PIPE_CONNECTED) {
             // Клиент подключился и сразу отвалился между Create и Connect.
-            EnterCriticalSection(&cs_);
-            bool stop = stopping_;
-            LeaveCriticalSection(&cs_);
+            bool stop = false;
+            {
+                vcam::CsGuard guard(&cs_);
+                stop = stopping_;
+            }
             if (stop) break;
             continue;
         }
 
-        EnterCriticalSection(&cs_);
-        bool stop = stopping_;
-        LeaveCriticalSection(&cs_);
+        bool stop = false;
+        {
+            vcam::CsGuard guard(&cs_);
+            stop = stopping_;
+        }
         if (stop) {
             DisconnectNamedPipe(pipe);
             break;
@@ -447,9 +448,10 @@ void ControlServer::AcceptLoop()
             CloseHandle(rawPipe);
             continue;
         }
-        EnterCriticalSection(&cs_);
-        clients_.push_back({ t.Detach(), rawPipe });
-        LeaveCriticalSection(&cs_);
+        {
+            vcam::CsGuard guard(&cs_);
+            clients_.push_back({ t.Detach(), rawPipe });
+        }
     }
 }
 
@@ -491,21 +493,22 @@ void ControlServer::HandleClient(HANDLE pipe)
                                    GetCurrentProcess(), &rawMe, 0, FALSE,
                                    DUPLICATE_SAME_ACCESS);
         ATL::CHandle me(rawMe);
-        EnterCriticalSection(&cs_);
-        for (auto it = clients_.begin(); it != clients_.end(); ++it) {
-            if (dup && static_cast<HANDLE>(me) != nullptr && it->thread) {
-                DWORD idIt = GetThreadId(it->thread);
-                DWORD idMe = GetCurrentThreadId();
-                if (idIt == idMe) {
-                    self.Attach(it->thread); // закроем сами
-                    it->thread = nullptr;
-                    it->pipe = nullptr;
-                    clients_.erase(it);
-                    break;
+        {
+            vcam::CsGuard guard(&cs_);
+            for (auto it = clients_.begin(); it != clients_.end(); ++it) {
+                if (dup && static_cast<HANDLE>(me) != nullptr && it->thread) {
+                    DWORD idIt = GetThreadId(it->thread);
+                    DWORD idMe = GetCurrentThreadId();
+                    if (idIt == idMe) {
+                        self.Attach(it->thread); // закроем сами
+                        it->thread = nullptr;
+                        it->pipe = nullptr;
+                        clients_.erase(it);
+                        break;
+                    }
                 }
             }
         }
-        LeaveCriticalSection(&cs_);
     }
 }
 
@@ -516,9 +519,11 @@ std::string ControlServer::ProcessLine(const std::string& line)
 
     const JsonValue* op = FindField(f, "op");
     if (!op || !op->isString) return ErrorResponse(E_INVALIDARG, "missing op");
-    EnterCriticalSection(&cs_);
-    CameraControls* ctl = controls_;
-    LeaveCriticalSection(&cs_);
+    CameraControls* ctl = nullptr;
+    {
+        vcam::CsGuard guard(&cs_);
+        ctl = controls_;
+    }
 
     if (op->str == "list") {
         std::string out("{\"ok\":true,\"hr\":0,\"controls\":[");

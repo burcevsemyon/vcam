@@ -11,6 +11,7 @@
 #include <new>
 #include "../Common/SharedMemoryContract.h"
 #include "../Common/MappedViewOfFilePtr.h"
+#include "../Common/CriticalSectionGuard.h"
 
 #pragma comment(lib, "windowscodecs.lib")
 #pragma comment(lib, "advapi32.lib")
@@ -386,15 +387,16 @@ static DWORD WINAPI SettingsWatcherThread(LPVOID)
         std::unique_ptr<BYTE[]> tmp(new (std::nothrow) BYTE[vcam::VCamFrameSize]);
         if (!tmp) continue;
         if (TryLoadIntoBuffer(s, tmp.get())) {
-            EnterCriticalSection(&g_frameCs);
-            delete[] g_pFrame;
-            g_pFrame = tmp.release();
-            g_currentImagePath = s.imagePath;
-            g_currentMode = s.mode;
-            g_currentCrop = s.crop;
-            g_currentCropKeepAspect = s.cropKeepAspect;
-            g_currentMediaMode = s.mediaMode;
-            LeaveCriticalSection(&g_frameCs);
+            {
+                vcam::CsGuard guard(&g_frameCs);
+                delete[] g_pFrame;
+                g_pFrame = tmp.release();
+                g_currentImagePath = s.imagePath;
+                g_currentMode = s.mode;
+                g_currentCrop = s.crop;
+                g_currentCropKeepAspect = s.cropKeepAspect;
+                g_currentMediaMode = s.mediaMode;
+            }
             wprintf(L"[settings] reloaded: %s (mode=%s)\n", g_currentImagePath.c_str(), ModeName(g_currentMode));
             fflush(stdout);
             if (modeChanged) WarnIfVideoMode(s);
@@ -487,9 +489,10 @@ int wmain(int argc, wchar_t* argv[])
         BYTE* pFrameSlot = pBase + sizeof(vcam::VCamSectionHeader) + (SIZE_T)slot * vcam::VCamFrameSize;
 
         _InterlockedExchangeAdd64((volatile LONGLONG*)&pHeader->seq, 1);
-        EnterCriticalSection(&g_frameCs);
-        memcpy(pFrameSlot, g_pFrame, vcam::VCamFrameSize);
-        LeaveCriticalSection(&g_frameCs);
+        {
+            vcam::CsGuard guard(&g_frameCs);
+            memcpy(pFrameSlot, g_pFrame, vcam::VCamFrameSize);
+        }
         pHeader->frameWriteIndex = slot;
         QueryPerformanceCounter(&counter);
         pHeader->lastFrameTime100ns = (UINT64)((counter.QuadPart - startTime.QuadPart) * 10000000 / freq.QuadPart);

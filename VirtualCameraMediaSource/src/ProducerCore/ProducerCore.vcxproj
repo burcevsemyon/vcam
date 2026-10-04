@@ -41,6 +41,7 @@
     <ClCompile Include="CameraControls.cpp" />
     <ClCompile Include="ControlServer.cpp" />
     <ClCompile Include="FrameWriter.cpp" />
+    <ClCompile Include="PipelineEngine.cpp" />
     <ClCompile Include="Settings.cpp" />
     <ClCompile Include="SettingsWatcher.cpp" />
     <ClCompile Include="SourceFactory.cpp" />
@@ -53,6 +54,7 @@
     <ClInclude Include="CameraSource.h" />
     <ClInclude Include="CameraControls.h" />
     <ClInclude Include="ControlServer.h" />
+    <ClInclude Include="PipelineEngine.h" />
     <ClInclude Include="Settings.h" />
     <ClInclude Include="SettingsWatcher.h" />
     <ClInclude Include="StaticImageSource.h" />

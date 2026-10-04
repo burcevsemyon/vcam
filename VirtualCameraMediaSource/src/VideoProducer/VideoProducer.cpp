@@ -14,6 +14,7 @@
 #include <new>
 #include "../Common/SharedMemoryContract.h"
 #include "../Common/MappedViewOfFilePtr.h"
+#include "../Common/CriticalSectionGuard.h"
 #include "../Common/WinUtil.h"
 
 using vcam::HrHex;
@@ -457,9 +458,10 @@ static DWORD WINAPI DecodeThread(LPVOID)
 
     while (WaitForSingleObject(g_hStopEvent, 0) != WAIT_OBJECT_0) {
         std::wstring want;
-        EnterCriticalSection(&g_targetCs);
-        want = g_targetPath;
-        LeaveCriticalSection(&g_targetCs);
+        {
+            vcam::CsGuard guard(&g_targetCs);
+            want = g_targetPath;
+        }
 
         if (want != activePath) {
             VideoState next;
@@ -532,9 +534,10 @@ static DWORD WINAPI DecodeThread(LPVOID)
                 BYTE* data = nullptr;
                 DWORD maxLen = 0, curLen = 0;
                 if (SUCCEEDED(buf->Lock(&data, &maxLen, &curLen)) && data) {
-                    EnterCriticalSection(&g_frameCs);
-                    RenderToFrame(data, vs.outW, vs.outH, vs.stride, g_pFrame);
-                    LeaveCriticalSection(&g_frameCs);
+                    {
+                        vcam::CsGuard guard(&g_frameCs);
+                        RenderToFrame(data, vs.outW, vs.outH, vs.stride, g_pFrame);
+                    }
                     buf->Unlock();
                     if (!firstFrameLogged) {
                         wprintf(L"[video] first frame rendered (%ux%u)\n", vs.outW, vs.outH);
@@ -609,9 +612,10 @@ static DWORD WINAPI SettingsWatcherThread(LPVOID)
             LogMediaMode(s.mediaMode);
         }
         if (pathChanged) {
-            EnterCriticalSection(&g_targetCs);
-            g_targetPath = want;
-            LeaveCriticalSection(&g_targetCs);
+            {
+                vcam::CsGuard guard(&g_targetCs);
+                g_targetPath = want;
+            }
             wprintf(L"[settings] mediaPath -> %s\n", want.c_str());
             fflush(stdout);
         }
@@ -703,9 +707,10 @@ int wmain(int argc, wchar_t* argv[])
         BYTE* pFrameSlot = pBase + sizeof(vcam::VCamSectionHeader) + (SIZE_T)slot * vcam::VCamFrameSize;
 
         _InterlockedExchangeAdd64((volatile LONGLONG*)&pHeader->seq, 1);
-        EnterCriticalSection(&g_frameCs);
-        memcpy(pFrameSlot, g_pFrame, vcam::VCamFrameSize);
-        LeaveCriticalSection(&g_frameCs);
+        {
+            vcam::CsGuard guard(&g_frameCs);
+            memcpy(pFrameSlot, g_pFrame, vcam::VCamFrameSize);
+        }
         pHeader->frameWriteIndex = slot;
         QueryPerformanceCounter(&counter);
         pHeader->lastFrameTime100ns = (UINT64)((counter.QuadPart - startTime.QuadPart) * 10000000 / freq.QuadPart);
