@@ -2,7 +2,7 @@
 
 Виртуальная камера (Media Foundation): in-proc COM DLL + shared-memory
 пайплайн продьюсеров кадров. Весь код — в `VirtualCameraMediaSource/`
-(там же `.sln`, `README.md`, память задач `*.memory.md`).
+(там же `.sln`, `README.md`).
 
 ## Структура (`VirtualCameraMediaSource/src/`)
 
@@ -38,26 +38,63 @@
   питфолы, ручная диагностика): skill **vcam-e2e**
   (`.agents/skills/vcam-e2e/SKILL.md`) — читать его, а не пересматривать скрипт.
 - Постоянного unit-тест-проекта нет; UI round-trip тесты создаются временным
-  проектом в `%TEMP%` (см. `vcam-video-ui.memory.md`).
+  проектом в `%TEMP%`.
 
 ## Настройки и среда
 
 - `%APPDATA%\VCam\settings.json` — новая схема
-  `{"source":{"type":"static|video"},"static":{...},"video":{...},"autostart":bool}`;
+  `{"source":{"type":"static|video|camera"},"static":{...},"video":{...},"camera":{...},"autostart":bool}`;
   пишет UI и e2e, читают хост и CLI; **UTF-8 без BOM**
   (`Set-Content -Encoding UTF8` даёт BOM — не использовать); файл не блокируется,
   изменения подхватываются на лету.
-- Камера: 1280×720@30, fallback при отсутствии провайдера — кэш последнего
-  кадра, без кэша — NO SIGNAL.
+- Fallback при остановке продьюсера — кэш последнего кадра в течение 7 с, затем NO SIGNAL.
 
-## Git и память
+## Критичные питфолы
 
-- Ветка `main`; memory-файлы `*.memory.md` и `memory.md` (в `VirtualCameraMediaSource/`) —
-  **локальные, в git НЕ идут** (в `.gitignore`: `memory.md`, `*.memory.md`); в репо — только
-  код и артефакты.
-- Перед доработкой читать память релевантной задачи
-  (`vcam-producer*.memory.md`, `vcam-video*.memory.md`) — там факты, фиксы и
-  питфолы; свой статус писать в `<task>.memory.md`.
+### MediaSource.dll / COM
+- **ThreadingModel=Both обязателен** в HKLM\SOFTWARE\Classes\CLSID\InprocServer32 — иначе MTA-клиент получает кросспартментный COM-прокси, QI IMFMediaSource2 → E_NOINTERFACE, кадры не идут (0xC00D3E9B = MF_E_MEDIA_SOURCE_WRONGSTATE, НЕ SHUTDOWN).
+- **Деплой MediaSource.dll** — только через ритуал FrameServer: `sc stop FrameServer` → copy → `sc start FrameServer` (иначе старый DLL в svchost).
+- **MF API**: IMFSourceReader не имеет GetStreamCount/SetPosition; IMFMediaType — только SetGUID (нет SetMajorType/SetSubtype); `MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING=TRUE` обязателен для RGB32.
+- **CComPtr**: `#include <cguid.h>` после windows.h (INITGUID не даёт GUID_NULL); порядок Release в Shutdown/Close критичен — `= nullptr` до MFShutdown/CoUninitialize.
+
+### Камера / захват
+- **trySet S_OK ≠ итоговый формат** — верить только GetCurrentMediaType + ReadSample (конкурентный потребитель может залочить пин).
+- **MFCreateSourceReaderFromURL(symlink) → 0x80070002** — рабочий путь: ActivateObject + MFCreateSourceReaderFromMediaSource.
+- **MF symlink** читается из `MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK` ({58F0AAD8}), НЕ из VIDCAP_GUID.
+- **NV12-конверт**: stride натива может быть с паддингом; тик 0x100 (NATIVEMEDIATYPECHANGED) — не молчание, нужен requery.
+- **Прокси контролов камеры**: `E_PROP_ID_UNSUPPORTED` (0x8007490) — нормализованный ответ; отдельный pipe-клиент (MediaSource.vcxproj не линкует ProducerCore).
+
+### Запись / Mp4Recorder
+- **MF RGB32 = bottom-up DIB** — при копировании в MF-буфер строки флипаются (иначе видео вверх ногами).
+- **Finalize обязателен** — иначе битый mp4; стопать запись ДО выхода worker'а.
+- **SinkWriter игнорирует MF_MT_DEFAULT_STRIDE** — конвертер не применяет атрибут, только явный флип.
+
+### Эффекты / GPU
+- **GPUPixel**: рантайм /MT (общий CRT); пребилд отвергнут (AV в nvoglv64); патч define.h (GPUPIXEL_STATIC_LINK → пустой API); апстрим-патч шейдеров (highp/lowp/mediump удалять для десктопа).
+- **frei0r**: требует w/h кратных 8; swap R↔B для RGBA-плагинов; scanline0r — BGRA (без swap); glitch0r/rgbnoise — глобальный rand() под мьютексом.
+- **Beauty-фильтр GPUPixel** отложен — нужны res/lookup_*.png + SetResourcePath, без них AV вне SEH.
+
+### UI / .NET
+- **.NET 10**: `Environment.GetFolderPath(ApplicationData)` не слушает env `APPDATA` — редирект не работает; test-seam `filePath` в Settings.Load/Save.
+- **PowerShell 5.1**: `.ps1` с кириллицей писать UTF-8 с BOM; `FindWindowW(cls, $null)` передаёт "" не NULL; `Process.ExitCode` пуст при `-RedirectStandardOutput` — обход через Win32-наблюдатель.
+- **C# pipe**: `NamedPipeClientStream` не поддерживает ReadTimeout/WriteTimeout — дедлайн через ReadAsync+Wait; CS0177 — `&&` в expression-bodied с out-параметрами запрещён; WFO1000 — публичный setter на UserControl требует DesignerSerializationVisibility(Hidden).
+
+### Профили / настройки
+- **Профили = полные снапшоты** — Apply переписывает settings.json побайтово копией профиля (File.Copy); EnsureSeeded встраивает живые source-секции.
+- **Сиды с пустым static.path → NO SIGNAL** — честный снапшот; UI показывает warn-хинт.
+- **Transient-файлы** (%APPDATA%\VCam\): `record_command.json`, `record_state.json`, `hotkey_state.json` — при крахе хоста могут висеть; стартовый worker удаляет stale.
+
+### Установщик
+- **Версия 0.0.3**; нумерация «по порядку релизов»; фикс «после ребута нет сигнала» — writer-цепочка Create(Global) → Open(Global) → Create(Local).
+- **Ярлык без окон** — `wscript.exe` + `vcam_run_host.vbs` (powershell -WindowStyle Hidden мелькает).
+
+### E2E
+- **Registrar жив перед прогоном** — иначе inspect count=1, фазы D/E падают «not enumerated».
+- **HKCU-приоритет** — bogus-путь → 0x8007007E (HKCU выигрывает у HKLM).
+- **CaptureTest device-индекс** — в VM = 0 (одна камера); на хосте = 1.
+
+### Превью
+- **GDI+ HighQualityBicubic** — MAE 0.023 к эталону (nearest даёт 7.174); ~11 мс/кадр (бюджет 4 мс превышен, кадры не срываются).
 
 ## Конвенции
 
