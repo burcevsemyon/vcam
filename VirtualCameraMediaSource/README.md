@@ -74,9 +74,12 @@
    ```
    Собирает решение, регистрирует камеру, запускает `VCamProducerCli.exe run`
    (фаза A — с overrides `--type video --path`, фаза B — hot-switch static→video
-   через перезапись settings.json, фаза C — физическая камера: `list-devices`,
+   через перезапись settings.json, фазы G/H — dual-write v1+v2 и ladder 1080p +
+   quality fixed720p, фаза C — физическая камера: `list-devices`,
    `run --type camera --device <id>`, негатив с несуществующим id → NO SIGNAL;
-   без камер в системе фаза C помечается SKIP), проверяет кадры `CaptureTest`
+   без камер в системе фаза C помечается SKIP; фазы D/E — device-режим через
+   прокси FrameServer 1280×720 + 640×480; фаза F — стоп продюсера → fallback →
+   рестарт), проверяет кадры `CaptureTest`
    (движение / статика) и логи CLI. `settings.json` сохраняется в бэкап и
    восстанавливается байт-в-байт в конце. Exit code 0 = успех.
 5. Проверка: камера видна в «Параметры → Bluetooth и устройства → Камеры» и в любых приложениях;
@@ -257,6 +260,7 @@ src/Common/
   SharedMemoryFrameSource.h/.cpp consumer: ожидание события, копия кадра (seqlock), fallback
   SampleAllocatorControl.h       IKS_SAMPLEALLOCATORCONTROL
   ProducerApi.h                  SourceConfig, IFrameSource (общий API продюсеров)
+  CriticalSectionGuard.h         header-only RAII-гард `vcam::CsGuard` (все локи проекта — через него)
 src/ProducerCore/
   Settings.h/.cpp                чтение/миграция/запись settings.json, ToSourceConfig
   SettingsWatcher.h/.cpp         опрос 500 мс + debounce 200 мс, событие dirty
@@ -266,9 +270,11 @@ src/ProducerCore/
   CameraDevices.h/.cpp           перечисление камер (id + friendly name)
   StaticImageSource.h/.cpp       PNG/JPG/BMP -> RGB32 (WIC, fit/cover/crop)
   SourceFactory.h/.cpp           тип -> источник
+  PipelineEngine.h/.cpp          общее ядро state machine (Switch/Active/Fallback, writer open, hot-switch окно, `switch:`-лог); хост и CLI наследуют (`HostPipelineEngine` + Mp4Recorder, `CliPipelineEngine` + CliLog)
 src/VCamVideoStreamProducer/
   Mp4Recorder.h/.cpp             запись эфира: SinkWriter H.264 8 Мбит/с 720p@30 (bottom-up флип!), Finalize
   (хост)                         хоткеи RegisterHotKey, borrow/play-once/автовозврат, record state/command JSON, settings-CS
+  Host*.cpp/.h (хост)            разбиение VCamVideoStreamProducer.cpp: Globals/Logging/Recording/Hotkey/CameraLifecycle/Autostart/Status/Utils/Tray
 src/MediaSource/
   MediaSource.h/.cpp             IMFMediaSource(+Ex) + IKsControl + IMFGetService
   MediaStream.h/.cpp             IMFMediaStream2: sync RequestSample, RGB32→NV12

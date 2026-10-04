@@ -27,6 +27,7 @@
 
 - exit 0 = успех; csproj (`VCamSettingsUi`) — сначала `dotnet restore`.
 - MSB3027 (locked exe) — закрыть запущенные exe проекта перед сборкой.
+- **LNK1104 (лочит build-DLL)** — Registrar-holder (`add VCam hold`) грузит build-копию MediaSource.dll → kill holder → build → re-add hold.
 - `/utf-8` для всех C++ задано в `Directory.Build.targets` (кириллица в
   wide-литералах безопасна; без него MSVC читал UTF-8 как CP1251 → кракозябры).
 
@@ -92,6 +93,7 @@
 - **Registrar жив перед прогоном** — иначе inspect count=1, фазы D/E падают «not enumerated».
 - **HKCU-приоритет** — bogus-путь → 0x8007007E (HKCU выигрывает у HKLM).
 - **CaptureTest device-индекс** — в VM = 0 (одна камера); на хосте = 1.
+- **E2E матчит подстроки логов CLI** — `writer ready`, `[cli] switch:`, `[cli] active:`, `frames are being written`; переименование лог-строк ломает фазы (проверено: молчание `SetTarget` роняло B/H).
 
 ### Превью
 - **GDI+ HighQualityBicubic** — MAE 0.023 к эталону (nearest даёт 7.174); ~11 мс/кадр (бюджет 4 мс превышен, кадры не срываются).
