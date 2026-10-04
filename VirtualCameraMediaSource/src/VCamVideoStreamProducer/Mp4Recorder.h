@@ -57,6 +57,9 @@ public:
     // Один 720p-кадр (kFrameSize байт). false = фатально (читай LastError,
     // вызывай Stop для финализации огрызка); дроп от долга — НЕ false.
     bool WriteFrame720p(const uint8_t* bgrxTopDown);
+    // Произвольный нативный кадр WxH BGRX: через letterbox scale приводится к 720p
+    // и пишется в рекордер независимо от Shared Memory шины.
+    bool WriteFrameNative(const uint8_t* bgrx, int stride, uint32_t w, uint32_t h);
     // Finalize + освобождение. Идемпотентна; деструктор зовёт её же.
     void Stop();
 

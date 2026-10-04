@@ -1253,15 +1253,13 @@ void StopRecording(Machine& m, const std::wstring& reason)
         err.empty() ? L"" : L", ", err.empty() ? L"" : err.c_str());
 }
 
-// Один эфирный кадр в запись: вызывается после УСПЕШНОГО WriteOne, т.е. кэш
-// writer'а свежий (кадры с хука PostProcessFrame). Ошибка записи — стоп записи, эфир живёт.
+// Один эфирный кадр в запись: вызывается после рендеринга и пост-процессинга кадра
+// (независимо от успеха записи в shared memory шину). Ошибка записи — стоп записи, эфир живёт.
 void RecordEtherFrame(Machine& m)
 {
     if (!m.rec.IsOpen()) return;
-    if (!m.writer.HasFrame720p()) return;
-    const auto& f = m.writer.LastFrame720p();
-    if (f.size() < Mp4Recorder::kFrameSize) return;
-    if (!m.rec.WriteFrame720p(f.data())) {
+    if (m.buf.empty() || m.frameW == 0 || m.frameH == 0) return;
+    if (!m.rec.WriteFrameNative(m.buf.data(), (int)(m.frameW * 4), m.frameW, m.frameH)) {
         if (!m.recErrLogged) {
             m.recErrLogged = true;
             Log(L"[host] record write failed: %s - recording stopped, эфир продолжается (fail-open)",
@@ -1387,7 +1385,7 @@ DWORD Step(Machine& m)
         if (RenderOne(m.src.get(), m, rerr)) {
             PostProcessFrame(m.buf.data(), (int)(m.frameW * 4), m.frameW, m.frameH);
             bool written = WriteOne(m);
-            if (written) RecordEtherFrame(m);
+            RecordEtherFrame(m);
             m.phase = Phase::Active;
             SetActiveStatus(m);
             Log(L"[host] active: type=%s path=%s%s [%s %ux%u quality=%s]",
@@ -1409,11 +1407,11 @@ DWORD Step(Machine& m)
         std::wstring rerr;
         if (m.src && RenderOne(m.src.get(), m, rerr)) {
             PostProcessFrame(m.buf.data(), (int)(m.frameW * 4), m.frameW, m.frameH);
-            if (WriteOne(m)) {
-                RecordEtherFrame(m);
-                return 0;
+            bool written = WriteOne(m);
+            RecordEtherFrame(m);
+            if (!written) {
+                Sleep(kFrameMs);
             }
-            Sleep(kFrameMs);
             return 0;
         }
         EnterFallback(m, rerr.empty() ? L"источник не даёт кадры" : rerr);
@@ -1431,7 +1429,8 @@ DWORD Step(Machine& m)
                     if (RenderOne(cand.get(), m, rerr)) {
                         m.src = std::move(cand);
                         PostProcessFrame(m.buf.data(), (int)(m.frameW * 4), m.frameW, m.frameH);
-                        if (WriteOne(m)) RecordEtherFrame(m);
+                        bool written = WriteOne(m);
+                        RecordEtherFrame(m);
                         m.phase = Phase::Active;
                         SetActiveStatus(m);
                         Log(L"[host] signal restored: type=%s path=%s [%s %ux%u quality=%s]",

@@ -1,4 +1,5 @@
 #include "Mp4Recorder.h"
+#include "ImageLayout.h"
 
 #include <ctime>
 #include <vector>
@@ -180,6 +181,24 @@ bool Mp4Recorder::WriteFrame720p(const uint8_t* bgrxTopDown)
     if (ok)
         debtMs_ += (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / (double)qpcFreq_;
     return ok;
+}
+
+bool Mp4Recorder::WriteFrameNative(const uint8_t* bgrx, int stride, uint32_t w, uint32_t h)
+{
+    if (!open_ || !writer_ || !bgrx) return false;
+    if (w == kW && h == kH && stride == (int)kStride) {
+        return WriteFrame720p(bgrx);
+    }
+    static thread_local std::vector<uint8_t> scratch;
+    if (scratch.size() < kFrameSize) {
+        try {
+            scratch.resize(kFrameSize);
+        } catch (...) {
+            return false;
+        }
+    }
+    vcam::LetterboxBilinearEx(bgrx, w, h, (LONG)stride, scratch.data(), kW, kH, (LONG)kStride);
+    return WriteFrame720p(scratch.data());
 }
 
 bool Mp4Recorder::WriteSample(const uint8_t* bgrxTopDown)
