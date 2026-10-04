@@ -773,6 +773,94 @@ bool CMediaStream::DeliverFromV2(BYTE* pBits, UINT32 w, UINT32 h, bool useNv12,
     return false; // NV12 не-720 — старый v1-путь (NV12-640 бит-в-бит)
 }
 
+HRESULT CMediaStream::DeliverLocalSample(BYTE*& pBits, ATL::CComPtr<IMFMediaBuffer>& pBuffer,
+                                         ATL::CComPtr<IMFSample>& pSample, UINT32 w, UINT32 h, bool useNv12,
+                                         bool haveV2, UINT32 v2w, UINT32 v2h, UINT32 v2stride,
+                                         UINT32 rgbBytes, UINT32 nv12Bytes)
+{
+    HRESULT hr = MFCreateMemoryBuffer((DWORD)(useNv12 ? nv12Bytes : rgbBytes), &pBuffer);
+    if (FAILED(hr)) return hr;
+    hr = pBuffer->Lock(&pBits, nullptr, nullptr);
+    if (FAILED(hr)) { pBuffer = nullptr; return hr; }
+
+    const UINT32 needed = useNv12 ? nv12Bytes : rgbBytes;
+    if (haveV2 && DeliverFromV2(pBits, w, h, useNv12, v2w, v2h, v2stride)) {
+        // Кадр из v2 (натив 1:1 / letterbox-fit / NV12-720).
+    }
+    else if (!haveV2 && m_pNv12Scratch != nullptr &&
+             ((w == vcam::VCamWidth && h == vcam::VCamHeight) || (w == 640 && h == 480))) {
+        if (!useNv12 && w == vcam::VCamWidth && h == vcam::VCamHeight) {
+            SharedMemoryFrameSource::Instance().AcquireFrame(pBits, vcam::VCamReadyTimeoutMs);
+        } else {
+            SharedMemoryFrameSource::Instance().AcquireFrame(m_pNv12Scratch.get(), vcam::VCamReadyTimeoutMs);
+            WriteFrameData(m_pNv12Scratch.get(), pBits, w, h, useNv12);
+        }
+    }
+    else if (!haveV2 && m_pNv12Scratch != nullptr) {
+        VCamDiagEvent(L"Stream.DeliverNextSample no v2 for %ux%u -> zero fill", w, h);
+        RtlZeroMemory(pBits, needed);
+    }
+    else if (haveV2 && m_pNv12Scratch != nullptr) {
+        SharedMemoryFrameSource::Instance().AcquireFrame(m_pNv12Scratch.get(), vcam::VCamReadyTimeoutMs);
+        WriteFrameData(m_pNv12Scratch.get(), pBits, w, h, useNv12);
+    }
+    else {
+        RtlZeroMemory(pBits, needed);
+    }
+    pBuffer->Unlock();
+
+    hr = MFCreateSample(&pSample);
+    if (FAILED(hr)) { pBuffer = nullptr; return hr; }
+    HRESULT hrCur = pBuffer->SetCurrentLength(needed);
+    if (FAILED(hrCur)) { pBuffer = nullptr; return hrCur; }
+    hr = pSample->AddBuffer(pBuffer);
+    pBuffer = nullptr;
+    if (FAILED(hr)) { pSample = nullptr; return hr; }
+    return S_OK;
+}
+
+HRESULT CMediaStream::DeliverSharedSample(BYTE* pBits, ATL::CComPtr<IMFMediaBuffer>& pBuffer,
+                                          UINT32 w, UINT32 h, bool useNv12,
+                                          bool haveV2, UINT32 v2w, UINT32 v2h, UINT32 v2stride,
+                                          DWORD needed, DWORD maxLen)
+{
+    HRESULT hr = S_OK;
+    VCamDiagLog(L"Stream.DeliverNextSample before AcquireFrame");
+    if (haveV2 && maxLen >= needed &&
+        DeliverFromV2(pBits, w, h, useNv12, v2w, v2h, v2stride)) {
+        hr = pBuffer->SetCurrentLength(needed);
+    }
+    else if (!haveV2 && m_pNv12Scratch != nullptr && maxLen >= needed &&
+             ((w == vcam::VCamWidth && h == vcam::VCamHeight) || (w == 640 && h == 480))) {
+        if (!useNv12 && w == vcam::VCamWidth && h == vcam::VCamHeight) {
+            SharedMemoryFrameSource::Instance().AcquireFrame(pBits, vcam::VCamReadyTimeoutMs);
+        } else {
+            SharedMemoryFrameSource::Instance().AcquireFrame(m_pNv12Scratch.get(), vcam::VCamReadyTimeoutMs);
+            WriteFrameData(m_pNv12Scratch.get(), pBits, w, h, useNv12);
+        }
+        hr = pBuffer->SetCurrentLength(needed);
+    }
+    else if (!haveV2 && maxLen >= needed) {
+        VCamDiagEvent(L"Stream.DeliverNextSample no v2 for %ux%u -> empty sample", w, h);
+        RtlZeroMemory(pBits, needed);
+        hr = pBuffer->SetCurrentLength(0);
+    }
+    else if (haveV2 && m_pNv12Scratch != nullptr && maxLen >= needed) {
+        SharedMemoryFrameSource::Instance().AcquireFrame(m_pNv12Scratch.get(), vcam::VCamReadyTimeoutMs);
+        WriteFrameData(m_pNv12Scratch.get(), pBits, w, h, useNv12);
+        hr = pBuffer->SetCurrentLength(needed);
+    }
+    else {
+        RtlZeroMemory(pBits, needed);
+        hr = pBuffer->SetCurrentLength(0);
+        VCamDiagEvent(L"Stream.DeliverNextSample buffer too small maxLen=%u needed=%u", maxLen, needed);
+    }
+    VCamDiagLog(L"Stream.DeliverNextSample AcquireFrame done, before Unlock");
+    pBuffer->Unlock();
+    VCamDiagLog(L"Stream.DeliverNextSample Unlock done");
+    return hr;
+}
+
 HRESULT CMediaStream::DeliverNextSample(IUnknown* pToken)
 {
     VCamDiagLog(L"Stream.DeliverNextSample");
@@ -817,46 +905,8 @@ HRESULT CMediaStream::DeliverNextSample(IUnknown* pToken)
     }
 
     if (!shared) {
-        // Fallback: local buffer (only readable in-session).
-        hr = MFCreateMemoryBuffer((DWORD)(useNv12 ? nv12Bytes : rgbBytes), &pBuffer);
+        hr = DeliverLocalSample(pBits, pBuffer, pSample, w, h, useNv12, haveV2, v2w, v2h, v2stride, rgbBytes, nv12Bytes);
         if (FAILED(hr)) return hr;
-        hr = pBuffer->Lock(&pBits, nullptr, nullptr);
-        if (SUCCEEDED(hr)) {
-            if (haveV2 && DeliverFromV2(pBits, w, h, useNv12, v2w, v2h, v2stride)) {
-                // Кадр из v2 (натив 1:1 / letterbox-fit / NV12-720).
-            }
-            else if (!haveV2 && m_pNv12Scratch != nullptr &&
-                     ((w == vcam::VCamWidth && h == vcam::VCamHeight) || (w == 640 && h == 480))) {
-                if (!useNv12 && w == vcam::VCamWidth && h == vcam::VCamHeight) {
-                    // RGB32 1280x720: буфер создан ровно под rgbBytes ==
-                    // VCamFrameSize — пишем кадр сразу в sample (без копии
-                    // scratch→sample); NV12/640-ветки идут через scratch.
-                    SharedMemoryFrameSource::Instance().AcquireFrame(pBits, vcam::VCamReadyTimeoutMs);
-                } else {
-                    SharedMemoryFrameSource::Instance().AcquireFrame(m_pNv12Scratch.get(), vcam::VCamReadyTimeoutMs);
-                    WriteFrameData(m_pNv12Scratch.get(), pBits, w, h, useNv12);
-                }
-            } else if (!haveV2 && m_pNv12Scratch != nullptr) {
-                // Протухший натив без живого v2 из v1 не произвести (там
-                // только 720p): нулевой кадр вместо переполнения WriteFrameData.
-                VCamDiagEvent(L"Stream.DeliverNextSample no v2 for %ux%u -> zero fill", w, h);
-                RtlZeroMemory(pBits, (DWORD)(useNv12 ? nv12Bytes : rgbBytes));
-            } else if (haveV2 && m_pNv12Scratch != nullptr) {
-                // v2 жив, но цель — NV12 не-720: старый путь (NV12-640 бит-в-бит).
-                SharedMemoryFrameSource::Instance().AcquireFrame(m_pNv12Scratch.get(), vcam::VCamReadyTimeoutMs);
-                WriteFrameData(m_pNv12Scratch.get(), pBits, w, h, useNv12);
-            } else {
-                RtlZeroMemory(pBits, (DWORD)(useNv12 ? nv12Bytes : rgbBytes));
-            }
-            pBuffer->Unlock();
-        }
-        hr = MFCreateSample(&pSample);
-        if (FAILED(hr)) { pBuffer = nullptr; return hr; }
-        HRESULT hrCur = pBuffer->SetCurrentLength(useNv12 ? nv12Bytes : rgbBytes);
-        if (FAILED(hrCur)) { pBuffer = nullptr; return hr; }
-        hr = pSample->AddBuffer(pBuffer);
-        pBuffer = nullptr;
-        if (FAILED(hr)) { pSample = nullptr; return hr; }
         VCamDiagLog(L"Stream.DeliverNextSample local buffer (no shared allocator)");
     }
     else {
@@ -872,48 +922,7 @@ HRESULT CMediaStream::DeliverNextSample(IUnknown* pToken)
             VCamDiagEvent(L"Stream.DeliverNextSample Lock hr=0x%08X bits=%p maxLen=%u curLen=%u", (unsigned)hr, (const void*)pBits, maxLen, curLen);
         if (SUCCEEDED(hr)) {
             const DWORD needed = useNv12 ? nv12Bytes : rgbBytes;
-            VCamDiagLog(L"Stream.DeliverNextSample before AcquireFrame");
-            if (haveV2 && maxLen >= needed &&
-                DeliverFromV2(pBits, w, h, useNv12, v2w, v2h, v2stride)) {
-                // Кадр из v2 (натив 1:1 / letterbox-fit / NV12-720).
-                hr = pBuffer->SetCurrentLength(needed);
-            }
-            else if (!haveV2 && m_pNv12Scratch != nullptr && maxLen >= needed &&
-                     ((w == vcam::VCamWidth && h == vcam::VCamHeight) || (w == 640 && h == 480))) {
-                if (!useNv12 && w == vcam::VCamWidth && h == vcam::VCamHeight) {
-                    // RGB32 1280x720: maxLen >= needed == VCamFrameSize — прямая
-                    // запись кадра в буфер sample (без копии scratch→sample);
-                    // NV12/640-ветки остаются на scratch (их WriteFrameData).
-                    SharedMemoryFrameSource::Instance().AcquireFrame(pBits, vcam::VCamReadyTimeoutMs);
-                } else {
-                    SharedMemoryFrameSource::Instance().AcquireFrame(m_pNv12Scratch.get(), vcam::VCamReadyTimeoutMs);
-                    WriteFrameData(m_pNv12Scratch.get(), pBits, w, h, useNv12);
-                }
-                hr = pBuffer->SetCurrentLength(needed);
-            }
-            else if (!haveV2 && maxLen >= needed) {
-                // Протухший натив (или нет скретча): нулевой кадр вместо
-                // переполнения WriteFrameData — v1 знает только 720p/640p.
-                VCamDiagEvent(L"Stream.DeliverNextSample no v2 for %ux%u -> empty sample", w, h);
-                RtlZeroMemory(pBits, maxLen);
-                hr = pBuffer->SetCurrentLength(0);
-            }
-            else if (haveV2 && m_pNv12Scratch != nullptr && maxLen >= needed) {
-                // v2 жив, но цель — NV12 не-720: старый путь (NV12-640 бит-в-бит).
-                SharedMemoryFrameSource::Instance().AcquireFrame(m_pNv12Scratch.get(), vcam::VCamReadyTimeoutMs);
-                WriteFrameData(m_pNv12Scratch.get(), pBits, w, h, useNv12);
-                hr = pBuffer->SetCurrentLength(needed);
-            }
-            else {
-                // Buffer too small for the negotiated frame: deliver an empty,
-                // zeroed buffer rather than a partially valid one.
-                RtlZeroMemory(pBits, maxLen);
-                hr = pBuffer->SetCurrentLength(0);
-                VCamDiagEvent(L"Stream.DeliverNextSample buffer too small maxLen=%u needed=%u", maxLen, needed);
-            }
-            VCamDiagLog(L"Stream.DeliverNextSample AcquireFrame done, before Unlock");
-            pBuffer->Unlock();
-            VCamDiagLog(L"Stream.DeliverNextSample Unlock done");
+            hr = DeliverSharedSample(pBits, pBuffer, w, h, useNv12, haveV2, v2w, v2h, v2stride, needed, maxLen);
         }
         pBuffer = nullptr;
         }

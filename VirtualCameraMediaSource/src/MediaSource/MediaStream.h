@@ -101,6 +101,14 @@ private:
     bool AcquireV2Frame(UINT32* pW, UINT32* pH, UINT32* pStride);
     bool DeliverFromV2(BYTE* pBits, UINT32 w, UINT32 h, bool useNv12,
                        UINT32 vw, UINT32 vh, UINT32 vstride);
+    HRESULT DeliverLocalSample(BYTE*& pBits, ATL::CComPtr<IMFMediaBuffer>& pBuffer,
+                               ATL::CComPtr<IMFSample>& pSample, UINT32 w, UINT32 h, bool useNv12,
+                               bool haveV2, UINT32 v2w, UINT32 v2h, UINT32 v2stride,
+                               UINT32 rgbBytes, UINT32 nv12Bytes);
+    HRESULT DeliverSharedSample(BYTE* pBits, ATL::CComPtr<IMFMediaBuffer>& pBuffer,
+                                UINT32 w, UINT32 h, bool useNv12,
+                                bool haveV2, UINT32 v2w, UINT32 v2h, UINT32 v2stride,
+                                DWORD needed, DWORD maxLen);
 
     CMediaSource* m_pSource = nullptr;          // not owned (source owns stream)
     ATL::CComPtr<IMFMediaEventQueue> m_pEventQueue; // owned
