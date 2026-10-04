@@ -34,9 +34,9 @@ public enum ScaleMode
 }
 
 // Which section feeds the camera: source.type in settings.json.
-// В3: raw-строка (C++ хранит токен verbatim), хост по неизвестному уходит в
-// verbatim (Settings.cpp ParseNewSchema), хост по неизвестному уходит в
-// fallback, но токен живёт. Известные — канон нижнего регистра
+// В3: raw-строка (C++ хранит токен verbatim: Settings.cpp ParseNewSchema),
+// хост по неизвестному уходит в fallback, но токен живёт. Известные — канон
+// нижнего регистра
 // (insensitive как раньше); будущие неизвестные — verbatim обратно в Save,
 // чтобы текущий UI их не схлопывал в "static". Пусто = "static" (как C++).
 public static class SourceTypes

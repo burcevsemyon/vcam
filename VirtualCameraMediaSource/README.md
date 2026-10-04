@@ -139,7 +139,7 @@
 | `hotkey` | `{modifiers, vk}` | глобальный хоткей «ролик поверх эфира» (default `3`/`0x56` = Ctrl+Alt+V; биты: Alt=1, Ctrl=2, Shift=4, Win=8); занят другим процессом → fail-open с логом, лечится сменой комбинации |
 | `recordHotkey` | `{modifiers, vk}` | глобальный хоткей старт/стоп записи (default `3`/`0x52` = Ctrl+Alt+R) |
 | `record.path` | путь к `.mp4` | файл записи; пусто → `%Videos%\VCam_ГГГГММДД_ЧЧММСС.mp4` в момент старта |
-| `autostart` | `true` \| `false` | автозагрузка tray-хоста: при старте хост применяет флаг к задаче Task Scheduler `VCamHost` (ONLOGON, Highest); пункт меню «Автозагрузка» переключает и сохраняет. CLI `autостart` только показывает в `status` |
+| `autostart` | `true` \| `false` | автозагрузка tray-хоста: при старте хост применяет флаг к задаче Task Scheduler `VCamHost` (ONLOGON, Highest); пункт меню «Автозагрузка» переключает и сохраняет. CLI `autostart` только показывает в `status` |
 
 - Сценарий работы: UI сохраняет файл → хост/CLI опрашивает его каждые 500 мс
   (debounce 200 мс) и переключает тип/путь **без перезапуска** (hot-switch: пока
