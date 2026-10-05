@@ -34,8 +34,19 @@ integration нет (0/10), тестируемость средняя (5/10), н�
   (полосы) → RenderOne → хук → WriteOne → чтение shm, assert кадра в эфире.
   Done: ловит регрессии пайплайна (рейсы, TOCTOU, потери команд).
 - [ ] **P1.4. UIA-сценарии как постоянные.** Перенести разовые
-  хоткей/REC-сценарии в integration-набор. Done: запуск одной
+  хоткей/REC-сценарии в integration-набор. Фреймворк — **FlaUI.UIA2 + xUnit**
+  (решение 05.10.2026: UIA2 лучше ладит с WinForms, чем UIA3; WinAppDriver
+  заброшен, Coded UI удалён из VS). Done: запуск одной
   командой, без ручных кликов.
+  - Частично DONE 05.10.2026: каркас `src/VCamUiTests/` в solution
+    (xUnit 2.9.3 + FlaUI.UIA2 5.0.0, фикстура бэкап/restore settings.json,
+    свой тестовый BMP 800×600) + первый постоянный сценарий ModeSwitch
+    (fit≠cover попиксельно, crop подменяет превью на редактор, возврат в
+    fit). Запуск: `dotnet test src/VCamUiTests/VCamUiTests.csproj -c Release`
+    (только Release — как весь solution), 3/3 зелёные. Нюанс: WinForms под
+    UIA2 не отдаёт пункты ComboBox в дерево — выбор ведём клавиатурой
+    (Focus + HOME/DOWN с паузами) со сверкой текста значения.
+  - Осталось: перенести хоткей/REC-сценарии.
 
 ## P2 — e2e и наблюдаемость
 

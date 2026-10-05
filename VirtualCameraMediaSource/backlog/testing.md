@@ -30,6 +30,9 @@ Backlog-документ. Статус живёт здесь же (чекбок�
   секунды) — для чистых функций; `GoogleTest` — если понадобятся моки под
   MF/COM. Отдельный `VCamTests.vcxproj` в solution, консольный раннер,
   в e2e не лезет.
+- **Фреймворк для WinForms UI**: `FlaUI.UIA2` + `xUnit` (см.
+  `regression-safety.md` P1.4). DONE 05.10.2026: `src/VCamUiTests/`
+  (постоянный проект в solution, ModeSwitch-сценарии зелёные).
 - **Первые кандидаты** (уже доказаны харнесами, перенос 1:1):
   - [ ] `Settings`: parse/Serialize/`==`/клампы/legacy-миграция (C++),
     round-trip (C#).
