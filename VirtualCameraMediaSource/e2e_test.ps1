@@ -42,14 +42,35 @@ $SettingsBackup = Join-Path $env:TEMP "vcam_e2e_settings_backup.json"
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $VCamClsid = "{B2B674D4-9CF0-461C-BDCE-3D56FBB41356}"
 $ClsidKey = "HKCU:\Software\Classes\CLSID\$VCamClsid"
-$InstalledDll = "C:\Program Files\VCam\MediaSource.dll"
-$DiagLog = "C:\Users\Semen\AppData\Local\Temp\opencode\msrc_diag.log"
+$InstalledDll = Join-Path $env:ProgramFiles "VCam\MediaSource.dll"
+# MediaSource writes its diag log to %ProgramData%\VCam\msrc_diag.log (shared
+# for every context; the installer/deploy ritual grants LOCAL SERVICE+Users
+# modify on that dir) plus <GetTempPath>\VCam\msrc_diag.log of the PROCESS that
+# loaded it (user context -> %TEMP%, svchost -> its own temp). Read the window
+# from both so device-mode lines are seen regardless of context.
+$DiagLogFiles = @(
+    (Join-Path $env:ProgramData "VCam\msrc_diag.log"),
+    (Join-Path $env:TEMP "VCam\msrc_diag.log")
+)
 
 Add-Type -AssemblyName System.Drawing
 
 $script:Failures = New-Object System.Collections.Generic.List[string]
 function Fail([string]$msg) { $script:Failures.Add($msg); Write-Host "FAIL: $msg" -ForegroundColor Red }
 function Pass([string]$msg) { Write-Host "PASS: $msg" -ForegroundColor Green }
+
+# MSBuild location: vswhere (any VS edition/version), fallback to PATH.
+function Find-MSBuild {
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+    if (Test-Path -LiteralPath $vswhere) {
+        $found = & $vswhere -latest -requires Microsoft.Component.MSBuild -find "MSBuild\**\Bin\MSBuild.exe" 2>$null | Select-Object -First 1
+        if ($found -and (Test-Path -LiteralPath $found)) { return $found }
+    }
+    $cmd = Get-Command msbuild.exe -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    Fail "MSBuild not found: vswhere.exe has no result and msbuild.exe is not on PATH"
+    exit 1
+}
 
 function Write-TestSettings([string]$type, [string]$quality = "source", [string]$staticPath = "") {
     if ($staticPath -eq "") { $staticPath = $TestImage }
@@ -159,24 +180,30 @@ function Test-FullHeight720($file) {
     } finally { $bmp.Dispose() }
 }
 
-# Reads only the part of msrc_diag.log appended after $offset.
-function Read-DiagWindow([long]$offset) {
-    if (-not (Test-Path -LiteralPath $DiagLog)) { return "" }
-    $fs = [IO.File]::Open($DiagLog, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
-    try {
-        if ($offset -gt $fs.Length) { $offset = 0 }
-        $fs.Seek($offset, [IO.SeekOrigin]::Begin) | Out-Null
-        $len = $fs.Length - $offset
-        if ($len -le 0) { return "" }
-        $buf = New-Object byte[] $len
-        $read = 0
-        while ($read -lt $len) {
-            $n = $fs.Read($buf, $read, $len - $read)
-            if ($n -le 0) { break }
-            $read += $n
-        }
-        return [Text.Encoding]::UTF8.GetString($buf, 0, $read)
-    } finally { $fs.Dispose() }
+# Reads only the part of every diag log appended after its offset in $offsets.
+function Read-DiagWindow([hashtable]$offsets) {
+    $parts = New-Object System.Collections.Generic.List[string]
+    foreach ($p in $DiagLogFiles) {
+        if (-not (Test-Path -LiteralPath $p)) { continue }
+        $off = 0L
+        if ($offsets -and $offsets.ContainsKey($p)) { $off = [long]$offsets[$p] }
+        $fs = [IO.File]::Open($p, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+        try {
+            if ($off -gt $fs.Length) { $off = 0 }
+            $fs.Seek($off, [IO.SeekOrigin]::Begin) | Out-Null
+            $len = $fs.Length - $off
+            if ($len -le 0) { continue }
+            $buf = New-Object byte[] $len
+            $read = 0
+            while ($read -lt $len) {
+                $n = $fs.Read($buf, $read, $len - $read)
+                if ($n -le 0) { break }
+                $read += $n
+            }
+            $parts.Add([Text.Encoding]::UTF8.GetString($buf, 0, $read))
+        } finally { $fs.Dispose() }
+    }
+    return ($parts -join "`n")
 }
 
 function Capture-Device([int]$idx, [int]$w, [int]$h, [string]$prefix) {
@@ -341,14 +368,14 @@ if ($hostProcs.Count -gt 0) {
 }
 
 Write-Host "=== 1. Building Solution ==="
-& "C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe" (Join-Path $Root "VirtualCameraMediaSource.sln") /p:Configuration=Release /p:Platform=x64 /m /v:minimal /nologo
+& (Find-MSBuild) (Join-Path $Root "VirtualCameraMediaSource.sln") /p:Configuration=Release /p:Platform=x64 /m /v:minimal /nologo
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Build failed!"
     exit 1
 }
 
 Write-Host "=== 2. Registering MediaSource.dll ==="
-& "C:\Windows\System32\regsvr32.exe" /s $MediaDll
+& (Join-Path $env:WINDIR "System32\regsvr32.exe") /s $MediaDll
 $regCode = $LASTEXITCODE
 if ($regCode -eq 0) {
     Pass "regsvr32: build path registered"
@@ -378,7 +405,7 @@ if (-not (Test-Path $TestVideo)) {
 # --- per-user COM registration: points CoCreateInstance at the FRESHLY BUILT
 # DLL (HKCU\Software\Classes\CLSID wins over HKLM). Non-elevated regsvr32 above
 # cannot write HKLM, so without this the direct phases would silently test
-# C:\Program Files\VCam\MediaSource.dll instead of the build. ---
+# $InstalledDll instead of the build. ---
 $ClsidPrev = $null
 $ClsidKeyCreated = $false
 if (Test-Path "$ClsidKey\InprocServer32") {
@@ -411,9 +438,11 @@ if (-not (Test-Path $InstalledDll)) {
     }
 }
 
-# msrc_diag.log window marker: everything appended after this offset is ours.
-$diagOffset = 0
-if (Test-Path -LiteralPath $DiagLog) { $diagOffset = (Get-Item -LiteralPath $DiagLog).Length }
+# Diag log window markers: everything appended after these offsets is ours.
+$diagOffsets = @{}
+foreach ($dlf in $DiagLogFiles) {
+    if (Test-Path -LiteralPath $dlf) { $diagOffsets[$dlf] = (Get-Item -LiteralPath $dlf).Length }
+}
 
 $settingsExisted = Test-Path $SettingsPath
 if ($settingsExisted) { Copy-Item $SettingsPath $SettingsBackup -Force }
@@ -709,7 +738,7 @@ try {
                     $dErr = Test-FullHeight720 $resD.Files[0]
                     if ($dErr) { Fail "phase D: $dErr" }
                     else { Pass "phase D: 1280x720, content reaches top and bottom (no top-only truncation)" }
-                    $winD = Read-DiagWindow $diagOffset
+                    $winD = Read-DiagWindow $diagOffsets
                     if ($winD -match "buffer too small") { Fail "phase D: msrc_diag.log contains 'buffer too small'" }
                     else { Pass "phase D: no 'buffer too small' in msrc_diag.log window" }
                     if ($winD -match "negotiated 1280x720 RGB32 -> allocator type RGB720") { Pass "phase D: StartForSession negotiated 1280x720 RGB32 -> RGB720" }
@@ -733,7 +762,7 @@ try {
                         $eRows = Test-RowsNonBlack $resE.Files[0] @(75, 240, 410)
                         if ($eRows) { Fail "phase E: content: $eRows" }
                         else { Pass "phase E: content rows non-black (frame not truncated)" }
-                        $winE = Read-DiagWindow $diagOffset
+                        $winE = Read-DiagWindow $diagOffsets
                         if ($winE -match "buffer too small") { Fail "phase E: msrc_diag.log contains 'buffer too small'" }
                         else { Pass "phase E: no 'buffer too small' in msrc_diag.log window" }
                         if ($winE -match "negotiated 640x480 RGB32 -> allocator type RGB640") { Pass "phase E: StartForSession negotiated 640x480 RGB32 -> RGB640" }

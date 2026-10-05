@@ -13,7 +13,7 @@ namespace {
 bool EnsureParentDir(const std::wstring& path)
 {
     size_t slash = path.find_last_of(L"\\/");
-    if (slash == std::wstring::npos || slash < 3) return true; // "C:\x" — корень жив
+    if (slash == std::wstring::npos || slash < 3) return true; // "<drive>:\x" — корень жив
     std::wstring dir = path.substr(0, slash);
     // CreateDirectory по цепочке: идём вверх до существующего, потом вниз.
     std::vector<std::wstring> chain;
@@ -116,7 +116,7 @@ bool Mp4Recorder::Start(const std::wstring& path, std::wstring& err)
     // Mp4Recorder → финализация → ffmpeg rawvideo rgb24 (top-down по
     // определению): верх СИНИЙ R=2 B=243 (rec_orient_before.mp4) — переворот
     // доказан; после построчного флипа верх КРАСНЫЙ (rec_orient_fixed.mp4).
-    // Судья — %TEMP%\opencode\vcam-orient\orient_check.ps1 (ffmpeg + MF
+    // Судья — одноразовый orient_check.ps1 во временном каталоге (ffmpeg + MF
     // SourceReader с явным учётом знака выходного страйда +5120).
     ATL::CComPtr<IMFMediaType> inType;
     hr = MFCreateMediaType(&inType);

@@ -9,7 +9,7 @@
 #include "SampleAllocatorControl.h"
 #include "AttrLogProxy.h"
 #include "ControlProxyClient.h" // IAM-прокси поверх pipe-канала (Sub 2)
-#include <winrt/inspectable.h>
+#include <inspectable.h>
 
 class CMediaStream;
 class CVCamActivator;

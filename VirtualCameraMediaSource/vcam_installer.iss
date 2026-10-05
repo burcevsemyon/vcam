@@ -31,6 +31,15 @@ Source: "vcam_restart_host.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "vcam_install_task.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "vcam_run_host.vbs"; DestDir: "{app}"; Flags: ignoreversion
 
+[Dirs]
+; Диаг-лог MediaSource пишется в %ProgramData%\VCam\msrc_diag.log из обоих
+; контекстов (svchost FrameServer = LOCAL SERVICE и юзер-процессы). ACL выдаём
+; в [Run]: наследованный от ProgramData даёт LOCAL SERVICE только чтение.
+Name: "{commonappdata}\VCam"
+
+[Run]
+Filename: "{sys}\icacls.exe"; Parameters: """{commonappdata}\VCam"" /grant *S-1-5-19:(OI)(CI)M /grant *S-1-5-20:(OI)(CI)M /grant *S-1-5-32-545:(OI)(CI)M /T /C"; Flags: runhidden
+
 [Icons]
 ; Start menu (current user, mirrors HKCU autostart semantics)
 ; Один ярлык — только основной процесс (хост). Настройки/Предпросмотр живут в tray-меню хоста,

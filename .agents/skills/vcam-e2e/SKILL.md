@@ -59,8 +59,8 @@ description: >-
    со сборкой и при расхождении SKIPает фазы D/E («сначала деплой»).
 3. Тестовые медиа: `e2e_output\test_video.mp4` (5 с, testsrc2 320x240;
    `test_video2.mp4`, `pattern_top_white.mp4` — для hot-reload/ориентации).
-   `test_input.bmp` нет — скрипт скопирует из
-   `C:\Users\Semen\source\repos\10_000.bmp`.
+   `test_input.bmp` лежит в корне `VirtualCameraMediaSource/` (в репо) —
+   внешние файлы не нужны.
 4. MSB3027 — закрыть свои exe перед сборкой (скрипт сам собирает solution).
 
 ## Запуск
@@ -195,7 +195,13 @@ powershell -ExecutionPolicy Bypass -File e2e_test.ps1   # exit 0 = SUCCESS
 
 ### msrc_diag.log — что смотреть
 
-- Путь: `%TEMP%\opencode\msrc_diag.log`, растёт сотнями МБ; **строки без даты**
+- Путь: `%ProgramData%\VCam\msrc_diag.log` (общий для обоих контекстов; ACL
+  `LOCAL SERVICE`/`NETWORK SERVICE`/`Users` = Modify выдаёт инсталлятор или
+  deploy-ритуал) плюс `<GetTempPath>\VCam\msrc_diag.log` процесса, загрузившего
+  DLL (юзер → `%TEMP%\VCam\`, svchost → свой temp). **Без выданного ACL svchost
+  пишет молча в никуда**: наследованный от ProgramData/Temp даёт LOCAL SERVICE
+  только чтение — device-строки теряются (проверено 05.10.2026). e2e читает
+  окно по обоим файлам. Растёт сотнями МБ; **строки без даты**
   (только время) — прошлые сутки смешиваются с сегодняшними! Отфильтровать
   по `pid=` актуального svchost (новый pid появляется после каждого рестарта
   FrameServer) и учесть, что старые сборки пишут другой формат строк

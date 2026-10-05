@@ -26,6 +26,8 @@
 ```
 
 - exit 0 = успех; csproj (`VCamSettingsUi`) — сначала `dotnet restore`.
+- Путь MSBuild выше — VS 18 Community; при другой редакции/версии VS найти
+  через `vswhere.exe` (как делает `e2e_test.ps1`, функция `Find-MSBuild`).
 - MSB3027 (locked exe) — закрыть запущенные exe проекта перед сборкой.
 - **LNK1104 (лочит build-DLL)** — Registrar-holder (`add VCam hold`) грузит build-копию MediaSource.dll → kill holder → build → re-add hold.
 - `/utf-8` для всех C++ задано в `Directory.Build.targets` (кириллица в
@@ -61,7 +63,15 @@
 ### Камера / захват
 - **trySet S_OK ≠ итоговый формат** — верить только GetCurrentMediaType + ReadSample (конкурентный потребитель может залочить пин).
 - **MFCreateSourceReaderFromURL(symlink) → 0x80070002** — рабочий путь: ActivateObject + MFCreateSourceReaderFromMediaSource.
-- **MF symlink** читается из `MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK` ({58F0AAD8}), НЕ из VIDCAP_GUID.
+- **MF symlink** читается из `MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK`
+  ({58F0AAD8}), НЕ из VIDCAP_GUID.
+- **LOCAL SERVICE не может писать в обычные temp-подпапки** — `%TEMP%\VCam\`,
+  `%WINDIR%\Temp\VCam\` и файлы, созданные юзером в `%WINDIR%\Temp`, ему
+  недоступны (наследованный ACL = ReadAndExecute / нет ACE) → строки
+  device-сессий молча терялись (проверено 05.10.2026). Единый diag-sink —
+  `%ProgramData%\VCam\msrc_diag.log`: ACL (LOCAL SERVICE / NETWORK SERVICE /
+  Users = Modify) выдаёт инсталлятор (`[Run]` icacls) или elevated deploy-ритуал;
+  fallback — `<GetTempPath>\VCam\msrc_diag.log` (свой контекст).
 - **NV12-конверт**: stride натива может быть с паддингом; тик 0x100 (NATIVEMEDIATYPECHANGED) — не молчание, нужен requery.
 - **Прокси контролов камеры**: `E_PROP_ID_UNSUPPORTED` (0x8007490) — нормализованный ответ; отдельный pipe-клиент (MediaSource.vcxproj не линкует ProducerCore).
 

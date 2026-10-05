@@ -6,7 +6,7 @@
 #include <mfobjects.h>
 #include <dmksctrl.h>
 #include "GUIDs.h"
-#include <winrt/inspectable.h>
+#include <inspectable.h>
 #include <thread>
 #include <mutex>
 #include <atomic>

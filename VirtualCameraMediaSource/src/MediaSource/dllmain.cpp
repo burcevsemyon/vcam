@@ -30,9 +30,27 @@ static void DiagEmit(const wchar_t* fmt, va_list args)
     wchar_t full[768];
     swprintf_s(full, 768, L"[%02d:%02d:%02d.%03d] pid=%u tid=%u %ls\n",
         st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, GetCurrentProcessId(), GetCurrentThreadId(), line);
+    wchar_t programData[MAX_PATH] = L"";
+    DWORD pn = GetEnvironmentVariableW(L"ProgramData", programData, MAX_PATH);
+    wchar_t tempDir[MAX_PATH] = L"";
+    DWORD tn = GetTempPathW(MAX_PATH, tempDir);
+    wchar_t shared[MAX_PATH] = L"";
+    wchar_t primary[MAX_PATH] = L"";
+    if (pn > 0 && pn < MAX_PATH) {
+        wchar_t diagDir[MAX_PATH];
+        swprintf_s(diagDir, MAX_PATH, L"%ls\\VCam", programData);
+        CreateDirectoryW(diagDir, nullptr);
+        swprintf_s(shared, MAX_PATH, L"%ls\\VCam\\msrc_diag.log", programData);
+    }
+    if (tn > 0 && tn < MAX_PATH) {
+        wchar_t diagDir[MAX_PATH];
+        swprintf_s(diagDir, MAX_PATH, L"%lsVCam", tempDir);
+        CreateDirectoryW(diagDir, nullptr);
+        swprintf_s(primary, MAX_PATH, L"%lsVCam\\msrc_diag.log", tempDir);
+    }
     const wchar_t* paths[] = {
-        L"C:\\Users\\Semen\\AppData\\Local\\Temp\\opencode\\msrc_diag.log",
-        L"C:\\Windows\\Temp\\vcam_ls_load.log"
+        shared,
+        primary
     };
     for (const auto& p : paths) {
         FILE* f = nullptr;

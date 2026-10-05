@@ -5,7 +5,7 @@
 #include <mfapi.h>
 #include <mfobjects.h>
 #include <dmksctrl.h>
-#include <winrt/inspectable.h>
+#include <inspectable.h>
 
 class CMediaSource;
 

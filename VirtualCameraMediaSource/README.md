@@ -27,6 +27,8 @@
 ```
 
 Результат: `build\x64\Release\` (плюс per-project `src\*\build\`).
+Путь MSBuild — VS 18 Community; при другой редакции VS — `vswhere.exe`
+(`e2e_test.ps1` находит MSBuild именно так).
 
 ## Деплой и запуск (все шаги — от администратора)
 
