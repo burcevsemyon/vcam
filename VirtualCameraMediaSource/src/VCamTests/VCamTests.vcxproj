@@ -50,6 +50,7 @@
     <ClCompile Include="test_edge_cases.cpp" />
     <ClCompile Include="test_sections.cpp" />
     <ClCompile Include="test_v2downscale.cpp" />
+    <ClCompile Include="test_v1downsample.cpp" />
     <ClCompile Include="..\ProducerCore\Settings.cpp" />
   </ItemGroup>
   <ItemGroup>
