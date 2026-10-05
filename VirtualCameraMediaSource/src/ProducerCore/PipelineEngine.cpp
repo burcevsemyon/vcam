@@ -2,6 +2,8 @@
 
 #include <windows.h>
 
+#include <cstdio>
+
 namespace {
 
 constexpr DWORD kFrameMs = 33;
@@ -50,7 +52,18 @@ void PipelineEngine::SetTarget(const SourceConfig& want, const std::wstring& qua
         ? ((m_target.type == L"camera" && !m_target.camName.empty()) ? m_target.camName
                                                                      : m_target.path)
         : std::wstring(L"-");
+    // P0.1-наблюдаемость: в switch виден и режим static (scaleMode+crop),
+    // иначе по логу нельзя отличить смену ректу от смены пути.
+    std::wstring modeLabel;
+    if (want.type == L"static") {
+        wchar_t rb[128];
+        swprintf_s(rb, L" scaleMode=%s crop=(%d,%d,%d,%d)%s",
+            want.scaleMode.c_str(), want.cropX, want.cropY, want.cropW, want.cropH,
+            want.cropKeepAspect ? L" keepAspect" : L"");
+        modeLabel = rb;
+    }
     Log(L"switch: type=" + want.type + L" path=" + wantLabel + L" quality=" + normQuality +
+        modeLabel +
         L" (was type=" + (m_hasTarget ? m_target.type : std::wstring(L"-")) + L" path=" +
         wasLabel + L" quality=" + (m_hasTarget ? m_quality : std::wstring(L"-")) + L")");
     CloseSource();

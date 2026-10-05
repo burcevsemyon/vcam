@@ -318,13 +318,17 @@ bool StaticImageSource::Render(uint8_t* dst, int stride, uint32_t w, uint32_t h,
     UINT sh = native_.empty() ? vcam::VCamHeight : nativeH_;
     LONG sstride = (LONG)(sw * 4);
 
-    if (!native_.empty() && w == nativeW_ && h == nativeH_) {
+    // Быстрый путь «размер-в-размер»: корректен только для Fit/Cover
+    // (цель уже равна исходнику, обрабатывать нечего). Для Crop через него
+    // проходить нельзя — рект был бы проигнорирован и в эфир ушёл бы полный
+    // кадр (баг 05.10.2026: crop в эфире не применялся).
+    ScaleMode mode = ParseMode(cfg_.scaleMode);
+    if (mode != ScaleMode::Crop && !native_.empty() && w == nativeW_ && h == nativeH_) {
         vcam::CopyFrameRowwise(dst, (size_t)stride, native_.data(), (size_t)sstride,
                                nativeW_, nativeH_, vcam::VCamPixelSize);
         return true;
     }
 
-    ScaleMode mode = ParseMode(cfg_.scaleMode);
     if (native_.empty() || mode == ScaleMode::Fit) {
         vcam::LetterboxBilinearEx(base, sw, sh, sstride, dst, w, h, (LONG)stride);
         return true;
