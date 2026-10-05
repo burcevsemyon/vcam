@@ -29,6 +29,10 @@
 - Путь MSBuild выше — VS 18 Community; при другой редакции/версии VS найти
   через `vswhere.exe` (как делает `e2e_test.ps1`, функция `Find-MSBuild`).
 - MSB3027 (locked exe) — закрыть запущенные exe проекта перед сборкой.
+  Правило останова (05.10.2026, по слову пользователя «останавливай сам»):
+  агент ВПРАВЕ сам гасить процессы (`Stop-Process -Name VCamSettingsUi[,…]
+  -Force`), но сначала предупреждает, что несохранённые правки в UI сгорят;
+  без явного разрешения — только просить закрыть руками.
 - **LNK1104 (лочит build-DLL)** — Registrar-holder (`add VCam hold`) грузит build-копию MediaSource.dll → kill holder → build → re-add hold.
 - `/utf-8` для всех C++ задано в `Directory.Build.targets` (кириллица в
   wide-литералах безопасна; без него MSVC читал UTF-8 как CP1251 → кракозябры).

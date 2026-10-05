@@ -39,16 +39,22 @@ public:
     const std::wstring& SectionOpenedAs() const { return openedSection_; }
     const std::wstring& V2SectionOpenedAs() const { return openedSectionV2_; }
 
-    // Качество v2: L"source" (натив, default) | L"fixed720p" (v2 = 720p).
+    // Качество v2: L"source" (натив, default) | L"fixed1080p" (v2 = 1080p,
+    // лесенка только вниз) | L"fixed720p" (v2 = 720p). Одно на все источники:
+    // писатель подгоняет каждый источник под общий размер (fit/letterbox).
     // Остальное нормализуется в source. Хосты (Sub3) выставляют из Settings.
     void SetQuality(const std::wstring& q)
     {
-        quality_ = (q == L"fixed720p") ? L"fixed720p" : L"source";
+        quality_ = (q == L"fixed720p") ? L"fixed720p"
+            : (q == L"fixed1080p")     ? L"fixed1080p"
+                                       : L"source";
     }
     const std::wstring& Quality() const { return quality_; }
 
     // Чистая математика целевого размера v2 (без shm — для harness):
-    // source -> fit-кламп входа к cap; fixed720p -> 1280x720. false = мусор входа.
+    // source -> fit-кламп входа к cap; fixed1080p -> fit-кламп к 1920x1080
+    // (меньше — passthrough, лесенка только вниз); fixed720p -> 1280x720.
+    // false = мусор входа.
     static bool ResolveV2Size(uint32_t srcW, uint32_t srcH, const std::wstring& quality,
                               uint32_t& outW, uint32_t& outH)
     {
@@ -56,6 +62,25 @@ public:
         if (quality == L"fixed720p") {
             outW = vcam::VCamWidth;
             outH = vcam::VCamHeight;
+            return true;
+        }
+        if (quality == L"fixed1080p") {
+            // Cap ступени 1080p — константа (в контракте её нет, UI нет).
+            constexpr uint32_t capW = 1920, capH = 1080;
+            if (srcW <= capW && srcH <= capH) {
+                outW = srcW;
+                outH = srcH;
+                return true;
+            }
+            double s = (double)capW / srcW;
+            double s2 = (double)capH / srcH;
+            if (s2 < s) s = s2;
+            outW = (uint32_t)(srcW * s + 0.5);
+            outH = (uint32_t)(srcH * s + 0.5);
+            if (outW < 1) outW = 1;
+            if (outH < 1) outH = 1;
+            if (outW > capW) outW = capW;
+            if (outH > capH) outH = capH;
             return true;
         }
         if (srcW <= vcam::VCamNativeCapW && srcH <= vcam::VCamNativeCapH) {
@@ -79,8 +104,8 @@ public:
     // (v1 + v2-720p). Вход — packed 1280x720 BGRX, логика v1 без изменений.
     bool WriteFrame(const uint8_t* bgrx, int stride);
     // Кладёт НАТИВНЫЙ кадр WxH BGRX (stride >= W*4, top-down): v1 — даунскейл
-    // до 720p letterbox (MFT, fallback CPU), v2 — натив (или 720p при
-    // quality=fixed720p). Пишет обе секции, кэширует обе.
+    // до 720p letterbox (MFT, fallback CPU), v2 — по лесенке quality (натив,
+    // 1080p или 720p). Пишет обе секции, кэширует обе.
     bool WriteFrameNative(const uint8_t* bgrx, int stride, uint32_t w, uint32_t h);
     // Повторно публикует последний удачный кадр (hot-switch, пока новый источник
     // не готов). false — кадра ещё не было / writer не открыт.

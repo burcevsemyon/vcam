@@ -45,7 +45,9 @@ void PipelineEngine::Close()
 
 void PipelineEngine::SetTarget(const SourceConfig& want, const std::wstring& quality)
 {
-    const std::wstring normQuality = (quality == L"fixed720p") ? L"fixed720p" : L"source";
+    const std::wstring normQuality = (quality == L"fixed720p") ? L"fixed720p"
+        : (quality == L"fixed1080p")                            ? L"fixed1080p"
+                                                                : L"source";
     const std::wstring wantLabel =
         (want.type == L"camera" && !want.camName.empty()) ? want.camName : want.path;
     const std::wstring wasLabel = m_hasTarget

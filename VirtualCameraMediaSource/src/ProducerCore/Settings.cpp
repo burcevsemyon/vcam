@@ -265,10 +265,11 @@ bool ParseScaleMode(const std::wstring& m, std::wstring& out)
     return false;
 }
 
-// quality: только source | fixed720p, остальное (включая будущий cap) -> source.
+// quality: только source | fixed1080p | fixed720p, остальное -> source.
+// Лесенка только вниз (как C# ParseQuality — ordinal, синхронно).
 void ParseQuality(const std::wstring& q, std::wstring& out)
 {
-    out = (q == L"fixed720p") ? L"fixed720p" : L"source";
+    out = (q == L"fixed720p") ? L"fixed720p" : (q == L"fixed1080p") ? L"fixed1080p" : L"source";
 }
 
 // camera.capture: только 720p | 1080p, остальное (включая отсутствие) -> max.

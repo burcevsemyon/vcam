@@ -13,7 +13,7 @@ namespace VCamSettingsUi;
 //     "video":  { "path": "..." },
 //     "camera": { "id": "<MF symbolic link>", "name": "<friendly name>",
 ///                "capture": "max" | "720p" | "1080p" },
-//     "quality": "source" | "fixed720p",
+//     "quality": "source" | "fixed1080p" | "fixed720p",
 //     "hotkey": { "modifiers": int 1-15, "vk": int 0x08-0xFE },
 //     "recordHotkey": { "modifiers": int 1-15, "vk": int 0x08-0xFE },
 //     "record": { "path": "..." },
@@ -53,10 +53,13 @@ public static class SourceTypes
 
 // v2 frame quality (phase vcam-quality-v2): Source = native size of the
 // active source (default; legacy files without the key migrate to this),
+// Fixed1080p = v2 capped at 1080p (ladder only downwards),
 // Fixed720p = v2 mirrors 720p (ladder only downwards).
+// Single quality for all sources: the writer fits every source to it.
 public enum Quality
 {
     Source,
+    Fixed1080p,
     Fixed720p,
 }
 
@@ -96,7 +99,7 @@ public sealed class Settings
     public string SourceType { get; set; } = SourceTypes.Static;
 
     // Root "quality" (v2): mirrors Settings::ParseQuality on the C++ side —
-    // only "fixed720p" passes, anything else (incl. missing) is Source.
+    // only "fixed720p"/"fixed1080p" pass, anything else (incl. missing) is Source.
     public Quality Quality { get; set; } = Quality.Source;
 
     // Section "hotkey" (global host hotkey static->video->auto-static): mirrors
@@ -295,7 +298,12 @@ public sealed class Settings
                     _ => "max",
                 },
             },
-            ["quality"] = Quality == Quality.Fixed720p ? "fixed720p" : "source",
+            ["quality"] = Quality switch
+            {
+                Quality.Fixed720p => "fixed720p",
+                Quality.Fixed1080p => "fixed1080p",
+                _ => "source",
+            },
             ["hotkey"] = new Dictionary<string, object>
             {
                 ["modifiers"] = HotkeyModifiers,
@@ -384,10 +392,11 @@ public sealed class Settings
         : string.Equals(mode, "crop", StringComparison.OrdinalIgnoreCase) ? ScaleMode.Crop
         : ScaleMode.Fit;
 
-    // Mirrors the C++ ParseQuality exactly: only "fixed720p" passes (ordinal),
-    // everything else (missing/garbage/future tokens) is Source.
+    // Mirrors the C++ ParseQuality exactly: only "fixed720p"/"fixed1080p"
+    // pass (ordinal), everything else (missing/garbage/future tokens) is Source.
     private static Quality ParseQuality(string quality) =>
         string.Equals(quality, "fixed720p", StringComparison.Ordinal) ? Quality.Fixed720p
+        : string.Equals(quality, "fixed1080p", StringComparison.Ordinal) ? Quality.Fixed1080p
         : Quality.Source;
 
     // Mirrors the C++ hotkey parsing exactly: modifiers 1-15 pass, vk

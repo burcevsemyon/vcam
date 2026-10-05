@@ -218,7 +218,7 @@ function Capture-Device([int]$idx, [int]$w, [int]$h, [string]$prefix) {
 }
 
 # Finds the VCam device index in `CaptureTest inspect` output by capability:
-# exactly 3 media types = RGB32 1280x720 + NV12 1280x720 + RGB32 640x480.
+# at least 3 media types (RGB32 1280x720 + NV12 1280x720 + RGB32 640x480); the v2 quality ladder may add more (native size).
 # (FRIENDLY_NAME is empty, so name filters fall back to device[0] = real camera.)
 function Find-VCamDevice {
     $logPath = Join-Path $OutDir "inspect_vcam.log"
@@ -230,13 +230,13 @@ function Find-VCamDevice {
     $found = -1
     foreach ($line in @(Get-Content -LiteralPath $logPath)) {
         if ($line -match "device\[(\d+)\]") {
-            if ($idx -ge 0 -and $mt -eq 3 -and $has720 -and $has640) { if ($found -lt 0) { $found = $idx } }
+            if ($idx -ge 0 -and $mt -ge 3 -and $has720 -and $has640) { if ($found -lt 0) { $found = $idx } }
             $idx = [int]$Matches[1]; $mt = -1; $has720 = $false; $has640 = $false
         } elseif ($line -match "mediaTypes=(\d+)") { $mt = [int]$Matches[1] }
         elseif ($line -match "type\[\d+\].*sub=\{00000016.*size=1280x720") { $has720 = $true }
         elseif ($line -match "type\[\d+\].*size=640x480") { $has640 = $true }
     }
-    if ($idx -ge 0 -and $mt -eq 3 -and $has720 -and $has640) { if ($found -lt 0) { $found = $idx } }
+    if ($idx -ge 0 -and $mt -ge 3 -and $has720 -and $has640) { if ($found -lt 0) { $found = $idx } }
     if ($found -ge 0) { return $found }
     return $null
 }
@@ -598,6 +598,20 @@ try {
         elseif ($v2s.W -ne 1920 -or $v2s.H -ne 1080) {
             Fail "phase H quality: v2 dims $($v2s.W)x$($v2s.H) after back to source (want 1920x1080)"
         } else { Pass "phase H quality: back to source -> v2 1920x1080" }
+        # fixed1080p hot-switch без рестарта: 1080p-источник идёт passthrough
+        # (лесенка только вниз), в логе виден reopen с quality=fixed1080p.
+        Write-TestSettings "static" "fixed1080p" $TestImage1080
+        Start-Sleep -Seconds 3
+        $v2t = Read-SectionHeader "VCam.FrameBuffer.v2"
+        if ($null -eq $v2t) { Fail "phase H quality: v2 section not open after switch to fixed1080p" }
+        elseif ($v2t.W -ne 1920 -or $v2t.H -ne 1080) {
+            Fail "phase H quality: v2 dims $($v2t.W)x$($v2t.H) after fixed1080p (want 1920x1080 passthrough)"
+        } else { Pass "phase H quality: fixed1080p hot-switch -> v2 1920x1080 passthrough (no restart)" }
+        $qswitch = @(Select-String -Path $logH -Pattern "\[cli\] switch:.*quality=fixed1080p" -ErrorAction SilentlyContinue)
+        if ($qswitch.Count -ge 1) { Pass "phase H quality: '[cli] switch: ... quality=fixed1080p' in log (reopen path)" }
+        else { Fail "phase H quality: no quality=fixed1080p switch line in $logH" }
+        Write-TestSettings "static" "source" $TestImage1080
+        Start-Sleep -Seconds 3
         Stop-Cli $cliProc
         $cliProc = $null
         # Вернуть состояние конца фазы B (video/source): C использует overrides,
@@ -698,6 +712,10 @@ try {
         }
     }
 
+    # Static 16:9 source for D/E: letterbox-ассерт требует не-4:3 входа.
+    # (Phase H оставила video 320x240 = 4:3 -> совпадение аспектов -> нет полос.)
+    Write-TestSettings "static"
+
     # ===== Phase D/E: device mode - the FrameServer proxy path (what ktalk uses) =====
     Write-Host "=== 7. Phase D/E: device mode (proxy): 1280x720 + 640x480 RGB32 ==="
     $deBusy = $false
@@ -776,6 +794,10 @@ try {
             }
         }
     }
+
+    # Video source for F: test expects moving frames after restart.
+    # (D/E left static 16:9 - identical frames would fail the unique>1 check.)
+    Write-TestSettings "video"
 
     # ===== Phase F: producer stop -> frozen fallback -> restart -> moving =====
     Write-Host "=== 8. Phase F: producer stop -> frozen fallback -> restart -> moving ==="

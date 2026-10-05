@@ -294,7 +294,7 @@ void PrintHelp()
     Log(L"        switch); on source errors nothing is written -> camera fallback frame.");
     Log(L"        Frames are rendered at the source native size (WriteFrameNative;");
     Log(L"        video starts at 720p until its first frame reports NativeSize).");
-    Log(L"        settings \"quality\" (source|fixed720p) hot-switches via reopen.");
+    Log(L"        settings \"quality\" (source|fixed1080p|fixed720p) hot-switches via reopen.");
     Log(L"        camera.capture (max|720p|1080p) hot-switches via reopen (physical capture height).");
     Log(L"        Logs go to stdout at 30 FPS pacing. Stop with Ctrl+C, Ctrl+Break or Esc.");
     Log(L"  --type <static|video|camera>  Fixes the source type for this run: source.type");

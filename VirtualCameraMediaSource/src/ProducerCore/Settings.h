@@ -85,7 +85,8 @@ struct Settings {
     CameraSection cam;
     bool autostart = true;
     // Качество v2 (фаза vcam-quality-v2/sub1): L"source" (натив источника,
-    // default) | L"fixed720p" (v2 = 720p, лесенка только вниз).
+    // default) | L"fixed1080p" (v2 = 1080p, лесенка только вниз) |
+    // L"fixed720p" (v2 = 720p, лесенка только вниз). Одно на все источники.
     // Cap натива — 4K константа (vcam::VCamNativeCapW/H), UI нет.
     std::wstring quality = L"source";
     // Глобальный хоткей (секция hotkey): смена — только перерегистрация

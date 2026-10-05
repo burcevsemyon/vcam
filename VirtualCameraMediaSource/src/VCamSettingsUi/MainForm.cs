@@ -140,7 +140,7 @@ public sealed class MainForm : Form
 
     private static readonly string[] ModeNames = { "fit — вписать с пололосами", "cover — заполнить (обрезка)", "crop — обрезка выбранной области" };
     private static readonly string[] MediaNames = { "статичная картинка", "видеоролик", "физическая камера" };
-    private static readonly string[] QualityNames = { "натив (source)", "720p (fixed)" };
+    private static readonly string[] QualityNames = { "натив (source)", "720p (fixed)", "1080p (fixed)" };
     private static readonly string[] CaptureNames = { "Максимум", "720p", "1080p" };
 
     public MainForm()
@@ -1019,7 +1019,12 @@ public sealed class MainForm : Form
             CaptureMode.P1080 => 2,
             _ => 0,
         };
-        _qualityCombo.SelectedIndex = s.Quality == Quality.Fixed720p ? 1 : 0;
+        _qualityCombo.SelectedIndex = s.Quality switch
+        {
+            Quality.Fixed720p => 1,
+            Quality.Fixed1080p => 2,
+            _ => 0,
+        };
         _mediaCombo.SelectedIndex = s.SourceType switch
         {
             // В3: неизвестный будущий токен показываем как static (комбо его
@@ -1075,7 +1080,12 @@ public sealed class MainForm : Form
         _ => SourceTypes.Static,
     };
 
-    private Quality CurrentQuality => _qualityCombo.SelectedIndex == 1 ? Quality.Fixed720p : Quality.Source;
+    private Quality CurrentQuality => _qualityCombo.SelectedIndex switch
+    {
+        1 => Quality.Fixed720p,
+        2 => Quality.Fixed1080p,
+        _ => Quality.Source,
+    };
 
     // DropDownList => index always 0..2; anything unexpected maps to Max.
     private CaptureMode CurrentCapture => _captureCombo.SelectedIndex switch
