@@ -11,7 +11,6 @@
 #include <new>
 #include "../Common/SharedMemoryContract.h"
 #include "../Common/MappedViewOfFilePtr.h"
-#include "../Common/CriticalSectionGuard.h"
 
 #pragma comment(lib, "windowscodecs.lib")
 #pragma comment(lib, "advapi32.lib")
@@ -35,7 +34,7 @@ struct Settings {
 };
 
 static std::unique_ptr<BYTE[]> g_pFrame;
-static CRITICAL_SECTION g_frameCs;
+static ATL::CComAutoCriticalSection g_frameCs;
 static HANDLE g_hStopEvent = nullptr;
 static std::wstring g_currentImagePath;
 static ScaleMode g_currentMode = ScaleMode::Fit;
@@ -221,7 +220,7 @@ static bool LoadAndScaleImage(const wchar_t* filePath, ScaleMode mode, CropRect 
     CoInitialize(nullptr);
 
     ATL::CComPtr<IWICImagingFactory> pFactory;
-    HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pFactory));
+    HRESULT hr = pFactory.CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER);
     if (FAILED(hr)) { pFactory = nullptr; CoUninitialize(); return false; }
 
     ATL::CComPtr<IWICBitmapDecoder> pDecoder;
@@ -390,7 +389,7 @@ static DWORD WINAPI SettingsWatcherThread(LPVOID)
         if (!tmp) continue;
         if (TryLoadIntoBuffer(s, tmp.get())) {
             {
-                vcam::CsGuard guard(&g_frameCs);
+                ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(g_frameCs);
                 g_pFrame = std::move(tmp);
                 g_currentImagePath = s.imagePath;
                 g_currentMode = s.mode;
@@ -433,7 +432,6 @@ int wmain(int argc, wchar_t* argv[])
         return 1;
     }
 
-    InitializeCriticalSection(&g_frameCs);
     g_pFrame = std::move(pFrame);
     g_currentImagePath = settings.imagePath;
     g_currentMode = settings.mode;
@@ -455,7 +453,6 @@ int wmain(int argc, wchar_t* argv[])
         LocalFree(pSecDesc);
         g_pFrame.reset();
         CloseHandle(g_hStopEvent);
-        DeleteCriticalSection(&g_frameCs);
         return 1;
     }
 
@@ -492,7 +489,7 @@ int wmain(int argc, wchar_t* argv[])
 
         _InterlockedExchangeAdd64((volatile LONGLONG*)&pHeader->seq, 1);
         {
-            vcam::CsGuard guard(&g_frameCs);
+            ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(g_frameCs);
             memcpy(pFrameSlot, g_pFrame.get(), vcam::VCamFrameSize);
         }
         pHeader->frameWriteIndex = slot;
@@ -513,7 +510,6 @@ int wmain(int argc, wchar_t* argv[])
     hSection.Close();
     LocalFree(pSecDesc);
     CloseHandle(g_hStopEvent);
-    DeleteCriticalSection(&g_frameCs);
     g_pFrame.reset();
     return 0;
 }

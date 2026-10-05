@@ -145,6 +145,5 @@ private:
     std::thread m_worker;
     bool m_workerStop = false;
 
-    CRITICAL_SECTION m_cs;
-    bool m_csInit = false;
+    mutable ATL::CComAutoCriticalSection m_cs;
 };

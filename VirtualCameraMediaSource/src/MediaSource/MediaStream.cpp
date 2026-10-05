@@ -5,7 +5,6 @@
 #include "MediaSource.h"
 #include "SharedMemoryContract.h"
 #include "SharedMemoryFrameSource.h"
-#include "CriticalSectionGuard.h"
 #include "FrameCopy.h"
 #include <mfapi.h>
 #include <Mferror.h>
@@ -44,7 +43,6 @@ CMediaStream::~CMediaStream()
     m_pStreamAttrsProxy = nullptr;
     m_pStreamAttributes = nullptr;
     m_pAllocator = nullptr;
-    if (m_csInit) DeleteCriticalSection(&m_cs);
     VCamObjectDec();
 }
 
@@ -155,11 +153,10 @@ HRESULT CMediaStream::SetAllocator(IUnknown* pAllocator)
     // The frameserver passes a shared (cross-session) sample allocator. QI to the
     // shared video sample allocator so AllocateSample returns buffers the consumer
     // can read across the session boundary.
-    IMFVideoSampleAllocator* pShared = nullptr;
-    HRESULT hr = pAllocator->QueryInterface(__uuidof(IMFVideoSampleAllocator),
-                                            reinterpret_cast<void**>(&pShared));
+    ATL::CComPtr<IMFVideoSampleAllocator> pShared;
+    HRESULT hr = pAllocator->QueryInterface(IID_PPV_ARGS(&pShared));
     if (SUCCEEDED(hr)) {
-        m_pAllocator.Attach(pShared); // takes ownership; releases the previous allocator
+        m_pAllocator.Attach(pShared.Detach()); // takes ownership; releases the previous allocator
         VCamDiagLog(L"Stream.SetAllocator shared=OK");
     }
     else {
@@ -208,7 +205,7 @@ HRESULT CMediaStream::GetMediaSource(IMFMediaSource** ppSource)
     VCamDiagLog(L"Stream.GetMediaSource");
     if (m_shutdown) return MF_E_SHUTDOWN;
     if (ppSource == nullptr) return E_POINTER;
-    return m_pSource->QueryInterface(IID_IMFMediaSource, reinterpret_cast<void**>(ppSource));
+    return m_pSource->QueryInterface(IID_PPV_ARGS(ppSource));
 }
 
 HRESULT CMediaStream::GetStreamDescriptor(IMFStreamDescriptor** ppDescriptor)
@@ -337,9 +334,6 @@ HRESULT CMediaStream::FinalConstruct(CMediaSource* pSource)
     VCamDiagLog(L"Stream.FinalConstruct");
     m_pSource = pSource;
     if (pSource == nullptr) return E_INVALIDARG;
-
-    InitializeCriticalSection(&m_cs);
-    m_csInit = true;
 
     HRESULT hr = MFCreateEventQueue(&m_pEventQueue);
     if (FAILED(hr)) return hr;
@@ -729,7 +723,7 @@ bool CMediaStream::AcquireV2Frame(UINT32* pW, UINT32* pH, UINT32* pStride)
     BYTE* pStaging = nullptr;
     SIZE_T cbStaging = 0;
     {
-        vcam::CsGuard guard(&m_cs);
+        ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(m_cs);
         if (m_pV2Staging == nullptr) {
             try { m_pV2Staging = std::make_unique_for_overwrite<BYTE[]>(vcam::VCamV2MaxFrameSize); }
             catch (const std::bad_alloc&) { m_pV2Staging.reset(); }
@@ -894,7 +888,7 @@ HRESULT CMediaStream::DeliverNextSample(IUnknown* pToken)
     }
 
     {
-        vcam::CsGuard guard(&m_cs);
+        ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(m_cs);
         if (m_pNv12Scratch == nullptr) {
             try { m_pNv12Scratch = std::make_unique_for_overwrite<BYTE[]>(vcam::VCamFrameSize); }
             catch (const std::bad_alloc&) { m_pNv12Scratch.reset(); }

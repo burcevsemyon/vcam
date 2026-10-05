@@ -15,7 +15,6 @@
 #include <new>
 #include "../Common/SharedMemoryContract.h"
 #include "../Common/MappedViewOfFilePtr.h"
-#include "../Common/CriticalSectionGuard.h"
 #include "../Common/WinUtil.h"
 
 using vcam::HrHex;
@@ -34,8 +33,8 @@ struct Settings {
 
 // Frame produced by the decode thread; the 30 FPS writer publishes it.
 static std::unique_ptr<BYTE[]> g_pFrame;
-static CRITICAL_SECTION g_frameCs;   // guards g_pFrame
-static CRITICAL_SECTION g_targetCs;  // guards g_targetPath / g_targetMode
+static ATL::CComAutoCriticalSection g_frameCs;   // guards g_pFrame
+static ATL::CComAutoCriticalSection g_targetCs;  // guards g_targetPath / g_targetMode
 static HANDLE g_hStopEvent = nullptr;
 
 static std::wstring g_cliSource;     // argv[1] fallback source
@@ -460,7 +459,7 @@ static DWORD WINAPI DecodeThread(LPVOID)
     while (WaitForSingleObject(g_hStopEvent, 0) != WAIT_OBJECT_0) {
         std::wstring want;
         {
-            vcam::CsGuard guard(&g_targetCs);
+            ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(g_targetCs);
             want = g_targetPath;
         }
 
@@ -536,7 +535,7 @@ static DWORD WINAPI DecodeThread(LPVOID)
                 DWORD maxLen = 0, curLen = 0;
                 if (SUCCEEDED(buf->Lock(&data, &maxLen, &curLen)) && data) {
                     {
-                        vcam::CsGuard guard(&g_frameCs);
+                        ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(g_frameCs);
                         RenderToFrame(data, vs.outW, vs.outH, vs.stride, g_pFrame.get());
                     }
                     buf->Unlock();
@@ -614,7 +613,7 @@ static DWORD WINAPI SettingsWatcherThread(LPVOID)
         }
         if (pathChanged) {
             {
-                vcam::CsGuard guard(&g_targetCs);
+                ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(g_targetCs);
                 g_targetPath = want;
             }
             wprintf(L"[settings] mediaPath -> %s\n", want.c_str());
@@ -652,8 +651,6 @@ int wmain(int argc, wchar_t* argv[])
     }
     memset(pFrame.get(), 0, vcam::VCamFrameSize);
 
-    InitializeCriticalSection(&g_frameCs);
-    InitializeCriticalSection(&g_targetCs);
     g_pFrame = std::move(pFrame);
     g_targetPath = initial;
     g_targetMode = settings.mediaMode;
@@ -672,8 +669,6 @@ int wmain(int argc, wchar_t* argv[])
         LocalFree(pSecDesc);
         g_pFrame.reset();
         CloseHandle(g_hStopEvent);
-        DeleteCriticalSection(&g_frameCs);
-        DeleteCriticalSection(&g_targetCs);
         return 1;
     }
 
@@ -711,7 +706,7 @@ int wmain(int argc, wchar_t* argv[])
 
         _InterlockedExchangeAdd64((volatile LONGLONG*)&pHeader->seq, 1);
         {
-            vcam::CsGuard guard(&g_frameCs);
+            ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(g_frameCs);
             memcpy(pFrameSlot, g_pFrame.get(), vcam::VCamFrameSize);
         }
         pHeader->frameWriteIndex = slot;
@@ -734,8 +729,6 @@ int wmain(int argc, wchar_t* argv[])
     hSection.Close();
     LocalFree(pSecDesc);
     CloseHandle(g_hStopEvent);
-    DeleteCriticalSection(&g_frameCs);
-    DeleteCriticalSection(&g_targetCs);
     g_pFrame.reset();
     return 0;
 }

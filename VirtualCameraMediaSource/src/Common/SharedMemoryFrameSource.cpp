@@ -6,7 +6,6 @@
 
 #include "FrameCopy.h"
 #include "SectionHeaderInit.h"
-#include "CriticalSectionGuard.h"
 
 namespace {
 
@@ -75,8 +74,6 @@ HRESULT SharedMemoryFrameSource::Init()
 {
     if (m_bInit) return S_OK;
     if (m_bShutDown) return E_UNEXPECTED;
-
-    InitializeCriticalSection(&m_cs);
 
     PSECURITY_DESCRIPTOR pSecDesc = nullptr;
     if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
@@ -170,7 +167,7 @@ HRESULT SharedMemoryFrameSource::AcquireFrame(BYTE* pDest, DWORD timeoutMs)
     // сэмплы (включая fallback/NO SIGNAL) — хост/hold-watch видят «потребитель есть».
     TouchReader();
 
-    // Фаза 1 (под локом): снимок режима/события/заголовка. CsGuard защищает
+    // Фаза 1 (под локом): снимок режима/события/заголовка. Гард защищает
     // только reader-состояние (кэш/хендлы/флаги/вью секции); seqlock-чтение
     // кадра синхронизируется с писателем через seq в SHM (другой процесс),
     // не через этот лок. Wait/sleep — ВНЕ лока: параллельные клиенты не
@@ -180,7 +177,7 @@ HRESULT SharedMemoryFrameSource::AcquireFrame(BYTE* pDest, DWORD timeoutMs)
     vcam::VCamSectionHeader* pHeader;
     LONGLONG startSeq = 0;
     {
-        vcam::CsGuard guard(&m_cs);
+        ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(m_cs);
         if (!m_bInit || m_bShutDown) return E_UNEXPECTED;
         offline = m_bOffline;
         hReady = m_hReadyEvent;
@@ -211,7 +208,7 @@ HRESULT SharedMemoryFrameSource::AcquireFrame(BYTE* pDest, DWORD timeoutMs)
 
     // Фаза 3 (под локом): кэш/маппинг/копирование — как и раньше, но уже без
     // удержания лока во время ожидания.
-    vcam::CsGuard guard(&m_cs);
+    ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(m_cs);
     if (!m_bInit || m_bShutDown) return FallbackFrame(pDest);
     if (offline) {
         return FallbackFrame(pDest);
@@ -270,7 +267,7 @@ HRESULT SharedMemoryFrameSource::FallbackFrame(BYTE* pDest)
 
 void SharedMemoryFrameSource::Shutdown()
 {
-    vcam::CsGuard guard(&m_cs);
+    ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(m_cs);
     if (m_bShutDown) { return; }
     m_bShutDown = true;
     m_bInit = false;

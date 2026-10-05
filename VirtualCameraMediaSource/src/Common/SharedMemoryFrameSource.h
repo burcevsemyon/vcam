@@ -27,7 +27,7 @@ private:
     ~SharedMemoryFrameSource();
     HRESULT FallbackFrame(BYTE* pDest);
 
-    CRITICAL_SECTION m_cs;
+    mutable ATL::CComAutoCriticalSection m_cs;
     bool m_bInit = false;
     bool m_bShutDown = false;
     ATL::CHandle m_hSection;

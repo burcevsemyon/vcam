@@ -3,7 +3,6 @@
 #include <atlbase.h>
 #include <cstring>
 
-#include "CriticalSectionGuard.h"
 
 namespace {
 
@@ -23,16 +22,11 @@ bool ReadUtf8File(const std::wstring& path, std::string& out)
 
 } // namespace
 
-SettingsWatcher::SettingsWatcher()
-{
-    InitializeCriticalSection(&cs_);
-    csInit_ = true;
-}
+SettingsWatcher::SettingsWatcher() = default;
 
 SettingsWatcher::~SettingsWatcher()
 {
     Stop();
-    if (csInit_) { DeleteCriticalSection(&cs_); csInit_ = false; }
 }
 
 bool SettingsWatcher::Start(const std::wstring& path, ChangeCallback cb)
@@ -48,7 +42,7 @@ bool SettingsWatcher::Start(const std::wstring& path, ChangeCallback cb)
     if (!ReadUtf8File(path_, raw)) raw.clear();
 
     {
-        vcam::CsGuard guard(&cs_);
+        ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);
         current_ = s;
         hasCurrent_ = loaded;
         lastRaw_ = raw;
@@ -77,7 +71,7 @@ void SettingsWatcher::Stop()
 
 bool SettingsWatcher::Current(Settings& out) const
 {
-    vcam::CsGuard guard(&cs_);
+    ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);
     out = current_;
     bool ok = hasCurrent_;
     return ok;
@@ -98,7 +92,7 @@ void SettingsWatcher::PollLoop()
         if (!ReadUtf8File(path_, raw)) {
             // Файл исчез: сбрасываем базу, чтобы повторное появление сработало.
             {
-                vcam::CsGuard guard(&cs_);
+                ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);
                 lastRaw_.clear();
             }
             continue;
@@ -106,7 +100,7 @@ void SettingsWatcher::PollLoop()
 
         bool same = false;
         {
-            vcam::CsGuard guard(&cs_);
+            ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);
             same = (raw == lastRaw_);
         }
         if (same) continue;
@@ -115,7 +109,7 @@ void SettingsWatcher::PollLoop()
         if (!ReadUtf8File(path_, raw)) continue;
 
         {
-            vcam::CsGuard guard(&cs_);
+            ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);
             same = (raw == lastRaw_);
             if (!same) lastRaw_ = raw;
         }
@@ -127,7 +121,7 @@ void SettingsWatcher::PollLoop()
         bool changed;
         ChangeCallback cb;
         {
-            vcam::CsGuard guard(&cs_);
+            ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);
             changed = (!hasCurrent_ || s != current_);
             if (changed) { current_ = s; hasCurrent_ = true; }
             cb = cb_;

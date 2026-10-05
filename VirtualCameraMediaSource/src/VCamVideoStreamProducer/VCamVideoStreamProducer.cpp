@@ -38,17 +38,17 @@ SettingsWatcher g_watcher;
 NOTIFYICONDATAW g_nid = {};
 ATL::CHandle g_logFile;
 
-CRITICAL_SECTION g_statusCs;
+ATL::CComAutoCriticalSection g_statusCs;
 std::wstring g_statusText = L"Нет сигнала (старт)";
 
-CRITICAL_SECTION g_hotkeyCs;
+ATL::CComAutoCriticalSection g_hotkeyCs;
 HotkeySection g_hotkey;
 std::wstring g_hotkeyReturnType = L"static";
 bool g_hotkeyBorrowed = false;
 ULONGLONG g_hotkeyBorrowTickMs = 0;
 
-CRITICAL_SECTION g_settingsCs;
-SettingsFileGuard::SettingsFileGuard() : guard_(&g_settingsCs) {}
+ATL::CComAutoCriticalSection g_settingsCs;
+SettingsFileGuard::SettingsFileGuard() : guard_(g_settingsCs) {}
 SettingsFileGuard::~SettingsFileGuard() = default;
 
 RecordHotkeySection g_recHotkey;
@@ -157,9 +157,6 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     }
     if (GetLastError() == ERROR_ALREADY_EXISTS) ResetEvent(g_stop);
     g_dirty.Attach(CreateEventW(nullptr, FALSE, FALSE, nullptr));
-    InitializeCriticalSection(&g_statusCs);
-    InitializeCriticalSection(&g_hotkeyCs);
-    InitializeCriticalSection(&g_settingsCs);
 
     ApplyAutostartFromSettings();
 
@@ -179,9 +176,6 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
                              0, 0, 0, 0, nullptr, nullptr, g_inst, nullptr);
     if (!g_hwnd) {
         Log(L"[host] CreateWindowEx failed: %lu", GetLastError());
-        DeleteCriticalSection(&g_settingsCs);
-        DeleteCriticalSection(&g_hotkeyCs);
-        DeleteCriticalSection(&g_statusCs);
         g_dirty.Close();
         g_stop.Close();
         ReleaseMutex(g_mutex);
@@ -192,7 +186,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     {
         Settings initS;
         if (initS.Load(DefaultSettingsPath())) {
-            vcam::CsGuard guard(&g_hotkeyCs);
+            ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(g_hotkeyCs);
             g_hotkey = initS.hotkey;
             g_recHotkey = initS.recordHotkey;
         }
@@ -256,9 +250,6 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
 
     g_dirty.Close();
     g_stop.Close();
-    DeleteCriticalSection(&g_settingsCs);
-    DeleteCriticalSection(&g_hotkeyCs);
-    DeleteCriticalSection(&g_statusCs);
     ReleaseMutex(g_mutex);
     g_mutex.Close();
     Log(L"[host] exit");

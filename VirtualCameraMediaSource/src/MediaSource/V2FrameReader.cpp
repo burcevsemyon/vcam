@@ -1,6 +1,5 @@
 #include "V2FrameReader.h"
 #include <wchar.h>
-#include "CriticalSectionGuard.h"
 
 namespace vcam_v2 {
 namespace {
@@ -16,16 +15,11 @@ const wchar_t* BaseName(const wchar_t* namedObject)
 
 } // namespace
 
-V2Reader::V2Reader()
-{
-    InitializeCriticalSection(&m_cs);
-    m_csInit = true;
-}
+V2Reader::V2Reader() = default;
 
 V2Reader::~V2Reader()
 {
     Close();
-    if (m_csInit) DeleteCriticalSection(&m_cs);
 }
 
 void V2Reader::Close()
@@ -39,7 +33,7 @@ void V2Reader::Close()
 
 bool V2Reader::EnsureOpen()
 {
-    vcam::CsGuard guard(&m_cs);
+    ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(m_cs);
     if (m_pHeader != nullptr) return true;
 
     // ТОЛЬКО чтение существующей секции: OpenFileMapping(FILE_MAP_READ),
@@ -124,7 +118,7 @@ bool V2Reader::Acquire(BYTE* pDest, SIZE_T cap, UINT32* pW, UINT32* pH,
 
     HANDLE hReady = nullptr;
     {
-        vcam::CsGuard guard(&m_cs);
+        ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(m_cs);
         hReady = m_hReadyEvent.m_h;
         if (m_pHeader == nullptr) return false;
     }

@@ -31,8 +31,7 @@ private:
     static DWORD WINAPI ThreadProc(LPVOID self);
     void PollLoop();
 
-    mutable CRITICAL_SECTION cs_ = {};
-    bool csInit_ = false;
+    mutable ATL::CComAutoCriticalSection cs_;
     std::wstring path_;
     ChangeCallback cb_;
     Settings current_;

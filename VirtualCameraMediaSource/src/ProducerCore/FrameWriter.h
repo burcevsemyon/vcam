@@ -102,8 +102,7 @@ private:
     bool OpenV2(std::wstring& err, SECURITY_ATTRIBUTES* sa);
     void CloseV2();
 
-    CRITICAL_SECTION cs_ = {};
-    bool csInit_ = false;
+    mutable ATL::CComAutoCriticalSection cs_;
     ATL::CHandle hSection_;
     ATL::CHandle hReady_;
     PSECURITY_DESCRIPTOR pSecDesc_ = nullptr;

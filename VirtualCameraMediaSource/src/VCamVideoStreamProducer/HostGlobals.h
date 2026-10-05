@@ -7,7 +7,6 @@
 
 #include "Settings.h"
 #include "SettingsWatcher.h"
-#include "CriticalSectionGuard.h"
 
 inline constexpr wchar_t kMutexName[] = L"VCamVideoStreamProducer.Instance";
 inline constexpr wchar_t kStopEventName[] = L"VCamVideoStreamProducer.Stop";
@@ -43,21 +42,21 @@ extern SettingsWatcher g_watcher;
 extern NOTIFYICONDATAW g_nid;
 extern ATL::CHandle g_logFile;
 
-extern CRITICAL_SECTION g_statusCs;
+extern ATL::CComAutoCriticalSection g_statusCs;
 extern std::wstring g_statusText;
 
-extern CRITICAL_SECTION g_hotkeyCs;
+extern ATL::CComAutoCriticalSection g_hotkeyCs;
 extern HotkeySection g_hotkey;
 extern std::wstring g_hotkeyReturnType;
 extern bool g_hotkeyBorrowed;
 extern ULONGLONG g_hotkeyBorrowTickMs;
 
-extern CRITICAL_SECTION g_settingsCs;
+extern ATL::CComAutoCriticalSection g_settingsCs;
 struct SettingsFileGuard {
     SettingsFileGuard();
     ~SettingsFileGuard();
 private:
-    vcam::CsGuard guard_;
+    ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard_;
 };
 
 extern RecordHotkeySection g_recHotkey;

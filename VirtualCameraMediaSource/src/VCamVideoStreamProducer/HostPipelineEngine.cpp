@@ -2,7 +2,7 @@
 
 #include "Settings.h"
 #include "SharedMemoryContract.h"
-#include "CriticalSectionGuard.h"
+#include <atlbase.h>
 
 #include <windows.h>
 #include <shlobj.h>
@@ -63,17 +63,13 @@ void ClearRecordState()
 }
 
 struct SettingsFileGuard {
-    SettingsFileGuard() : guard(&m_settingsCs) {}
-    static CRITICAL_SECTION m_settingsCs;
+    SettingsFileGuard() : guard(m_settingsCs) {}
+    static ATL::CComAutoCriticalSection m_settingsCs;
 private:
-    vcam::CsGuard guard;
+    ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard;
 };
 
-CRITICAL_SECTION SettingsFileGuard::m_settingsCs = []() {
-    CRITICAL_SECTION cs;
-    InitializeCriticalSection(&cs);
-    return cs;
-}();
+ATL::CComAutoCriticalSection SettingsFileGuard::m_settingsCs;
 
 } // namespace
 

@@ -8,7 +8,6 @@
 #include "HostRecording.h"
 #include "HostHotkey.h"
 #include "HostStatus.h"
-#include "CriticalSectionGuard.h"
 
 std::wstring TargetLabel(const SourceConfig& cfg)
 {
@@ -64,7 +63,7 @@ void ApplySettingsDiff(HostPipelineEngine& e, HotkeySection& curHotkey,
     if (s.hotkey != curHotkey) {
         curHotkey = s.hotkey;
         {
-            vcam::CsGuard guard(&g_hotkeyCs);
+            ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(g_hotkeyCs);
             g_hotkey = s.hotkey;
         }
         PostMessageW(g_hwnd, WM_REAPPLY_HOTKEY, 0, 0);
@@ -72,7 +71,7 @@ void ApplySettingsDiff(HostPipelineEngine& e, HotkeySection& curHotkey,
     if (s.recordHotkey != curRecHotkey) {
         curRecHotkey = s.recordHotkey;
         {
-            vcam::CsGuard guard(&g_hotkeyCs);
+            ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(g_hotkeyCs);
             g_recHotkey = s.recordHotkey;
         }
         PostMessageW(g_hwnd, WM_REAPPLY_HOTKEY, 0, 0);
@@ -80,12 +79,12 @@ void ApplySettingsDiff(HostPipelineEngine& e, HotkeySection& curHotkey,
     SourceConfig want = ToSourceConfig(s);
     bool borrowed = false;
     {
-        vcam::CsGuard guard(&g_hotkeyCs);
+        ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(g_hotkeyCs);
         borrowed = g_hotkeyBorrowed;
     }
     if (borrowed && want.type != L"video") {
         {
-            vcam::CsGuard guard(&g_hotkeyCs);
+            ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(g_hotkeyCs);
             g_hotkeyBorrowed = false;
             g_hotkeyBorrowTickMs = 0;
         }
@@ -103,7 +102,7 @@ void CheckBorrowedReturn(HostPipelineEngine& e, const std::wstring& settingsPath
     bool borrowedNow = false;
     ULONGLONG borrowTick = 0;
     {
-        vcam::CsGuard guard(&g_hotkeyCs);
+        ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(g_hotkeyCs);
         borrowedNow = g_hotkeyBorrowed;
         borrowTick = g_hotkeyBorrowTickMs;
     }
@@ -122,13 +121,13 @@ void CheckBorrowedReturn(HostPipelineEngine& e, const std::wstring& settingsPath
 
 void SetStatus(const std::wstring& text)
 {
-    vcam::CsGuard guard(&g_statusCs);
+    ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(g_statusCs);
     g_statusText = text;
 }
 
 std::wstring GetStatus()
 {
-    vcam::CsGuard guard(&g_statusCs);
+    ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(g_statusCs);
     std::wstring s = g_statusText;
     return s;
 }

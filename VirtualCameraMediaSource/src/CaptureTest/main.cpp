@@ -182,7 +182,7 @@ static int RunDirectMode(int numFrames, const wchar_t* outputPrefix)
 
     // Create the media source
     ATL::CComPtr<IMFMediaSource> pSource;
-    hr = CoCreateInstance(CLSID_VCamMediaSource, nullptr, CLSCTX_INPROC_SERVER, IID_IMFMediaSource, (void**)&pSource);
+    hr = pSource.CoCreateInstance(CLSID_VCamMediaSource, nullptr, CLSCTX_INPROC_SERVER);
     if (FAILED(hr)) {
         LogW(L"CoCreateInstance failed: 0x%08X", hr);
         MFShutdown();

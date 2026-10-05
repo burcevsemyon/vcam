@@ -52,7 +52,7 @@ private:
     // никакие ресурсы/состояние не тронуты (иначе — UAF под живым DecodeLoop).
     bool Shutdown(DWORD timeoutMs);
 
-    CRITICAL_SECTION cs_ = {};
+    mutable ATL::CComAutoCriticalSection cs_;
     SourceConfig cfg_;
     ATL::CHandle thread_;
     ATL::CHandle stopEvent_;

@@ -13,7 +13,6 @@
 #include "HostCameraLifecycle.h"
 #include "HostStatus.h"
 #include "HostTray.h"
-#include "CriticalSectionGuard.h"
 
 void OnSettingsChanged(const Settings&) { SetEvent(g_dirty); }
 
@@ -29,7 +28,7 @@ void ShowTrayMenu(HWND hwnd)
     bool borrowedMenu = false;
     std::wstring retMenu;
     {
-        vcam::CsGuard guard(&g_hotkeyCs);
+        ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(g_hotkeyCs);
         borrowedMenu = g_hotkeyBorrowed;
         retMenu = g_hotkeyReturnType;
     }

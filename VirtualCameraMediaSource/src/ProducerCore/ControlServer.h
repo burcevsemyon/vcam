@@ -1,6 +1,7 @@
 #pragma once
 
 #include <windows.h>
+#include <atlbase.h>
 
 #include <string>
 #include <vector>
@@ -64,7 +65,7 @@ private:
     HANDLE mutex_ = nullptr;
     HANDLE stopEvent_ = nullptr;
     HANDLE acceptThread_ = nullptr;
-    mutable CRITICAL_SECTION cs_;
+    mutable ATL::CComAutoCriticalSection cs_;
     bool running_ = false;
     bool stopping_ = false;
     struct Client {

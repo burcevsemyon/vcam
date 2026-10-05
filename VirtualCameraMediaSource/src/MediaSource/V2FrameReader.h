@@ -112,8 +112,7 @@ private:
     bool ReadSnapshot(UINT32* pW, UINT32* pH, UINT32* pStride, UINT32* pFrameSize,
                       UINT32* pIdx);
 
-    CRITICAL_SECTION m_cs;
-    bool m_csInit = false;
+    mutable ATL::CComAutoCriticalSection m_cs;
     ATL::CHandle m_hSection;
     ATL::CHandle m_hReadyEvent; // SYNCHRONIZE-only: ждём, не сбрасываем
     vcam::MappedViewOfFilePtr m_view;

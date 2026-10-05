@@ -7,7 +7,6 @@
 #include "HostLogging.h"
 #include "HostRecording.h"
 #include "HostHotkey.h"
-#include "CriticalSectionGuard.h"
 
 std::wstring HotkeyStatePath()
 {
@@ -81,7 +80,7 @@ void ApplyHotkeyRegistration()
     HotkeySection hk;
     RecordHotkeySection rk;
     {
-        vcam::CsGuard guard(&g_hotkeyCs);
+        ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(g_hotkeyCs);
         hk = g_hotkey;
         rk = g_recHotkey;
     }
@@ -104,7 +103,7 @@ bool AutoReturnBorrowedVideo(const std::wstring& settingsPath, const wchar_t* wh
     bool borrowed = false;
     std::wstring ret;
     {
-        vcam::CsGuard guard(&g_hotkeyCs);
+        ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(g_hotkeyCs);
         borrowed = g_hotkeyBorrowed;
         ret = g_hotkeyReturnType;
     }
@@ -118,7 +117,7 @@ bool AutoReturnBorrowedVideo(const std::wstring& settingsPath, const wchar_t* wh
     }
     if (back.sourceType != L"video") {
         {
-            vcam::CsGuard guard(&g_hotkeyCs);
+            ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(g_hotkeyCs);
             g_hotkeyBorrowed = false;
             g_hotkeyBorrowTickMs = 0;
         }
@@ -136,7 +135,7 @@ bool AutoReturnBorrowedVideo(const std::wstring& settingsPath, const wchar_t* wh
         return false;
     }
     {
-        vcam::CsGuard guard(&g_hotkeyCs);
+        ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(g_hotkeyCs);
         g_hotkeyBorrowed = false;
         g_hotkeyBorrowTickMs = 0;
     }
@@ -162,7 +161,7 @@ void OnHotkeyPressed()
     bool borrowed = false;
     std::wstring retType;
     {
-        vcam::CsGuard guard(&g_hotkeyCs);
+        ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(g_hotkeyCs);
         display = HotkeyDisplay(g_hotkey);
         borrowed = g_hotkeyBorrowed;
         retType = g_hotkeyReturnType;
@@ -172,7 +171,7 @@ void OnHotkeyPressed()
         if (s.sourceType != L"video") {
             std::wstring from = s.sourceType;
             {
-                vcam::CsGuard guard(&g_hotkeyCs);
+                ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(g_hotkeyCs);
                 g_hotkeyReturnType = from;
                 g_hotkeyBorrowed = true;
                 g_hotkeyBorrowTickMs = GetTickCount64();
@@ -180,7 +179,7 @@ void OnHotkeyPressed()
             s.sourceType = L"video";
             if (!s.Save(path)) {
                 {
-                    vcam::CsGuard guard(&g_hotkeyCs);
+                    ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(g_hotkeyCs);
                     g_hotkeyBorrowed = false;
                     g_hotkeyBorrowTickMs = 0;
                 }
@@ -209,7 +208,7 @@ void OnHotkeyPressed()
         return;
     }
     {
-        vcam::CsGuard guard(&g_hotkeyCs);
+        ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(g_hotkeyCs);
         g_hotkeyBorrowed = false;
         g_hotkeyBorrowTickMs = 0;
     }
@@ -221,7 +220,7 @@ void OnRecordHotkeyPressed()
 {
     std::wstring display;
     {
-        vcam::CsGuard guard(&g_hotkeyCs);
+        ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(g_hotkeyCs);
         display = HotkeyDisplay(g_recHotkey);
     }
 

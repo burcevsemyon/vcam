@@ -3,7 +3,6 @@
 #include <sddl.h>
 
 #include "FrameCopy.h"
-#include "CriticalSectionGuard.h"
 #include "ImageLayout.h"
 #include "SectionHeaderInit.h"
 
@@ -26,8 +25,6 @@ constexpr LONGLONG kFrameIntervalMs = 33; // 30 FPS
 
 FrameWriter::FrameWriter()
 {
-    InitializeCriticalSection(&cs_);
-    csInit_ = true;
     QueryPerformanceFrequency(&freq_);
     cache_.resize(vcam::VCamFrameSize);
 }
@@ -36,7 +33,6 @@ FrameWriter::~FrameWriter()
 {
     Close();
     if (hPaceTimer_) { CloseHandle(hPaceTimer_); hPaceTimer_ = nullptr; }
-    if (csInit_) { DeleteCriticalSection(&cs_); csInit_ = false; }
 }
 
 bool FrameWriter::Open(std::wstring& err)
@@ -356,7 +352,7 @@ bool FrameWriter::WriteFrame(const uint8_t* bgrx, int stride)
 
     bool ok;
     {
-        vcam::CsGuard guard(&cs_);
+        ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);
         vcam::CopyFrameRowwise(cache_.data(), vcam::VCamStride, bgrx, (size_t)stride,
                                vcam::VCamWidth, vcam::VCamHeight, vcam::VCamPixelSize);
         hasFrame_ = true;
@@ -394,7 +390,7 @@ bool FrameWriter::WriteFrameNative(const uint8_t* bgrx, int stride, uint32_t w, 
 
     bool ok;
     {
-        vcam::CsGuard guard(&cs_);
+        ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);
     // v1: даунскейл натива до 720p letterbox (MFT, fallback CPU); вход уже
     // 720p-packed — прямое копирование как в WriteFrame.
     if (w == vcam::VCamWidth && h == vcam::VCamHeight && stride == (int)vcam::VCamStride) {
@@ -447,7 +443,7 @@ bool FrameWriter::FlushLast()
 
     bool ok;
     {
-        vcam::CsGuard guard(&cs_);
+        ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);
         ok = hasFrame_ && PublishLocked();
         if (v2open_ && hasV2Frame_) PublishLockedV2();
     }

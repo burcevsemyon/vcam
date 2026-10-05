@@ -15,7 +15,6 @@
 #include <utility>
 
 #include "CameraControls.h"
-#include "CriticalSectionGuard.h"
 #include "SharedMemoryContract.h"
 #include "WinUtil.h"
 
@@ -249,21 +248,17 @@ std::string ErrorResponse(HRESULT hr, const char* msg)
 
 } // namespace
 
-ControlServer::ControlServer()
-{
-    InitializeCriticalSection(&cs_);
-}
+ControlServer::ControlServer() = default;
 
 ControlServer::~ControlServer()
 {
     Stop();
-    DeleteCriticalSection(&cs_);
 }
 
 HRESULT ControlServer::Start(CameraControls* controls)
 {
     if (!controls) return E_INVALIDARG;
-    vcam::CsGuard guard(&cs_);
+    ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);
     if (running_) {
         return S_FALSE;
     }
@@ -306,7 +301,7 @@ void ControlServer::Stop()
 {
     HANDLE accept = nullptr;
     {
-        vcam::CsGuard guard(&cs_);
+        ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);
         if (!running_) {
             return;
         }
@@ -325,7 +320,7 @@ void ControlServer::Stop()
         CloseHandle(accept);
     }
     {
-        vcam::CsGuard guard(&cs_);
+        ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);
         for (const Client& c : clients_) {
             if (c.thread) {
                 WaitForSingleObject(c.thread, INFINITE);
@@ -344,7 +339,7 @@ void ControlServer::Stop()
 
 bool ControlServer::IsRunning() const
 {
-    vcam::CsGuard guard(&cs_);
+    ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);
     bool r = running_;
     return r;
 }
@@ -394,7 +389,7 @@ void ControlServer::AcceptLoop()
             Sleep(500);
             bool stop = false;
             {
-                vcam::CsGuard guard(&cs_);
+                ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);
                 stop = stopping_;
             }
             if (stop) break;
@@ -419,7 +414,7 @@ void ControlServer::AcceptLoop()
             // Клиент подключился и сразу отвалился между Create и Connect.
             bool stop = false;
             {
-                vcam::CsGuard guard(&cs_);
+                ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);
                 stop = stopping_;
             }
             if (stop) break;
@@ -428,7 +423,7 @@ void ControlServer::AcceptLoop()
 
         bool stop = false;
         {
-            vcam::CsGuard guard(&cs_);
+            ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);
             stop = stopping_;
         }
         if (stop) {
@@ -452,7 +447,7 @@ void ControlServer::AcceptLoop()
         }
         cp.release(); // владение передано ClientProc (там unique_ptr)
         {
-            vcam::CsGuard guard(&cs_);
+            ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);
             clients_.emplace_back(t.Detach(), rawPipe);
         }
     }
@@ -497,7 +492,7 @@ void ControlServer::HandleClient(HANDLE pipe)
                                    DUPLICATE_SAME_ACCESS);
         ATL::CHandle me(rawMe);
         {
-            vcam::CsGuard guard(&cs_);
+            ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);
             for (auto it = clients_.begin(); it != clients_.end(); ++it) {
                 if (dup && static_cast<HANDLE>(me) != nullptr && it->thread) {
                     DWORD idIt = GetThreadId(it->thread);
@@ -524,7 +519,7 @@ std::string ControlServer::ProcessLine(const std::string& line)
     if (!op || !op->isString) return ErrorResponse(E_INVALIDARG, "missing op");
     CameraControls* ctl = nullptr;
     {
-        vcam::CsGuard guard(&cs_);
+        ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);
         ctl = controls_;
     }
 

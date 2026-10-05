@@ -11,7 +11,6 @@
 #include <cstring>
 
 #include "FrameCopy.h"
-#include "CriticalSectionGuard.h"
 #include "ImageLayout.h"
 #include "SharedMemoryContract.h"
 #include "WinUtil.h"
@@ -259,10 +258,7 @@ bool VideoFileSource::ScaleFrameTo720pLocked(BYTE* dst, LONG dstride)
     return true;
 }
 
-VideoFileSource::VideoFileSource()
-{
-    InitializeCriticalSection(&cs_);
-}
+VideoFileSource::VideoFileSource() = default;
 
 VideoFileSource::~VideoFileSource()
 {
@@ -270,13 +266,12 @@ VideoFileSource::~VideoFileSource()
     // DecodeLoop это UB, хуже ожидания.
     if (!Shutdown(3000) && thread_)
         Shutdown(INFINITE);
-    DeleteCriticalSection(&cs_);
 }
 
 void VideoFileSource::SetFailed(const std::wstring& reason)
 {
     {
-        vcam::CsGuard guard(&cs_);
+        ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);
         failed_ = true;
         failReason_ = reason;
         frameReady_ = false;
@@ -288,7 +283,7 @@ bool VideoFileSource::Open(const SourceConfig& cfg, std::wstring& err)
 {
     bool reuse = false;
     {
-        vcam::CsGuard guard(&cs_);
+        ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);
         // Закончившийся play-once с тем же конфигом не переиспользуем: он уже
         // отдал "ended" и кадров не даст — нужен новый проход с начала файла.
         reuse = open_ && !failed_ && !ended_ && cfg == cfg_;
@@ -308,7 +303,7 @@ bool VideoFileSource::Open(const SourceConfig& cfg, std::wstring& err)
     // до первого кадра NativeSize=false, Render=false (нет данных).
     cfg_ = cfg;
     {
-        vcam::CsGuard guard(&cs_);
+        ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);
         frame_.clear();
         frameW_ = frameH_ = 0;
         frameReady_ = false;
@@ -341,7 +336,7 @@ bool VideoFileSource::Render(uint8_t* bgrx, int stride, std::wstring& err)
 
     bool ready = false;
     {
-        vcam::CsGuard guard(&cs_);
+        ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);
         if (!open_) err = L"video source is not open";
         else if (failed_) err = failReason_;
         else if (ended_) err = L"ended";
@@ -362,7 +357,7 @@ bool VideoFileSource::Render(uint8_t* dst, int stride, uint32_t w, uint32_t h,
 
     bool ready = false;
     {
-        vcam::CsGuard guard(&cs_);
+        ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);
         if (!open_) err = L"video source is not open";
         else if (failed_) err = failReason_;
         else if (ended_) err = L"ended";
@@ -384,7 +379,7 @@ bool VideoFileSource::Render(uint8_t* dst, int stride, uint32_t w, uint32_t h,
 
 bool VideoFileSource::NativeSize(uint32_t& w, uint32_t& h)
 {
-    vcam::CsGuard guard(&cs_);
+    ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);
     bool ok = open_ && !failed_ && frameReady_ && frameW_ != 0 && frameH_ != 0;
     w = ok ? frameW_ : vcam::VCamWidth;
     h = ok ? frameH_ : vcam::VCamHeight;
@@ -393,7 +388,7 @@ bool VideoFileSource::NativeSize(uint32_t& w, uint32_t& h)
 
 bool VideoFileSource::Ended() const
 {
-    vcam::CsGuard guard(&cs_);
+    ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);
     bool e = ended_;
     return e;
 }
@@ -414,7 +409,7 @@ bool VideoFileSource::Shutdown(DWORD timeoutMs)
     stopEvent_.Close();
 
     {
-        vcam::CsGuard guard(&cs_);
+        ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);
         open_ = false;
         frameReady_ = false;
         failed_ = false;
@@ -502,7 +497,7 @@ void VideoFileSource::DecodeLoop()
                 DWORD maxLen = 0, curLen = 0;
                 if (SUCCEEDED(buf->Lock(&data, &maxLen, &curLen)) && data) {
                     {
-                        vcam::CsGuard guard(&cs_);
+                        ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);
                         // Первый сэмпл фиксирует нативные размеры (кламп к cap);
                         // frame_ дальше только перезаписывается (ридер размер не меняет).
                         if (frameW_ == 0 || frameH_ == 0) {
@@ -539,7 +534,7 @@ void VideoFileSource::DecodeLoop()
                 // Один проход сыгран: кадров больше не будет, seek не делаем.
                 // Последний кадр остаётся в frame_, но Render даёт "ended".
                 {
-                    vcam::CsGuard guard(&cs_);
+                    ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);
                     ended_ = true;
                 }
                 LogVideo(L"end of stream (play-once, no loop)");

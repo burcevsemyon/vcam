@@ -302,7 +302,7 @@ HRESULT CMediaSource::Start(IMFPresentationDescriptor* pPresentationDescriptor, 
 
     // 2. Queue MENewStream (stream as IUnknown) on source queue
     ATL::CComPtr<IUnknown> pStreamUnknown;
-    hr = m_pStream->QueryInterface(IID_IUnknown, reinterpret_cast<void**>(&pStreamUnknown));
+    hr = m_pStream->QueryInterface(IID_PPV_ARGS(&pStreamUnknown));
     if (FAILED(hr) || pStreamUnknown == nullptr) {
         PROPVARIANT vtErr;
         PropVariantInit(&vtErr);
@@ -434,7 +434,7 @@ HRESULT CMediaSource::GetStreamByStreamID(LPGUID pguidStreamID, IMFMediaStream**
     if (m_shutdown) return MF_E_SHUTDOWN;
     if (m_pStream == nullptr) return MF_E_NOT_FOUND;
     if (*pguidStreamID != VCAM_VIDEO_STREAM_ID && *pguidStreamID != GUID_NULL) return MF_E_NOT_FOUND;
-    return m_pStream->QueryInterface(IID_IMFMediaStream, reinterpret_cast<void**>(ppStream));
+    return m_pStream->QueryInterface(IID_PPV_ARGS(ppStream));
 }
 
 HRESULT CMediaSource::SetD3DManager(IUnknown* pManager)
@@ -522,7 +522,7 @@ HRESULT CMediaSource::FinalConstruct()
     VCamDiagLog(L"Src.FinalConstruct");
     // Канонический IUnknown для IAM-прокси (делегирование ссылок/QI).
     ATL::CComPtr<IUnknown> pUnk;
-    HRESULT hrInit = QueryInterface(IID_IUnknown, reinterpret_cast<void**>(&pUnk));
+    HRESULT hrInit = QueryInterface(IID_PPV_ARGS(&pUnk));
     if (SUCCEEDED(hrInit) && pUnk != nullptr) {
         m_procAmpProxy.Init(pUnk);
         m_camProxy.Init(pUnk);
