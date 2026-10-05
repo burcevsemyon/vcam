@@ -86,9 +86,15 @@ public sealed class MainForm : Form
 
     // Hotkey hint (always visible, single line between the mode row and the
     // crop fields): current combination from settings.json + borrow state.
-    // The combination itself lives in settings.json (hotkey {modifiers, vk});
-    // there is no editor — a wrong value falls back to Ctrl+Alt+V in host+UI.
+    // The combination is edited via the «Изменить…» button (HotkeyEditForm,
+    // global-key capture); values land in settings.json on «Сохранить» and the
+    // host re-registers the hotkey live (~1 с). Invalid file values fall back
+    // to Ctrl+Alt+V in host+UI.
     private readonly Label _hotkeyHint = new();
+    private readonly Button _hotkeyEdit = new();
+    private readonly Button _recHotkeyEdit = new();
+    private int _hotkeyMods = 3, _hotkeyVk = 0x56;
+    private int _recHotkeyMods = 3, _recHotkeyVk = 0x52;
 
     // Ether recording to .mp4 (host SinkWriter, frames as broadcast):
     // path box (default in settings "record"), browse, start/stop button,
@@ -169,7 +175,7 @@ public sealed class MainForm : Form
         SetupFooter();
 
         Controls.AddRange(new Control[] { _preview, _cropView, _videoPanel, _cameraPanel, _pathLabel, _mediaLabel, _mediaCombo,
-            _qualityLabel, _qualityCombo, _recGroup, _hotkeyHint,
+            _qualityLabel, _qualityCombo, _recGroup, _hotkeyHint, _hotkeyEdit,
             _mode, _openButton, _fullSizeButton, _saveButton, _reloadButton, _hostStatusLabel, _hostButton, _helpButton,
             _cropXLabel, _cropX, _cropYLabel, _cropY, _cropWLabel, _cropW, _cropHLabel, _cropH, _cropKeepAspect, _hintLabel });
 
@@ -281,10 +287,17 @@ public sealed class MainForm : Form
 
         // Hotkey hint: single always-visible line under the mode row.
         _hotkeyHint.Location = new Point(12, 562);
-        _hotkeyHint.Size = new Size(856, 22);
+        _hotkeyHint.Size = new Size(740, 22);
         _hotkeyHint.ForeColor = Color.DimGray;
         _hotkeyHint.Name = "hotkeyHint";
-        _hotkeyHint.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+        _hotkeyHint.Anchor = AnchorStyles.Top | AnchorStyles.Left;
+
+        _hotkeyEdit.Location = new Point(758, 558);
+        _hotkeyEdit.Size = new Size(110, 28);
+        _hotkeyEdit.Text = "Изменить…";
+        _hotkeyEdit.Name = "hotkeyEditButton";
+        _hotkeyEdit.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        _hotkeyEdit.Click += OnHotkeyEditClicked;
     }
 
     private void SetupCropFields()
@@ -552,13 +565,20 @@ public sealed class MainForm : Form
         _recStatus.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
 
         _recHint.Location = new Point(16, 79);
-        _recHint.Size = new Size(824, 22);
+        _recHint.Size = new Size(700, 22);
         _recHint.ForeColor = Color.DimGray;
         _recHint.Name = "recHint";
-        _recHint.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+        _recHint.Anchor = AnchorStyles.Top | AnchorStyles.Left;
+
+        _recHotkeyEdit.Location = new Point(730, 76);
+        _recHotkeyEdit.Size = new Size(110, 28);
+        _recHotkeyEdit.Text = "Изменить…";
+        _recHotkeyEdit.Name = "recHotkeyEditButton";
+        _recHotkeyEdit.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        _recHotkeyEdit.Click += OnRecHotkeyEditClicked;
 
         _recGroup.Controls.AddRange(new Control[] {
-            _recPathLabel, _recPathText, _recBrowse, _recButton, _recStatus, _recHint });
+            _recPathLabel, _recPathText, _recBrowse, _recButton, _recStatus, _recHint, _recHotkeyEdit });
     }
 
     // Any user edit after Load/Save marks the form dirty; while dirty the
@@ -971,7 +991,11 @@ public sealed class MainForm : Form
         // В3: программная синхронизация — не пользовательский выбор.
         _mediaChangedByUser = false;
         _cropKeepAspect.Checked = s.CropKeepAspect;
-        UpdateHotkeyHint(s);
+        _hotkeyMods = s.HotkeyModifiers;
+        _hotkeyVk = s.HotkeyVk;
+        _recHotkeyMods = s.RecordHotkeyModifiers;
+        _recHotkeyVk = s.RecordHotkeyVk;
+        UpdateHotkeyHint();
         UpdateHotkeyBorrowLabel();
         // В4: пустой record.path показываем пустым боксом (имя-файл генерится
         // только в момент старта записи хостом), пример — серым плейсхолдером.
@@ -979,7 +1003,7 @@ public sealed class MainForm : Form
         // же сохранялся в settings — файл запоминал мусорное имя.
         _recPathText.Text = s.RecordPath ?? "";
         _recPathText.PlaceholderText = DefaultRecPath();
-        UpdateRecHint(s);
+        UpdateRecHint();
         _mode.SelectedIndex = s.ScaleMode switch
         {
             ScaleMode.Cover => 1,
@@ -1164,13 +1188,6 @@ public sealed class MainForm : Form
     // Mirrors the host HotkeyDisplay (C++): modifiers are RegisterHotKey bits
     // (1=Alt, 2=Ctrl, 4=Shift, 8=Win), vk is the Virtual-Key code. Garbage is
     // already normalised to Ctrl+Alt+V by Settings parsing on both sides.
-    private static string HotkeyDisplay(Settings s) =>
-        HotkeyDisplayMods(s.HotkeyModifiers, s.HotkeyVk);
-
-    // Same for the record hotkey (settings recordHotkey, default Ctrl+Alt+R).
-    private static string RecordHotkeyDisplay(Settings s) =>
-        HotkeyDisplayMods(s.RecordHotkeyModifiers, s.RecordHotkeyVk);
-
     private static string HotkeyDisplayMods(int mods, int vk)
     {
         var sb = new StringBuilder();
@@ -1198,14 +1215,36 @@ public sealed class MainForm : Form
         return sb.ToString();
     }
 
+    // Hotkey editors: modal capture (HotkeyEditForm), values go to
+    // settings.json on «Сохранить»; the host re-registers live (~1 с).
+    private void OnHotkeyEditClicked(object? sender, EventArgs e)
+    {
+        using var dlg = new HotkeyEditForm("Хоткей — показать видео один раз", _hotkeyMods, _hotkeyVk);
+        if (dlg.ShowDialog(this) != DialogResult.OK) return;
+        _hotkeyMods = dlg.Modifiers;
+        _hotkeyVk = dlg.Vk;
+        MarkDirty();
+        UpdateHotkeyHint();
+    }
+
+    private void OnRecHotkeyEditClicked(object? sender, EventArgs e)
+    {
+        using var dlg = new HotkeyEditForm("Хоткей — старт/стоп записи", _recHotkeyMods, _recHotkeyVk);
+        if (dlg.ShowDialog(this) != DialogResult.OK) return;
+        _recHotkeyMods = dlg.Modifiers;
+        _recHotkeyVk = dlg.Vk;
+        MarkDirty();
+        UpdateRecHint();
+    }
+
     // Always-visible hotkey line: current combination + what it does.
     // В5: автовозврат — и по концу ролика, и при обрыве (битый файл уводит
     // хост в fallback — borrow снимается там же, а не висит вечно).
-    private void UpdateHotkeyHint(Settings s)
+    private void UpdateHotkeyHint()
     {
-        _hotkeyHint.Text = "Горячая клавиша: " + HotkeyDisplay(s) +
+        _hotkeyHint.Text = "Горячая клавиша: " + HotkeyDisplayMods(_hotkeyMods, _hotkeyVk) +
             " — показать видео один раз (повторно — вернуться сразу; " +
-            "после конца ролика — автовозврат, при битом файле — возврат сразу). Комбинация — в settings.json (hotkey).";
+            "после конца ролика — автовозврат, при битом файле — возврат сразу). Комбинация — кнопкой «Изменить…».";
     }
 
     // Borrowed-video indicator, polled (host timer tick + panel updates): while
@@ -1335,10 +1374,10 @@ public sealed class MainForm : Form
         File.Move(tmp, cmdPath, true);
     }
 
-    private void UpdateRecHint(Settings s)
+    private void UpdateRecHint()
     {
-        _recHint.Text = "Горячая клавиша записи: " + RecordHotkeyDisplay(s) +
-            " — старт/стоп (комбинация — в settings.json (recordHotkey)).";
+        _recHint.Text = "Горячая клавиша записи: " + HotkeyDisplayMods(_recHotkeyMods, _recHotkeyVk) +
+            " — старт/стоп (комбинация — кнопкой «Изменить…»).";
     }
 
     // REC indicator, polled on the host timer tick (1 s): red dot + elapsed
@@ -1860,6 +1899,10 @@ public sealed class MainForm : Form
             }
         }
         settings.RecordPath = _recPathText.Text.Trim();
+        settings.HotkeyModifiers = _hotkeyMods;
+        settings.HotkeyVk = _hotkeyVk;
+        settings.RecordHotkeyModifiers = _recHotkeyMods;
+        settings.RecordHotkeyVk = _recHotkeyVk;
 
         if (CurrentSourceType == SourceTypes.Video)
         {
