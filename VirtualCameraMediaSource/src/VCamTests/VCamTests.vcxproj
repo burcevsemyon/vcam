@@ -49,6 +49,7 @@
     <ClCompile Include="test_framecopy_layout.cpp" />
     <ClCompile Include="test_edge_cases.cpp" />
     <ClCompile Include="test_sections.cpp" />
+    <ClCompile Include="test_v2downscale.cpp" />
     <ClCompile Include="..\ProducerCore\Settings.cpp" />
   </ItemGroup>
   <ItemGroup>
