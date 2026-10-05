@@ -18,6 +18,8 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "VCamSettingsUi", "src\VCamS
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "VCamUiTests", "src\VCamUiTests\VCamUiTests.csproj", "{3BDA5AB9-E22A-4386-951A-EB229830AC05}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "VCamTests", "src\VCamTests\VCamTests.vcxproj", "{B1C2D3E4-F5A6-4B7C-8D9E-0F1A2B3C4D5E}"
+EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "VCamPreview", "src\VCamPreview\VCamPreview.vcxproj", "{BD0A8099-A996-4EDF-BA33-C1130004C78A}"
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ProducerCore", "src\ProducerCore\ProducerCore.vcxproj", "{4259BECC-52DD-4B64-8ACC-B93D93DDA175}"
@@ -55,6 +57,8 @@ Global
 		{81302D8C-7CB8-4E2C-9224-B1BA3947C47A}.Release|x64.Build.0 = Release|x64
 		{3BDA5AB9-E22A-4386-951A-EB229830AC05}.Release|x64.ActiveCfg = Release|x64
 		{3BDA5AB9-E22A-4386-951A-EB229830AC05}.Release|x64.Build.0 = Release|x64
+		{B1C2D3E4-F5A6-4B7C-8D9E-0F1A2B3C4D5E}.Release|x64.ActiveCfg = Release|x64
+		{B1C2D3E4-F5A6-4B7C-8D9E-0F1A2B3C4D5E}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
