@@ -46,6 +46,9 @@
     <ClCompile Include="test_imagelayout.cpp" />
     <ClCompile Include="test_quality.cpp" />
     <ClCompile Include="test_hotkey.cpp" />
+    <ClCompile Include="test_framecopy_layout.cpp" />
+    <ClCompile Include="test_edge_cases.cpp" />
+    <ClCompile Include="test_sections.cpp" />
     <ClCompile Include="..\ProducerCore\Settings.cpp" />
   </ItemGroup>
   <ItemGroup>
