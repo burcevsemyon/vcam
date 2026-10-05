@@ -84,23 +84,17 @@ void CopyRowsTopDown(BYTE* dst, LONG dstStride, const BYTE* src, LONG srcStride,
 
 } // namespace
 
-VideoProcessorScaler::VideoProcessorScaler()
-    : mutex_(new std::mutex())
-{
-}
+VideoProcessorScaler::VideoProcessorScaler() = default;
 
 VideoProcessorScaler::~VideoProcessorScaler()
 {
-    std::lock_guard<std::mutex> lock(*(std::mutex*)mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     TeardownLocked();
-    void* m = mutex_;
-    mutex_ = nullptr;
-    delete (std::mutex*)m;
 }
 
 void VideoProcessorScaler::Shutdown()
 {
-    std::lock_guard<std::mutex> lock(*(std::mutex*)mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     TeardownLocked();
 }
 
@@ -146,7 +140,7 @@ bool VideoProcessorScaler::ScaleEx(const BYTE* src, UINT w, UINT h, LONG stride,
     if (!PackedMetrics(subtype, w, h, stride, packedStride, inSize))
         return false;
 
-    std::lock_guard<std::mutex> lock(*(std::mutex*)mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     if (!EnsureInit())
         return false;
     if (!Configure(w, h, subtype))

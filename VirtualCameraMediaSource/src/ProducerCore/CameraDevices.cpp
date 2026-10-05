@@ -42,13 +42,9 @@ std::wstring PropStr(IMFActivate* dev, const GUID& key)
 bool ContainsNoCase(const std::wstring& hay, const std::wstring& needle)
 {
     if (needle.empty() || hay.size() < needle.size()) return false;
-    for (size_t i = 0; i + needle.size() <= hay.size(); i++) {
-        size_t j = 0;
-        for (; j < needle.size(); j++)
-            if (towlower(hay[i + j]) != towlower(needle[j])) break;
-        if (j == needle.size()) return true;
-    }
-    return false;
+    return std::search(hay.begin(), hay.end(), needle.begin(), needle.end(),
+        [](wchar_t a, wchar_t b) { return towlower(a) == towlower(b); })
+        != hay.end();
 }
 
 bool StartsWithNoCase(const std::wstring& s, const wchar_t* prefix)

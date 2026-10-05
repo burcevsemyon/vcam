@@ -11,6 +11,7 @@
 #include <cmath>
 #include <string>
 #include <vector>
+#include <memory>
 #include <new>
 #include "../Common/SharedMemoryContract.h"
 #include "../Common/MappedViewOfFilePtr.h"
@@ -32,7 +33,7 @@ struct Settings {
 };
 
 // Frame produced by the decode thread; the 30 FPS writer publishes it.
-static BYTE* g_pFrame = nullptr;
+static std::unique_ptr<BYTE[]> g_pFrame;
 static CRITICAL_SECTION g_frameCs;   // guards g_pFrame
 static CRITICAL_SECTION g_targetCs;  // guards g_targetPath / g_targetMode
 static HANDLE g_hStopEvent = nullptr;
@@ -536,7 +537,7 @@ static DWORD WINAPI DecodeThread(LPVOID)
                 if (SUCCEEDED(buf->Lock(&data, &maxLen, &curLen)) && data) {
                     {
                         vcam::CsGuard guard(&g_frameCs);
-                        RenderToFrame(data, vs.outW, vs.outH, vs.stride, g_pFrame);
+                        RenderToFrame(data, vs.outW, vs.outH, vs.stride, g_pFrame.get());
                     }
                     buf->Unlock();
                     if (!firstFrameLogged) {
@@ -642,16 +643,18 @@ int wmain(int argc, wchar_t* argv[])
     wprintf(L"Loading video: %s\n", initial.c_str());
     fflush(stdout);
 
-    BYTE* pFrame = new (std::nothrow) BYTE[vcam::VCamFrameSize];
+    std::unique_ptr<BYTE[]> pFrame;
+    try { pFrame = std::make_unique_for_overwrite<BYTE[]>(vcam::VCamFrameSize); }
+    catch (const std::bad_alloc&) { pFrame.reset(); }
     if (!pFrame) {
         wprintf(L"Out of memory!\n");
         return 1;
     }
-    memset(pFrame, 0, vcam::VCamFrameSize);
+    memset(pFrame.get(), 0, vcam::VCamFrameSize);
 
     InitializeCriticalSection(&g_frameCs);
     InitializeCriticalSection(&g_targetCs);
-    g_pFrame = pFrame;
+    g_pFrame = std::move(pFrame);
     g_targetPath = initial;
     g_targetMode = settings.mediaMode;
     g_hStopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
@@ -667,7 +670,7 @@ int wmain(int argc, wchar_t* argv[])
     if (!hSection) {
         wprintf(L"CreateFileMappingW failed: %lu\n", GetLastError());
         LocalFree(pSecDesc);
-        delete[] g_pFrame; g_pFrame = nullptr;
+        g_pFrame.reset();
         CloseHandle(g_hStopEvent);
         DeleteCriticalSection(&g_frameCs);
         DeleteCriticalSection(&g_targetCs);
@@ -709,7 +712,7 @@ int wmain(int argc, wchar_t* argv[])
         _InterlockedExchangeAdd64((volatile LONGLONG*)&pHeader->seq, 1);
         {
             vcam::CsGuard guard(&g_frameCs);
-            memcpy(pFrameSlot, g_pFrame, vcam::VCamFrameSize);
+            memcpy(pFrameSlot, g_pFrame.get(), vcam::VCamFrameSize);
         }
         pHeader->frameWriteIndex = slot;
         QueryPerformanceCounter(&counter);
@@ -733,7 +736,6 @@ int wmain(int argc, wchar_t* argv[])
     CloseHandle(g_hStopEvent);
     DeleteCriticalSection(&g_frameCs);
     DeleteCriticalSection(&g_targetCs);
-    delete[] g_pFrame;
-    g_pFrame = nullptr;
+    g_pFrame.reset();
     return 0;
 }

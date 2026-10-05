@@ -34,7 +34,7 @@ static void DiagEmit(const wchar_t* fmt, va_list args)
         L"C:\\Users\\Semen\\AppData\\Local\\Temp\\opencode\\msrc_diag.log",
         L"C:\\Windows\\Temp\\vcam_ls_load.log"
     };
-    for (auto p : paths) {
+    for (const auto& p : paths) {
         FILE* f = nullptr;
         if (_wfopen_s(&f, p, L"a") == 0 && f != nullptr) {
             fputws(full, f);

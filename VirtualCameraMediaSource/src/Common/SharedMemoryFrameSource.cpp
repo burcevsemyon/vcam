@@ -114,7 +114,8 @@ HRESULT SharedMemoryFrameSource::Init()
         m_hReadyEvent.Close();
         if (pSecDesc) LocalFree(pSecDesc);
 
-        m_pCache.reset(new (std::nothrow) BYTE[vcam::VCamFrameSize]);
+        try { m_pCache = std::make_unique_for_overwrite<BYTE[]>(vcam::VCamFrameSize); }
+        catch (const std::bad_alloc&) { m_pCache.reset(); }
         if (m_pCache == nullptr) {
             m_bShutDown = true;
             return E_OUTOFMEMORY;
@@ -130,7 +131,8 @@ HRESULT SharedMemoryFrameSource::Init()
         m_hSection.Close();
         if (pSecDesc) LocalFree(pSecDesc);
 
-        m_pCache.reset(new (std::nothrow) BYTE[vcam::VCamFrameSize]);
+        try { m_pCache = std::make_unique_for_overwrite<BYTE[]>(vcam::VCamFrameSize); }
+        catch (const std::bad_alloc&) { m_pCache.reset(); }
         if (m_pCache == nullptr) {
             m_bShutDown = true;
             return E_OUTOFMEMORY;
@@ -146,7 +148,8 @@ HRESULT SharedMemoryFrameSource::Init()
     if (m_pHeader->magic != vcam::VCamMagic) {
         vcam::InitSectionHeader(m_pHeader);
     }
-    m_pCache.reset(new (std::nothrow) BYTE[vcam::VCamFrameSize]);
+    try { m_pCache = std::make_unique_for_overwrite<BYTE[]>(vcam::VCamFrameSize); }
+    catch (const std::bad_alloc&) { m_pCache.reset(); }
     if (m_pCache == nullptr) {
         m_view.Close(); m_pHeader = nullptr;
         m_hReadyEvent.Close();

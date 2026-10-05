@@ -92,6 +92,8 @@ bool ConfigureCameraReader(IMFSourceReader* rdr, UINT32 targetH, DWORD& outStrea
     rdr->SetStreamSelection(vid, TRUE);
 
     std::vector<CamNativeType> natives;
+    // Типов у камеры обычно < 32 — один alloc вместо роста в цикле GetNativeMediaType.
+    natives.reserve(32);
     for (DWORD i = 0;; i++) {
         ATL::CComPtr<IMFMediaType> mt;
         if (FAILED(rdr->GetNativeMediaType(vid, i, &mt)) || !mt) break;
@@ -122,7 +124,7 @@ bool ConfigureCameraReader(IMFSourceReader* rdr, UINT32 targetH, DWORD& outStrea
         std::vector<vcam::camsource::CamTry> tries;
         tries.reserve(natives.size());
         for (const CamNativeType& n : natives)
-            tries.push_back({ ClassifySub(n.sub), n.w, n.h });
+            tries.emplace_back(ClassifySub(n.sub), n.w, n.h);
         const std::vector<size_t> sorted =
             vcam::camsource::SortIndicesByScore(tries, targetH);
         const std::vector<size_t> nv12 =

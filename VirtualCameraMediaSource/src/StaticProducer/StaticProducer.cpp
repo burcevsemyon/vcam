@@ -34,7 +34,7 @@ struct Settings {
     std::wstring mediaMode;      // "static" | "video"
 };
 
-static BYTE* g_pFrame = nullptr;
+static std::unique_ptr<BYTE[]> g_pFrame;
 static CRITICAL_SECTION g_frameCs;
 static HANDLE g_hStopEvent = nullptr;
 static std::wstring g_currentImagePath;
@@ -384,13 +384,14 @@ static DWORD WINAPI SettingsWatcherThread(LPVOID)
             continue;
         }
 
-        std::unique_ptr<BYTE[]> tmp(new (std::nothrow) BYTE[vcam::VCamFrameSize]);
+        std::unique_ptr<BYTE[]> tmp;
+        try { tmp = std::make_unique_for_overwrite<BYTE[]>(vcam::VCamFrameSize); }
+        catch (const std::bad_alloc&) { tmp.reset(); }
         if (!tmp) continue;
         if (TryLoadIntoBuffer(s, tmp.get())) {
             {
                 vcam::CsGuard guard(&g_frameCs);
-                delete[] g_pFrame;
-                g_pFrame = tmp.release();
+                g_pFrame = std::move(tmp);
                 g_currentImagePath = s.imagePath;
                 g_currentMode = s.mode;
                 g_currentCrop = s.crop;
@@ -424,15 +425,16 @@ int wmain(int argc, wchar_t* argv[])
 
     wprintf(L"Loading static image: %s (mode=%s)\n", settings.imagePath.c_str(), ModeName(settings.mode));
 
-    BYTE* pFrame = new (std::nothrow) BYTE[vcam::VCamFrameSize];
-    if (!pFrame || !TryLoadIntoBuffer(settings, pFrame)) {
+    std::unique_ptr<BYTE[]> pFrame;
+    try { pFrame = std::make_unique_for_overwrite<BYTE[]>(vcam::VCamFrameSize); }
+    catch (const std::bad_alloc&) { pFrame.reset(); }
+    if (!pFrame || !TryLoadIntoBuffer(settings, pFrame.get())) {
         wprintf(L"Failed to load or scale image!\n");
-        delete[] pFrame;
         return 1;
     }
 
     InitializeCriticalSection(&g_frameCs);
-    g_pFrame = pFrame;
+    g_pFrame = std::move(pFrame);
     g_currentImagePath = settings.imagePath;
     g_currentMode = settings.mode;
     g_currentCrop = settings.crop;
@@ -451,7 +453,7 @@ int wmain(int argc, wchar_t* argv[])
     if (!hSection) {
         wprintf(L"CreateFileMappingW failed: %lu\n", GetLastError());
         LocalFree(pSecDesc);
-        delete[] g_pFrame; g_pFrame = nullptr;
+        g_pFrame.reset();
         CloseHandle(g_hStopEvent);
         DeleteCriticalSection(&g_frameCs);
         return 1;
@@ -491,7 +493,7 @@ int wmain(int argc, wchar_t* argv[])
         _InterlockedExchangeAdd64((volatile LONGLONG*)&pHeader->seq, 1);
         {
             vcam::CsGuard guard(&g_frameCs);
-            memcpy(pFrameSlot, g_pFrame, vcam::VCamFrameSize);
+            memcpy(pFrameSlot, g_pFrame.get(), vcam::VCamFrameSize);
         }
         pHeader->frameWriteIndex = slot;
         QueryPerformanceCounter(&counter);
@@ -512,7 +514,6 @@ int wmain(int argc, wchar_t* argv[])
     LocalFree(pSecDesc);
     CloseHandle(g_hStopEvent);
     DeleteCriticalSection(&g_frameCs);
-    delete[] g_pFrame;
-    g_pFrame = nullptr;
+    g_pFrame.reset();
     return 0;
 }

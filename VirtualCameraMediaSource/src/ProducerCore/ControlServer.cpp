@@ -10,6 +10,8 @@
 
 #include <cstdio>
 #include <cwctype>
+#include <algorithm>
+#include <memory>
 #include <utility>
 
 #include "CameraControls.h"
@@ -196,9 +198,9 @@ bool ParseJsonObject(const std::string& line,
 const JsonValue* FindField(
     const std::vector<std::pair<std::string, JsonValue>>& fields, const char* key)
 {
-    for (const auto& f : fields)
-        if (f.first == key) return &f.second;
-    return nullptr;
+    auto it = std::find_if(fields.begin(), fields.end(),
+        [key](const auto& f) { return f.first == key; });
+    return (it == fields.end()) ? nullptr : &it->second;
 }
 
 // --- Построение ответов (имена/домены — ASCII из фиксированной таблицы) ---
@@ -435,22 +437,23 @@ void ControlServer::AcceptLoop()
         }
 
         HANDLE rawPipe = pipe.Detach();
-        auto* cp = new (std::nothrow) ClientParam{ this, rawPipe };
+        auto cp = std::unique_ptr<ClientParam>(
+            new (std::nothrow) ClientParam{ this, rawPipe });
         if (!cp) {
             DisconnectNamedPipe(rawPipe);
             CloseHandle(rawPipe);
             continue;
         }
-        ATL::CHandle t(CreateThread(nullptr, 0, ClientProc, cp, 0, nullptr));
+        ATL::CHandle t(CreateThread(nullptr, 0, ClientProc, cp.get(), 0, nullptr));
         if (!t) {
-            delete cp;
             DisconnectNamedPipe(rawPipe);
             CloseHandle(rawPipe);
-            continue;
+            continue; // cp удаляется здесь выходом из скоупа
         }
+        cp.release(); // владение передано ClientProc (там unique_ptr)
         {
             vcam::CsGuard guard(&cs_);
-            clients_.push_back({ t.Detach(), rawPipe });
+            clients_.emplace_back(t.Detach(), rawPipe);
         }
     }
 }

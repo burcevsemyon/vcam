@@ -7,6 +7,7 @@
 #include <Mferror.h>
 #include <atlbase.h>
 #include <cstdio>
+#include <array>
 #include <cstring>
 #include <cwchar>
 #include <cstdarg>
@@ -84,17 +85,17 @@ static void SaveBMP(const wchar_t* filename, const BYTE* rgb32Data, int width, i
 
     // File header
     DWORD fileSize = 14 + 40 + paddedRow * height;
-    unsigned char fileHeader[14] = {
+    std::array<unsigned char, 14> fileHeader = {
         'B', 'M',
         (unsigned char)(fileSize & 0xFF), (unsigned char)((fileSize >> 8) & 0xFF),
         (unsigned char)((fileSize >> 16) & 0xFF), (unsigned char)((fileSize >> 24) & 0xFF),
         0, 0, 0, 0,
         54, 0, 0, 0
     };
-    fwrite(fileHeader, 1, 14, f);
+    fwrite(fileHeader.data(), 1, fileHeader.size(), f);
 
     // DIB header
-    unsigned char dibHeader[40] = {
+    std::array<unsigned char, 40> dibHeader = {
         40, 0, 0, 0,
         (unsigned char)(width & 0xFF), (unsigned char)((width >> 8) & 0xFF),
         (unsigned char)((width >> 16) & 0xFF), (unsigned char)((width >> 24) & 0xFF),
@@ -103,7 +104,7 @@ static void SaveBMP(const wchar_t* filename, const BYTE* rgb32Data, int width, i
         1, 0, 24, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
     };
-    fwrite(dibHeader, 1, 40, f);
+    fwrite(dibHeader.data(), 1, dibHeader.size(), f);
 
     // Pixel data (bottom-up)
     unsigned char* dstRow = (unsigned char*)malloc(paddedRow);

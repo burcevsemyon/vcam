@@ -731,7 +731,8 @@ bool CMediaStream::AcquireV2Frame(UINT32* pW, UINT32* pH, UINT32* pStride)
     {
         vcam::CsGuard guard(&m_cs);
         if (m_pV2Staging == nullptr) {
-            m_pV2Staging.reset(new (std::nothrow) BYTE[vcam::VCamV2MaxFrameSize]);
+            try { m_pV2Staging = std::make_unique_for_overwrite<BYTE[]>(vcam::VCamV2MaxFrameSize); }
+            catch (const std::bad_alloc&) { m_pV2Staging.reset(); }
             m_cbV2Staging = (m_pV2Staging != nullptr) ? (SIZE_T)vcam::VCamV2MaxFrameSize : 0;
         }
         pStaging = m_pV2Staging.get();
@@ -894,7 +895,10 @@ HRESULT CMediaStream::DeliverNextSample(IUnknown* pToken)
 
     {
         vcam::CsGuard guard(&m_cs);
-        if (m_pNv12Scratch == nullptr) m_pNv12Scratch.reset(new (std::nothrow) BYTE[vcam::VCamFrameSize]);
+        if (m_pNv12Scratch == nullptr) {
+            try { m_pNv12Scratch = std::make_unique_for_overwrite<BYTE[]>(vcam::VCamFrameSize); }
+            catch (const std::bad_alloc&) { m_pNv12Scratch.reset(); }
+        }
     }
 
     // v2 первым: свежий валидный натив-кадр. Нет/мусор/таймаут — СТАРЫЙ

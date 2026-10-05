@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include <cstdint>
+#include <mutex>
 
 // Скейлер 1280x720 BGRX через Video Processor MFT (software, sysmem) с
 // CPU-fallback у вызывающего. Контракт shared memory не меняется: выход всегда
@@ -51,7 +52,7 @@ private:
 
     void* mft_ = nullptr;   // IMFTransform* (void* чтобы не тянуть MF в header)
     void* ctrl_ = nullptr;  // IMFVideoProcessorControl*
-    void* mutex_ = nullptr; // std::mutex* (pimpl чтобы не тянуть <mutex> в header)
+    std::mutex mutex_;      // потокобезопасность Scale/Shutdown/Teardown
 
     bool unavailable_ = false;
     bool streaming_ = false;

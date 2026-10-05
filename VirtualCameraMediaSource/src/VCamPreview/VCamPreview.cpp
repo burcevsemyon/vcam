@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cwchar>
 #include <cstring>
+#include <memory>
 #include <new>
 #include "../Common/SharedMemoryContract.h"
 #include "../Common/MappedViewOfFilePtr.h"
@@ -39,7 +40,7 @@ struct PreviewState {
     SIZE_T slotPitch = 0;    // байт на слот (v2: VCamV2MaxFrameSize, v1: frameSize)
 
     // frame staging (tightly packed rows: stride = width * 4)
-    BYTE* pFrame = nullptr;
+    std::unique_ptr<BYTE[]> pFrame;
     UINT32 frameW = 0, frameH = 0;
     UINT32 allocBytes = 0;
 
@@ -84,7 +85,7 @@ UINT64 NowMs() { return GetTickCount64(); }
 
 void ReleaseFrameBuffer()
 {
-    if (g.pFrame) { delete[] g.pFrame; g.pFrame = nullptr; }
+    g.pFrame.reset();
     g.allocBytes = 0;
     g.frameW = g.frameH = 0;
     g.haveFrame = false;
@@ -213,7 +214,9 @@ bool TryConnect(UINT64 now)
 
     UINT32 frameBytes = pHeader->stride * pHeader->height;
     if (frameBytes == 0 || frameBytes > kMaxFrameBytes) return false;
-    BYTE* pFrame = new (std::nothrow) BYTE[frameBytes];
+    std::unique_ptr<BYTE[]> pFrame;
+    try { pFrame = std::make_unique_for_overwrite<BYTE[]>(frameBytes); }
+    catch (const std::bad_alloc&) { pFrame.reset(); }
     if (!pFrame) {
         return false;
     }
@@ -224,7 +227,7 @@ bool TryConnect(UINT64 now)
     g.isV2 = candV2;
     g.slotPitch = slotPitch;
     g.pHeader = pHeader;
-    g.pFrame = pFrame;
+    g.pFrame = std::move(pFrame);
     g.frameW = pHeader->width;
     g.frameH = pHeader->height;
     g.allocBytes = frameBytes;
@@ -263,10 +266,11 @@ bool ReadFrame(LONGLONG* outSeq)
         if (w != g.frameW || h != g.frameH || (UINT64)srcStride * h > g.allocBytes) {
             UINT32 need = srcStride * h;
             if (need > kMaxFrameBytes) return false;
-            BYTE* pNew = new (std::nothrow) BYTE[need];
+            std::unique_ptr<BYTE[]> pNew;
+            try { pNew = std::make_unique_for_overwrite<BYTE[]>(need); }
+            catch (const std::bad_alloc&) { pNew.reset(); }
             if (!pNew) return false;
-            delete[] g.pFrame;
-            g.pFrame = pNew;
+            g.pFrame = std::move(pNew);
             g.allocBytes = need;
             g.frameW = w;
             g.frameH = h;
@@ -275,9 +279,9 @@ bool ReadFrame(LONGLONG* outSeq)
         const BYTE* pSrc = (const BYTE*)g.view.Get() + sizeof(vcam::VCamSectionHeader) + (SIZE_T)idx * g.slotPitch;
         if (dstStride != srcStride) {
             for (UINT32 y = 0; y < h; ++y)
-                memcpy(g.pFrame + (SIZE_T)y * dstStride, pSrc + (SIZE_T)y * srcStride, dstStride);
+                memcpy(g.pFrame.get() + (SIZE_T)y * dstStride, pSrc + (SIZE_T)y * srcStride, dstStride);
         } else {
-            memcpy(g.pFrame, pSrc, (SIZE_T)dstStride * h);
+            memcpy(g.pFrame.get(), pSrc, (SIZE_T)dstStride * h);
         }
 
         LONGLONG seq3 = g.pHeader->seq;
@@ -394,7 +398,7 @@ void PaintFrame(HDC memDC, int cw, int ch)
     // g.pFrame is a top-down tightly packed BGRX staging buffer, filled by
     // ReadFrame() on this same UI thread, so it is stable for the draw call.
     Gdiplus::Bitmap src((INT)g.frameW, (INT)g.frameH, (INT)(g.frameW * 4),
-                        PixelFormat32bppRGB, g.pFrame);
+                        PixelFormat32bppRGB, g.pFrame.get());
     if (src.GetLastStatus() != Gdiplus::Ok) return;
 
     Gdiplus::Graphics gfx(memDC);

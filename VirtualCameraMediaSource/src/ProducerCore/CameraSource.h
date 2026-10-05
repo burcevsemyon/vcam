@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
+#include <numeric>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -113,7 +114,7 @@ inline std::vector<size_t> SortIndicesByScore(const std::vector<CamTry>& tries,
                                               UINT32 targetH)
 {
     std::vector<size_t> idx(tries.size());
-    for (size_t i = 0; i < tries.size(); i++) idx[i] = i;
+    std::iota(idx.begin(), idx.end(), size_t{ 0 });
     std::stable_sort(idx.begin(), idx.end(), [&](size_t a, size_t b) {
         return NativeScoreFor(tries[a].w, tries[a].h, targetH) <
                NativeScoreFor(tries[b].w, tries[b].h, targetH);
@@ -126,6 +127,7 @@ inline std::vector<size_t> Nv12IndicesInOrder(const std::vector<CamTry>& tries,
                                               const std::vector<size_t>& sorted)
 {
     std::vector<size_t> out;
+    out.reserve(sorted.size());
     for (size_t i : sorted)
         if (i < tries.size() && tries[i].sub == CamSub::NV12) out.push_back(i);
     return out;
