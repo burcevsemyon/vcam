@@ -459,6 +459,10 @@ HRESULT CMediaStream::StartForSession()
     m_lastDeliverW = 0;
     m_lastDeliverH = 0;
     m_lastDeliverNv12 = false;
+    // Сброс троттлинга per-frame DiagEvent (perf-review).
+    m_loggedNoV2 = false;
+    m_lastLockLogTick = 0;
+    m_lastTooSmallTick = 0;
     if (m_pAllocator != nullptr && pInitType != nullptr) {
         HRESULT hrInit = m_pAllocator->InitializeSampleAllocator(10, pInitType);
         if (FAILED(hrInit)) {
@@ -797,7 +801,10 @@ HRESULT CMediaStream::DeliverLocalSample(BYTE*& pBits, ATL::CComPtr<IMFMediaBuff
         }
     }
     else if (!haveV2 && m_pNv12Scratch != nullptr) {
-        VCamDiagEvent(L"Stream.DeliverNextSample no v2 for %ux%u -> zero fill", w, h);
+        if (!m_loggedNoV2) { // perf: было 30/с в файл; достаточно раза за сессию
+            m_loggedNoV2 = true;
+            VCamDiagEvent(L"Stream.DeliverNextSample no v2 for %ux%u -> zero fill", w, h);
+        }
         RtlZeroMemory(pBits, needed);
     }
     else if (haveV2 && m_pNv12Scratch != nullptr) {
@@ -841,7 +848,10 @@ HRESULT CMediaStream::DeliverSharedSample(BYTE* pBits, ATL::CComPtr<IMFMediaBuff
         hr = pBuffer->SetCurrentLength(needed);
     }
     else if (!haveV2 && maxLen >= needed) {
-        VCamDiagEvent(L"Stream.DeliverNextSample no v2 for %ux%u -> empty sample", w, h);
+        if (!m_loggedNoV2) { // perf: было 30/с в файл; достаточно раза за сессию
+            m_loggedNoV2 = true;
+            VCamDiagEvent(L"Stream.DeliverNextSample no v2 for %ux%u -> empty sample", w, h);
+        }
         RtlZeroMemory(pBits, needed);
         hr = pBuffer->SetCurrentLength(0);
     }
@@ -853,7 +863,12 @@ HRESULT CMediaStream::DeliverSharedSample(BYTE* pBits, ATL::CComPtr<IMFMediaBuff
     else {
         RtlZeroMemory(pBits, needed);
         hr = pBuffer->SetCurrentLength(0);
-        VCamDiagEvent(L"Stream.DeliverNextSample buffer too small maxLen=%u needed=%u", maxLen, needed);
+        ULONGLONG nowTs = GetTickCount64();
+        if (m_lastTooSmallTick == 0 || nowTs - m_lastTooSmallTick >= 1000) {
+            // perf: было 30/с в файл при persistent mismatch; 1/с достаточно
+            m_lastTooSmallTick = nowTs;
+            VCamDiagEvent(L"Stream.DeliverNextSample buffer too small maxLen=%u needed=%u", maxLen, needed);
+        }
     }
     VCamDiagLog(L"Stream.DeliverNextSample AcquireFrame done, before Unlock");
     pBuffer->Unlock();
@@ -923,7 +938,13 @@ HRESULT CMediaStream::DeliverNextSample(IUnknown* pToken)
             DWORD maxLen = 0, curLen = 0;
             VCamDiagLog(L"Stream.DeliverNextSample before Lock");
             hr = pBuffer->Lock(&pBits, &maxLen, &curLen);
-            VCamDiagEvent(L"Stream.DeliverNextSample Lock hr=0x%08X bits=%p maxLen=%u curLen=%u", (unsigned)hr, (const void*)pBits, maxLen, curLen);
+            ULONGLONG nowLock = GetTickCount64();
+            if (m_lastLockLogTick == 0 || nowLock - m_lastLockLogTick >= 1000) {
+                // perf: было 30/с в файл (device-режим); 1/с достаточно для
+                // диагностики и e2e-окон (в окне несколько строк).
+                m_lastLockLogTick = nowLock;
+                VCamDiagEvent(L"Stream.DeliverNextSample Lock hr=0x%08X bits=%p maxLen=%u curLen=%u", (unsigned)hr, (const void*)pBits, maxLen, curLen);
+            }
         if (SUCCEEDED(hr)) {
             const DWORD needed = useNv12 ? nv12Bytes : rgbBytes;
             hr = DeliverSharedSample(pBits, pBuffer, w, h, useNv12, haveV2, v2w, v2h, v2stride, needed, maxLen);

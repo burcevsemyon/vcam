@@ -135,6 +135,11 @@ private:
     UINT32 m_lastDeliverW = 0;                       // last logged delivered size (diag dedupe)
     UINT32 m_lastDeliverH = 0;
     bool m_lastDeliverNv12 = false;
+    // Троттлинг per-frame DiagEvent (perf-review): без гарда строки ниже писались
+    // 30/с в файл. Сбрасываются в StartForSession (per-session).
+    bool m_loggedNoV2 = false;            // "no v2" уже залогировано в сессии
+    ULONGLONG m_lastLockLogTick = 0;      // последний Lock-лог (rate-limit 1/с)
+    ULONGLONG m_lastTooSmallTick = 0;     // последний "buffer too small" (rate-limit 1/с)
 
     MF_STREAM_STATE m_state = MF_STREAM_STATE_STOPPED;
     std::atomic<bool> m_shutdown{false}; // read from client threads, set by shutdown
