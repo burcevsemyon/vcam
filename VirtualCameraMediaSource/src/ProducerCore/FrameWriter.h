@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "SharedMemoryContract.h"
+#include "QualityLadder.h"
 #include "MappedViewOfFilePtr.h"
 #include "VideoProcessorScaler.h"
 
@@ -51,53 +52,12 @@ public:
     }
     const std::wstring& Quality() const { return quality_; }
 
-    // Чистая математика целевого размера v2 (без shm — для harness):
-    // source -> fit-кламп входа к cap; fixed1080p -> fit-кламп к 1920x1080
-    // (меньше — passthrough, лесенка только вниз); fixed720p -> 1280x720.
-    // false = мусор входа.
+    // Чистая математика целевого размера v2 (без shm — для harness).
+    // Реализация в Common/QualityLadder.h (общий код для продакшна и тестов).
     static bool ResolveV2Size(uint32_t srcW, uint32_t srcH, const std::wstring& quality,
                               uint32_t& outW, uint32_t& outH)
     {
-        if (srcW == 0 || srcH == 0 || srcW > 8192 || srcH > 8192) return false;
-        if (quality == L"fixed720p") {
-            outW = vcam::VCamWidth;
-            outH = vcam::VCamHeight;
-            return true;
-        }
-        if (quality == L"fixed1080p") {
-            // Cap ступени 1080p — константа (в контракте её нет, UI нет).
-            constexpr uint32_t capW = 1920, capH = 1080;
-            if (srcW <= capW && srcH <= capH) {
-                outW = srcW;
-                outH = srcH;
-                return true;
-            }
-            double s = (double)capW / srcW;
-            double s2 = (double)capH / srcH;
-            if (s2 < s) s = s2;
-            outW = (uint32_t)(srcW * s + 0.5);
-            outH = (uint32_t)(srcH * s + 0.5);
-            if (outW < 1) outW = 1;
-            if (outH < 1) outH = 1;
-            if (outW > capW) outW = capW;
-            if (outH > capH) outH = capH;
-            return true;
-        }
-        if (srcW <= vcam::VCamNativeCapW && srcH <= vcam::VCamNativeCapH) {
-            outW = srcW;
-            outH = srcH;
-            return true;
-        }
-        double s = (double)vcam::VCamNativeCapW / srcW;
-        double s2 = (double)vcam::VCamNativeCapH / srcH;
-        if (s2 < s) s = s2;
-        outW = (uint32_t)(srcW * s + 0.5);
-        outH = (uint32_t)(srcH * s + 0.5);
-        if (outW < 1) outW = 1;
-        if (outH < 1) outH = 1;
-        if (outW > vcam::VCamNativeCapW) outW = vcam::VCamNativeCapW;
-        if (outH > vcam::VCamNativeCapH) outH = vcam::VCamNativeCapH;
-        return true;
+        return vcam::ResolveV2Size(srcW, srcH, quality, outW, outH);
     }
 
     // Кладёт 720p-кадр в shared memory и кэширует его как последний удачный

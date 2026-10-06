@@ -228,6 +228,18 @@ H.264 8 Мбит/с, 1280×720@30, только видео (`.mp4`), финал�
 transient (`record_state.json` + `record_command.json`), переживание
 перезапуска не предусмотрено.
 
+## Наблюдаемость
+
+- **Логи** — единый формат строк `[дата время] [уровень] [область] сообщение`:
+  `host.log` (tray-хост), stdout консольного хоста, `msrc_diag.log` (media source);
+  ротация по cap (`.old`), уровни + `VCAM_DEBUG=1` для verbose-диагностики.
+- **Метрики** — `VCamProducerCli.exe status` (текст) и `status --json` (числа для
+  скриптов): writer-секции, запись, хоткеи, счётчики деградаций и runtime-метрики;
+  `status --ready` — быстрый gate готовности продьюсера.
+- **Диагностика** — в логе виден применённый конфиг и маркеры тихих деградаций;
+  падения оставляют минидамп и crash-маркер с последним шагом;
+  `VCamProducerCli.exe diag` собирает пакет для поддержки одной командой.
+
 ## Контракт общей памяти
 
 | Поле | Значение |
@@ -261,8 +273,15 @@ src/Common/
   SharedMemoryContract.h         layout section, имена, DACL, VCamFrameSize
   SharedMemoryFrameSource.h/.cpp consumer: ожидание события, копия кадра (seqlock), fallback
   SampleAllocatorControl.h       IKS_SAMPLEALLOCATORCONTROL
-  ProducerApi.h                  SourceConfig, IFrameSource (общий API продюсеров)
-  CriticalSectionGuard.h         header-only RAII-гард `vcam::CsGuard` (все локи проекта — через него)
+   ProducerApi.h                  SourceConfig, IFrameSource (общий API продюсеров)
+   QualityLadder.h                выбор размера v2-секции по quality (общий код продакшна и тестов)
+   Letterbox.h                    вписывание кадра с letterbox (общий код продакшна и тестов)
+   LogFormat.h                    единый формат строк лога `[дата] [уровень] [область]`
+   LogRotate.h                    ротация логов по cap (`.old`)
+   FailOpenCounters.h             атомарные счётчики тихих деградаций
+   FailOpenFile.h                 персистентность счётчиков fail-open для `status`
+   RuntimeCounters.h              runtime-метрики продьюсера (switches/fallbacks/время кадра) для `status --json`
+   CrashDump.h                    минидамп на необработанное исключение (host/CLI)
 src/ProducerCore/
   Settings.h/.cpp                чтение/миграция/запись settings.json, ToSourceConfig
   SettingsWatcher.h/.cpp         опрос 500 мс + debounce 200 мс, событие dirty

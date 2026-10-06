@@ -357,6 +357,27 @@ function Stop-Cli($proc) {
     }
 }
 
+# P1.3: readiness-gate вместо Start-Sleep 4. Опрашивает `status --ready`
+# (exit 0 = секция открыта и seq растёт) каждые 500 мс до TimeoutSec.
+# Возвращает $true если готов; $false по таймауту (вызывающий сам Fail'ит).
+function Wait-Ready([string]$phase, [int]$TimeoutSec = 10) {
+    $t0 = Get-Date
+    $deadline = $t0.AddSeconds($TimeoutSec)
+    for (;;) {
+        $out = ((& $Cli status --ready 2>&1) | Out-String).Trim()
+        if ($LASTEXITCODE -eq 0) {
+            $dt = [int]((Get-Date) - $t0).TotalSeconds
+            Write-Host "INFO: $phase ready in ${dt}s ($out)" -ForegroundColor Gray
+            return $true
+        }
+        if ((Get-Date) -ge $deadline) {
+            Write-Host "INFO: $phase NOT ready in ${TimeoutSec}s (last: $out)" -ForegroundColor Yellow
+            return $false
+        }
+        Start-Sleep -Milliseconds 500
+    }
+}
+
 # --- precondition: single writer AND nothing running from build outputs.
 # Two writers interleave frames (every moving/static assert becomes
 # unreliable), and a running exe is locked -> MSB3027 during the build below. ---
@@ -455,7 +476,7 @@ try {
     $errA = Join-Path $OutDir "cli_phase_a.err"
     $cliProc = Start-Process -FilePath $Cli -ArgumentList @("run", "--type", "video", "--path", $TestVideo) `
         -PassThru -WindowStyle Hidden -RedirectStandardOutput $logA -RedirectStandardError $errA
-    Start-Sleep -Seconds 4
+    if (-not (Wait-Ready "phase A")) { Fail "phase A: writer not ready in 10 s" }
     if ($cliProc.HasExited) {
         Fail "phase A: CLI exited early with code $($cliProc.ExitCode)"
     } else {
@@ -478,7 +499,7 @@ try {
     $errB = Join-Path $OutDir "cli_phase_b.err"
     $cliProc = Start-Process -FilePath $Cli -ArgumentList @("run") `
         -PassThru -WindowStyle Hidden -RedirectStandardOutput $logB -RedirectStandardError $errB
-    Start-Sleep -Seconds 4
+    if (-not (Wait-Ready "phase B")) { Fail "phase B: writer not ready in 10 s" }
     if ($cliProc.HasExited) {
         Fail "phase B: CLI exited early with code $($cliProc.ExitCode)"
     } else {
@@ -508,7 +529,7 @@ try {
     $errG = Join-Path $OutDir "cli_phase_g2.err"
     $cliProc = Start-Process -FilePath $Cli -ArgumentList @("run") `
         -PassThru -WindowStyle Hidden -RedirectStandardOutput $logG -RedirectStandardError $errG
-    Start-Sleep -Seconds 4
+    if (-not (Wait-Ready "phase G")) { Fail "phase G: writer not ready in 10 s" }
     if ($cliProc.HasExited) {
         Fail "phase G: CLI exited early with code $($cliProc.ExitCode)"
     } else {
@@ -559,7 +580,7 @@ try {
         $errH = Join-Path $OutDir "cli_phase_h.err"
         $cliProc = Start-Process -FilePath $Cli -ArgumentList @("run") `
             -PassThru -WindowStyle Hidden -RedirectStandardOutput $logH -RedirectStandardError $errH
-        Start-Sleep -Seconds 4
+        if (-not (Wait-Ready "phase H")) { Fail "phase H: writer not ready in 10 s" }
         if ($cliProc.HasExited) {
             Fail "phase H: CLI exited early with code $($cliProc.ExitCode)"
         } else {
@@ -805,7 +826,7 @@ try {
     $errF = Join-Path $OutDir "cli_phase_f.err"
     $cliProc = Start-Process -FilePath $Cli -ArgumentList @("run") `
         -PassThru -WindowStyle Hidden -RedirectStandardOutput $logF -RedirectStandardError $errF
-    Start-Sleep -Seconds 4
+    if (-not (Wait-Ready "phase F")) { Fail "phase F: writer not ready in 10 s" }
     if ($cliProc.HasExited) {
         Fail "phase F: CLI exited early with code $($cliProc.ExitCode)"
         Stop-Cli $cliProc
@@ -831,7 +852,7 @@ try {
         $errF2 = Join-Path $OutDir "cli_phase_f2.err"
         $cliProc = Start-Process -FilePath $Cli -ArgumentList @("run") `
             -PassThru -WindowStyle Hidden -RedirectStandardOutput $logF2 -RedirectStandardError $errF2
-        Start-Sleep -Seconds 4
+        if (-not (Wait-Ready "phase F restart")) { Fail "phase F restart: writer not ready in 10 s" }
         if ($cliProc.HasExited) {
             Fail "phase F: CLI restart exited early with code $($cliProc.ExitCode)"
             Stop-Cli $cliProc

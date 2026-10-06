@@ -1,4 +1,5 @@
 #include "Settings.h"
+#include "FailOpenCounters.h"
 
 #include <windows.h>
 #include <atlbase.h>
@@ -180,6 +181,24 @@ size_t FindKeyPos(const std::string& json, const char* key, size_t from = 0)
         p = json.find(k, p + 1);
     }
     return std::string::npos;
+}
+
+// true, если в JSON есть хотя бы один известный ключ (новой или legacy-схемы).
+// Пусто/битый файл без распознанных ключей = fail-open «дефолт» (P0.2).
+bool HasAnyKnownKey(const std::string& json)
+{
+    static const char* keys[] = {
+        // новая схема
+        "source", "static", "video", "camera", "quality", "hotkey",
+        "recordHotkey", "record", "autostart",
+        // legacy-схема
+        "imagePath", "mediaPath", "mediaMode", "scaleMode",
+        "cropX", "cropY", "cropW", "cropH", "cropKeepAspect"
+    };
+    for (const char* k : keys) {
+        if (FindKeyPos(json, k) != std::string::npos) return true;
+    }
+    return false;
 }
 
 // Возвращает границы содержимого объекта-значения ключа: [begin, end) между '{' и '}'.
@@ -395,6 +414,18 @@ bool Settings::Load(const std::wstring& path)
     if (sourceType.empty()) sourceType = L"static";
     std::wstring sm;
     if (ParseScaleMode(st.scaleMode, sm)) st.scaleMode = sm;
+
+    // fail-open (P0.2): файл прочитан, но ни одного известного ключа не найдено →
+    // битый/чужой JSON, молча применены дефолты. Счётчик + флаг; строку в лог
+    // пишет SettingsWatcher (у Settings нет доступа к Log). Пустой файл = норма.
+    if (json.find_first_not_of(" \t\r\n") == std::string::npos) {
+        brokenJson_ = false;
+    } else if (!HasAnyKnownKey(json)) {
+        vcam::IncFailOpen(vcam::FailOpen::SettingsBrokenJson);
+        brokenJson_ = true;
+    } else {
+        brokenJson_ = false;
+    }
     return true;
 }
 

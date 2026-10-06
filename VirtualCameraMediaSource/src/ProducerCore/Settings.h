@@ -98,6 +98,9 @@ struct Settings {
     // (в SourceConfig не входит; хост читает при старте записи).
     RecordSection record;
 
+    // fail-open маркер (P0.2): последний Load не распознал ни одного ключа → дефолт.
+    bool brokenJson_ = false;
+
     bool operator==(const Settings& o) const
     {
         return sourceType == o.sourceType && st == o.st && video == o.video &&
@@ -110,6 +113,9 @@ struct Settings {
     // Читает новую схему; без секций source/static/video/camera мигрирует из
     // старого формата (imagePath/mediaMode/mediaPath/scaleMode/crop*). false = файла нет/пуст.
     bool Load(const std::wstring& path);
+    // true, если последний Load прочитал файл, но не нашёл ни одного известного
+    // ключа (битый/нераспознанный JSON) → применены дефолты (fail-open, P0.2).
+    bool WasBrokenJson() const { return brokenJson_; }
     // Пишет ТОЛЬКО новую схему, UTF-8 без BOM.
     bool Save(const std::wstring& path) const;
     // Сериализация в новую схему (то же, что пишет Save) — для сравнения в watcher.

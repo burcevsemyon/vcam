@@ -6,6 +6,7 @@
 #include "SharedMemoryContract.h"
 #include "SharedMemoryFrameSource.h"
 #include "FrameCopy.h"
+#include "Letterbox.h"
 #include <mfapi.h>
 #include <Mferror.h>
 
@@ -458,6 +459,10 @@ HRESULT CMediaStream::StartForSession()
     m_lastDeliverW = 0;
     m_lastDeliverH = 0;
     m_lastDeliverNv12 = false;
+    // Сброс троттлинга per-frame DiagEvent (perf-review).
+    m_loggedNoV2 = false;
+    m_lastLockLogTick = 0;
+    m_lastTooSmallTick = 0;
     if (m_pAllocator != nullptr && pInitType != nullptr) {
         HRESULT hrInit = m_pAllocator->InitializeSampleAllocator(10, pInitType);
         if (FAILED(hrInit)) {
@@ -756,13 +761,13 @@ bool CMediaStream::DeliverFromV2(BYTE* pBits, UINT32 w, UINT32 h, bool useNv12,
         // 720p/640p/протухший-натив: letterbox-fit из живого v2
         // (16:9 fill, иное — letterbox). Безопасно для любого w/h: пишется
         // ровно w*h*4 под размер буфера цели.
-        vcam_v2::DownscaleRgb32Letterbox(pSrc, vstride, vw, vh,
+        vcam::LetterboxNearestFit(pSrc, vstride, vw, vh,
                                          pBits, (SIZE_T)w * 4, w, h);
         return true;
     }
     if (w == vcam::VCamWidth && h == vcam::VCamHeight && m_pNv12Scratch != nullptr) {
         // NV12-720: даунскейл v2 в скретч + та же конверсия, что раньше.
-        vcam_v2::DownscaleRgb32Letterbox(pSrc, vstride, vw, vh,
+        vcam::LetterboxNearestFit(pSrc, vstride, vw, vh,
                                          m_pNv12Scratch.get(), vcam::VCamStride,
                                          vcam::VCamWidth, vcam::VCamHeight);
         ConvertRgb32ToNv12(m_pNv12Scratch.get(), pBits,
@@ -796,7 +801,10 @@ HRESULT CMediaStream::DeliverLocalSample(BYTE*& pBits, ATL::CComPtr<IMFMediaBuff
         }
     }
     else if (!haveV2 && m_pNv12Scratch != nullptr) {
-        VCamDiagEvent(L"Stream.DeliverNextSample no v2 for %ux%u -> zero fill", w, h);
+        if (!m_loggedNoV2) { // perf: было 30/с в файл; достаточно раза за сессию
+            m_loggedNoV2 = true;
+            VCamDiagEvent(L"Stream.DeliverNextSample no v2 for %ux%u -> zero fill", w, h);
+        }
         RtlZeroMemory(pBits, needed);
     }
     else if (haveV2 && m_pNv12Scratch != nullptr) {
@@ -840,7 +848,10 @@ HRESULT CMediaStream::DeliverSharedSample(BYTE* pBits, ATL::CComPtr<IMFMediaBuff
         hr = pBuffer->SetCurrentLength(needed);
     }
     else if (!haveV2 && maxLen >= needed) {
-        VCamDiagEvent(L"Stream.DeliverNextSample no v2 for %ux%u -> empty sample", w, h);
+        if (!m_loggedNoV2) { // perf: было 30/с в файл; достаточно раза за сессию
+            m_loggedNoV2 = true;
+            VCamDiagEvent(L"Stream.DeliverNextSample no v2 for %ux%u -> empty sample", w, h);
+        }
         RtlZeroMemory(pBits, needed);
         hr = pBuffer->SetCurrentLength(0);
     }
@@ -852,7 +863,12 @@ HRESULT CMediaStream::DeliverSharedSample(BYTE* pBits, ATL::CComPtr<IMFMediaBuff
     else {
         RtlZeroMemory(pBits, needed);
         hr = pBuffer->SetCurrentLength(0);
-        VCamDiagEvent(L"Stream.DeliverNextSample buffer too small maxLen=%u needed=%u", maxLen, needed);
+        ULONGLONG nowTs = GetTickCount64();
+        if (m_lastTooSmallTick == 0 || nowTs - m_lastTooSmallTick >= 1000) {
+            // perf: было 30/с в файл при persistent mismatch; 1/с достаточно
+            m_lastTooSmallTick = nowTs;
+            VCamDiagEvent(L"Stream.DeliverNextSample buffer too small maxLen=%u needed=%u", maxLen, needed);
+        }
     }
     VCamDiagLog(L"Stream.DeliverNextSample AcquireFrame done, before Unlock");
     pBuffer->Unlock();
@@ -922,7 +938,13 @@ HRESULT CMediaStream::DeliverNextSample(IUnknown* pToken)
             DWORD maxLen = 0, curLen = 0;
             VCamDiagLog(L"Stream.DeliverNextSample before Lock");
             hr = pBuffer->Lock(&pBits, &maxLen, &curLen);
-            VCamDiagEvent(L"Stream.DeliverNextSample Lock hr=0x%08X bits=%p maxLen=%u curLen=%u", (unsigned)hr, (const void*)pBits, maxLen, curLen);
+            ULONGLONG nowLock = GetTickCount64();
+            if (m_lastLockLogTick == 0 || nowLock - m_lastLockLogTick >= 1000) {
+                // perf: было 30/с в файл (device-режим); 1/с достаточно для
+                // диагностики и e2e-окон (в окне несколько строк).
+                m_lastLockLogTick = nowLock;
+                VCamDiagEvent(L"Stream.DeliverNextSample Lock hr=0x%08X bits=%p maxLen=%u curLen=%u", (unsigned)hr, (const void*)pBits, maxLen, curLen);
+            }
         if (SUCCEEDED(hr)) {
             const DWORD needed = useNv12 ? nv12Bytes : rgbBytes;
             hr = DeliverSharedSample(pBits, pBuffer, w, h, useNv12, haveV2, v2w, v2h, v2stride, needed, maxLen);

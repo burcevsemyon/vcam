@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{B1C2D3E4-F5A6-4B7C-8D9E-0F1A2B3C4D5E}</ProjectGuid>
+    <RootNamespace>VCamTests</RootNamespace>
+    <ProjectName>VCamTests</ProjectName>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <OutDir>$(SolutionDir)build\$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(SolutionDir)build\obj\$(ProjectName)\$(Platform)\$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <PreprocessorDefinitions>NDEBUG;_CONSOLE;_CRT_SECURE_NO_WARNINGS;_WIN32_WINNT=0x0A00;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)..\Common;$(ProjectDir)..\ProducerCore;$(ProjectDir)..\..\third_party\doctest;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <AdditionalDependencies>windowscodecs.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="main.cpp" />
+    <ClCompile Include="test_settings.cpp" />
+    <ClCompile Include="test_contract.cpp" />
+    <ClCompile Include="test_imagelayout.cpp" />
+    <ClCompile Include="test_quality.cpp" />
+    <ClCompile Include="test_hotkey.cpp" />
+    <ClCompile Include="test_framecopy_layout.cpp" />
+    <ClCompile Include="test_edge_cases.cpp" />
+    <ClCompile Include="test_sections.cpp" />
+    <ClCompile Include="test_v2downscale.cpp" />
+    <ClCompile Include="test_v1downsample.cpp" />
+    <ClCompile Include="test_letterbox_real.cpp" />
+    <ClCompile Include="test_pipeline.cpp" />
+    <ClCompile Include="..\ProducerCore\Settings.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\Common\SharedMemoryContract.h" />
+    <ClInclude Include="..\Common\ProducerApi.h" />
+    <ClInclude Include="..\Common\QualityLadder.h" />
+    <ClInclude Include="..\ProducerCore\Settings.h" />
+    <ClInclude Include="..\ProducerCore\ImageLayout.h" />
+    <ClInclude Include="..\..\third_party\doctest\doctest.h" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

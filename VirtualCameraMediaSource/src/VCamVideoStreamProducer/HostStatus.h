@@ -9,6 +9,10 @@ std::wstring ActiveStatus(const SourceConfig& cfg, const std::wstring& quality);
 std::wstring FallbackStatus(const std::wstring& reason);
 void SetActiveStatus(HostPipelineEngine& e);
 void CleanupStaleRecordFiles();
+// P2.2: crash-маркер + последний шаг (переживают рестарт).
+void CheckPreviousRunCrash(); // на старте: маркер прошлого падения + свежий "starting"
+void UpdateRunStep(const std::wstring& step); // при смене фазы (только если изменился)
+void ClearRunState(); // при чистом выходе: удалить файл
 void ApplySettingsDiff(HostPipelineEngine& e, HotkeySection& curHotkey,
                        RecordHotkeySection& curRecHotkey);
 void CheckBorrowedReturn(HostPipelineEngine& e, const std::wstring& settingsPath);

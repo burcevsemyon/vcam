@@ -15,6 +15,9 @@ public:
     bool StartRecording(const std::wstring& requested);
     void StopRecording(const std::wstring& reason);
     bool IsRecording() const { return m_rec.IsOpen(); }
+    // P1.2: кадры записи для runtime-метрик (0, если не идёт).
+    uint64_t RecFramesWritten() const { return m_rec.IsOpen() ? m_rec.FramesWritten() : 0ULL; }
+    uint64_t RecFramesDropped() const { return m_rec.IsOpen() ? m_rec.FramesDropped() : 0ULL; }
 
 protected:
     void Log(const std::wstring& msg) override;

@@ -2,6 +2,7 @@
 // Протокол — src/ProducerCore/ControlServer.h (контракт Sub 1).
 
 #include "ControlProxyClient.h"
+#include "FailOpenCounters.h"
 
 #include <atlbase.h>
 #include <mferror.h> // MF_E_* для единообразия (не используется напрямую)
@@ -23,6 +24,13 @@ void VCamDiagLog(const wchar_t* fmt, ...);
 #ifndef E_PROP_ID_UNSUPPORTED
 #define E_PROP_ID_UNSUPPORTED ((HRESULT)0x80070490L) // vfwmsgs.h
 #endif
+
+// Контрол недоступен (fail-open, P0.2): счётчик + возврат нормализованного HRESULT.
+HRESULT CtlUnsupported()
+{
+    vcam::IncFailOpen(vcam::FailOpen::ControlUnavailable);
+    return CtlUnsupported();
+}
 
 namespace {
 
@@ -471,21 +479,21 @@ HRESULT VCamProxyGetRange(bool isProcAmp, long prop, long* pMin, long* pMax,
         (!isProcAmp && !VCamProxyIsCameraProp(prop))) {
         VCamDiagLog(L"CtlProxy.GetRange %hs:%d -> E_PROP_ID_UNSUPPORTED (bad id)",
                     DomainName(isProcAmp), prop);
-        return E_PROP_ID_UNSUPPORTED;
+        return CtlUnsupported();
     }
     std::string resp;
     std::wstring err;
     if (!ProxyTransact("{\"op\":\"list\"}", resp, err)) {
         VCamDiagLog(L"CtlProxy.GetRange %hs:%d -> E_PROP_ID_UNSUPPORTED (%s)",
                     DomainName(isProcAmp), prop, err.c_str());
-        return E_PROP_ID_UNSUPPORTED;
+        return CtlUnsupported();
     }
     long mn = 0, mx = 0, step = 0, def = 0, caps = 0;
     if (!ParseListEntry(resp, DomainName(isProcAmp), prop, mn, mx, step, def,
                         caps)) {
         VCamDiagLog(L"CtlProxy.GetRange %hs:%d -> E_PROP_ID_UNSUPPORTED",
                     DomainName(isProcAmp), prop);
-        return E_PROP_ID_UNSUPPORTED;
+        return CtlUnsupported();
     }
     *pMin = mn;
     *pMax = mx;
@@ -505,7 +513,7 @@ HRESULT VCamProxyGet(bool isProcAmp, long prop, long* pVal, long* pFlags)
         (!isProcAmp && !VCamProxyIsCameraProp(prop))) {
         VCamDiagLog(L"CtlProxy.Get %hs:%d -> E_PROP_ID_UNSUPPORTED (bad id)",
                     DomainName(isProcAmp), prop);
-        return E_PROP_ID_UNSUPPORTED;
+        return CtlUnsupported();
     }
     char req[128];
     snprintf(req, sizeof(req), "{\"op\":\"get\",\"domain\":\"%s\",\"id\":%d}",
@@ -515,13 +523,13 @@ HRESULT VCamProxyGet(bool isProcAmp, long prop, long* pVal, long* pFlags)
     if (!ProxyTransact(req, resp, err)) {
         VCamDiagLog(L"CtlProxy.Get %hs:%d -> E_PROP_ID_UNSUPPORTED (%s)",
                     DomainName(isProcAmp), prop, err.c_str());
-        return E_PROP_ID_UNSUPPORTED;
+        return CtlUnsupported();
     }
     long cur = 0, flags = 0;
     if (!ParseCurFlags(resp, cur, flags)) {
         VCamDiagLog(L"CtlProxy.Get %hs:%d -> E_PROP_ID_UNSUPPORTED",
                     DomainName(isProcAmp), prop);
-        return E_PROP_ID_UNSUPPORTED;
+        return CtlUnsupported();
     }
     *pVal = cur;
     *pFlags = flags;
@@ -536,7 +544,7 @@ HRESULT VCamProxySet(bool isProcAmp, long prop, long val, long flags)
         (!isProcAmp && !VCamProxyIsCameraProp(prop))) {
         VCamDiagLog(L"CtlProxy.Set %hs:%d -> E_PROP_ID_UNSUPPORTED (bad id)",
                     DomainName(isProcAmp), prop);
-        return E_PROP_ID_UNSUPPORTED;
+        return CtlUnsupported();
     }
     char req[192];
     snprintf(req, sizeof(req),
@@ -548,14 +556,14 @@ HRESULT VCamProxySet(bool isProcAmp, long prop, long val, long flags)
     if (!ProxyTransact(req, resp, err)) {
         VCamDiagLog(L"CtlProxy.Set %hs:%d=%d -> E_PROP_ID_UNSUPPORTED (%s)",
                     DomainName(isProcAmp), prop, val, err.c_str());
-        return E_PROP_ID_UNSUPPORTED;
+        return CtlUnsupported();
     }
     bool ok = false;
     long hr = E_FAIL;
     if (!ParseOkHr(resp, ok, hr) || !ok) {
         VCamDiagLog(L"CtlProxy.Set %hs:%d=%d -> E_PROP_ID_UNSUPPORTED (hr=%d)",
                     DomainName(isProcAmp), prop, val, hr);
-        return E_PROP_ID_UNSUPPORTED;
+        return CtlUnsupported();
     }
     VCamDiagLog(L"CtlProxy.Set %hs:%d=%d flags=%d -> ok",
                 DomainName(isProcAmp), prop, val, flags);
