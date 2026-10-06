@@ -51,11 +51,13 @@
     <ClCompile Include="test_sections.cpp" />
     <ClCompile Include="test_v2downscale.cpp" />
     <ClCompile Include="test_v1downsample.cpp" />
+    <ClCompile Include="test_letterbox_real.cpp" />
     <ClCompile Include="..\ProducerCore\Settings.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\Common\SharedMemoryContract.h" />
     <ClInclude Include="..\Common\ProducerApi.h" />
+    <ClInclude Include="..\Common\QualityLadder.h" />
     <ClInclude Include="..\ProducerCore\Settings.h" />
     <ClInclude Include="..\ProducerCore\ImageLayout.h" />
     <ClInclude Include="..\..\third_party\doctest\doctest.h" />

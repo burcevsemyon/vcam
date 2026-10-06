@@ -6,6 +6,7 @@
 #include "SharedMemoryContract.h"
 #include "SharedMemoryFrameSource.h"
 #include "FrameCopy.h"
+#include "Letterbox.h"
 #include <mfapi.h>
 #include <Mferror.h>
 
@@ -756,13 +757,13 @@ bool CMediaStream::DeliverFromV2(BYTE* pBits, UINT32 w, UINT32 h, bool useNv12,
         // 720p/640p/протухший-натив: letterbox-fit из живого v2
         // (16:9 fill, иное — letterbox). Безопасно для любого w/h: пишется
         // ровно w*h*4 под размер буфера цели.
-        vcam_v2::DownscaleRgb32Letterbox(pSrc, vstride, vw, vh,
+        vcam::LetterboxNearestFit(pSrc, vstride, vw, vh,
                                          pBits, (SIZE_T)w * 4, w, h);
         return true;
     }
     if (w == vcam::VCamWidth && h == vcam::VCamHeight && m_pNv12Scratch != nullptr) {
         // NV12-720: даунскейл v2 в скретч + та же конверсия, что раньше.
-        vcam_v2::DownscaleRgb32Letterbox(pSrc, vstride, vw, vh,
+        vcam::LetterboxNearestFit(pSrc, vstride, vw, vh,
                                          m_pNv12Scratch.get(), vcam::VCamStride,
                                          vcam::VCamWidth, vcam::VCamHeight);
         ConvertRgb32ToNv12(m_pNv12Scratch.get(), pBits,
