@@ -14,6 +14,9 @@
 #include "SettingsWatcher.h"
 #include "SharedMemoryContract.h"
 #include "MappedViewOfFilePtr.h"
+#include "FailOpenFile.h"
+#include "RuntimeCounters.h"
+#include "CrashDump.h"
 
 #include "HostGlobals.h"
 #include "HostLogging.h"
@@ -56,9 +59,23 @@ RecordHotkeySection g_recHotkey;
 DWORD WINAPI WorkerProc(LPVOID)
 {
     HostPipelineEngine engine;
+    CheckPreviousRunCrash(); // P2.2: маркер прошлого падения + свежий "starting"
     engine.Open();
 
     CleanupStaleRecordFiles();
+    vcam::WriteFailOpenCounters(); // стартовый снапшот (вкл. stale-транзиенты)
+    { // стартовый снапшот runtime-метрик (P1.2)
+        vcam::RuntimeCounters rc;
+        rc.switches = engine.SwitchCount();
+        rc.fallbacks = engine.FallbackCount();
+        rc.frameMinUs = engine.FrameMinUs();
+        rc.frameMaxUs = engine.FrameMaxUs();
+        rc.frameAvgUs = engine.FrameAvgUs();
+        rc.frameCount = engine.FrameCount();
+        rc.recFrames = engine.RecFramesWritten();
+        rc.recDropped = engine.RecFramesDropped();
+        vcam::WriteRuntimeCounters(rc);
+    }
 
     HANDLE waits[2] = { static_cast<HANDLE>(g_stop), static_cast<HANDLE>(g_dirty) };
     bool first = true;
@@ -66,6 +83,7 @@ DWORD WINAPI WorkerProc(LPVOID)
     const std::wstring settingsPath = DefaultSettingsPath();
     HotkeySection curHotkey;
     RecordHotkeySection curRecHotkey;
+    ULONGLONG lastCountersFlush = GetTickCount64();
     for (;;) {
         DWORD r = WaitForMultipleObjects(2, waits, FALSE, timeout);
         if (r == WAIT_OBJECT_0) break;
@@ -78,16 +96,57 @@ DWORD WINAPI WorkerProc(LPVOID)
             if (ConsumeRecordCommand(rcmd, rpath)) {
                 if (rcmd == L"start") engine.StartRecording(rpath);
                 else if (rcmd == L"stop") engine.StopRecording(L"команда UI/хоткея");
-                else Log(L"[host] record: unknown command ignored");
+                else Log(L"record: unknown command ignored");
             }
         }
         timeout = engine.Step();
         CheckBorrowedReturn(engine, settingsPath);
+        // P2.2: последний шаг для crash-маркера (только при смене фазы/цели).
+        if (engine.HasTarget()) {
+            std::wstring curStep;
+            if (engine.PhaseRef() == PipelineEngine::Phase::Switch)
+                curStep = L"switching:" + engine.Target().type;
+            else if (engine.PhaseRef() == PipelineEngine::Phase::Active)
+                curStep = L"active:" + engine.Target().type;
+            else
+                curStep = L"fallback";
+            UpdateRunStep(curStep);
+        }
+        // Периодический снапшот метрик для `status` (P0.3/P1.2, 5 c).
+        ULONGLONG nowFlush = GetTickCount64();
+        if (nowFlush - lastCountersFlush >= 5000) {
+            lastCountersFlush = nowFlush;
+            vcam::WriteFailOpenCounters();
+            vcam::RuntimeCounters rc;
+            rc.switches = engine.SwitchCount();
+            rc.fallbacks = engine.FallbackCount();
+            rc.frameMinUs = engine.FrameMinUs();
+            rc.frameMaxUs = engine.FrameMaxUs();
+            rc.frameAvgUs = engine.FrameAvgUs();
+            rc.frameCount = engine.FrameCount();
+            rc.recFrames = engine.RecFramesWritten();
+            rc.recDropped = engine.RecFramesDropped();
+            vcam::WriteRuntimeCounters(rc);
+        }
     }
 
     if (engine.IsRecording()) engine.StopRecording(L"выход хоста");
+    vcam::WriteFailOpenCounters(); // финальный снапшот перед выходом
+    {
+        vcam::RuntimeCounters rc;
+        rc.switches = engine.SwitchCount();
+        rc.fallbacks = engine.FallbackCount();
+        rc.frameMinUs = engine.FrameMinUs();
+        rc.frameMaxUs = engine.FrameMaxUs();
+        rc.frameAvgUs = engine.FrameAvgUs();
+        rc.frameCount = engine.FrameCount();
+        rc.recFrames = engine.RecFramesWritten();
+        rc.recDropped = engine.RecFramesDropped();
+        vcam::WriteRuntimeCounters(rc);
+    }
     engine.Close();
-    Log(L"[host] worker stopped");
+    ClearRunState(); // P2.2: чистый выход — маркера не будет
+    Log(L"worker stopped");
     return 0;
 }
 
@@ -95,7 +154,7 @@ void LogTokenState()
 {
     HANDLE rawToken = nullptr;
     if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &rawToken)) {
-        Log(L"[host] token: OpenProcessToken failed: %lu", GetLastError());
+        Log(L"token: OpenProcessToken failed: %lu", GetLastError());
         return;
     }
     ATL::CHandle token(rawToken);
@@ -121,24 +180,25 @@ void LogTokenState()
             }
         }
     }
-    Log(L"[host] token: elevated=%d SeCreateGlobalPrivilege=%d", elevated, priv);
+    Log(L"token: elevated=%d SeCreateGlobalPrivilege=%d", elevated, priv);
 }
 
 int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
 {
     g_inst = hInstance;
+    vcam::InstallCrashHandler(L"host"); // P2.1: минидамп на AV (первым делом)
     InitLogging();
-    Log(L"[host] VCamVideoStreamProducer starting");
+    Log(L"VCamVideoStreamProducer starting");
     LogTokenState();
 
     SetLastError(ERROR_SUCCESS);
     g_mutex.Attach(CreateMutexW(nullptr, FALSE, kMutexName));
     if (static_cast<HANDLE>(g_mutex) == nullptr) {
-        Log(L"[host] CreateMutex failed: %lu", GetLastError());
+        Log(L"CreateMutex failed: %lu", GetLastError());
         return 1;
     }
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
-        Log(L"[host] already running - second instance exits");
+        Log(L"already running - second instance exits");
         MessageBoxW(nullptr,
                     L"Хост VCam уже запущен (VCamVideoStreamProducer.exe).\n"
                     L"Используйте значок в трее рядом с часами.",
@@ -150,7 +210,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
 
     g_stop.Attach(CreateEventW(nullptr, TRUE, FALSE, kStopEventName));
     if (static_cast<HANDLE>(g_stop) == nullptr) {
-        Log(L"[host] CreateEvent(Stop) failed: %lu", GetLastError());
+        Log(L"CreateEvent(Stop) failed: %lu", GetLastError());
         ReleaseMutex(g_mutex);
         g_mutex.Close();
         return 1;
@@ -170,12 +230,12 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     wc.lpszClassName = kTrayClass;
     if (!RegisterClassExW(&wc)) {
-        Log(L"[host] RegisterClassEx failed: %lu", GetLastError());
+        Log(L"RegisterClassEx failed: %lu", GetLastError());
     }
     g_hwnd = CreateWindowExW(0, kTrayClass, L"VCamVideoStreamProducer", WS_OVERLAPPED,
                              0, 0, 0, 0, nullptr, nullptr, g_inst, nullptr);
     if (!g_hwnd) {
-        Log(L"[host] CreateWindowEx failed: %lu", GetLastError());
+        Log(L"CreateWindowEx failed: %lu", GetLastError());
         g_dirty.Close();
         g_stop.Close();
         ReleaseMutex(g_mutex);
@@ -201,21 +261,22 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     g_nid.hIcon = LoadIconW(g_inst, MAKEINTRESOURCEW(1));
     if (!g_nid.hIcon) g_nid.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
     wcsncpy_s(g_nid.szTip, kTrayTip, _TRUNCATE);
-    if (!Shell_NotifyIconW(NIM_ADD, &g_nid)) Log(L"[host] Shell_NotifyIcon(add) failed");
-    Log(L"[host] tray icon added");
+    if (!Shell_NotifyIconW(NIM_ADD, &g_nid)) Log(L"Shell_NotifyIcon(add) failed");
+    Log(L"tray icon added");
 
     StartCameraHolder();
 
     std::wstring settingsPath = DefaultSettingsPath();
+    g_watcher.SetLogCallback([](const std::wstring& m) { Log(L"%s", m.c_str()); });
     if (!g_watcher.Start(settingsPath, OnSettingsChanged)) {
-        Log(L"[host] settings watcher not started (settings path is empty?)");
+        Log(L"settings watcher not started (settings path is empty?)");
     } else {
-        Log(L"[host] watching: %s", settingsPath.c_str());
+        Log(L"watching: %s", settingsPath.c_str());
     }
 
     g_worker.Attach(CreateThread(nullptr, 0, WorkerProc, nullptr, 0, nullptr));
     if (static_cast<HANDLE>(g_worker) == nullptr)
-        Log(L"[host] CreateThread(worker) failed: %lu", GetLastError());
+        Log(L"CreateThread(worker) failed: %lu", GetLastError());
 
     for (;;) {
         MSG msg;
@@ -231,18 +292,18 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         if (r == WAIT_OBJECT_0) break;
     }
 
-    Log(L"[host] shutting down");
+    Log(L"shutting down");
     SetEvent(g_stop);
     g_watcher.Stop();
     if (static_cast<HANDLE>(g_worker) != nullptr) {
         if (WaitForSingleObject(static_cast<HANDLE>(g_worker), 8000) != WAIT_OBJECT_0) {
-            Log(L"[host] worker did not stop in 8000 ms; waiting indefinitely");
+            Log(L"worker did not stop in 8000 ms; waiting indefinitely");
             WaitForSingleObject(static_cast<HANDLE>(g_worker), INFINITE);
         }
         g_worker.Close();
     }
     Shell_NotifyIconW(NIM_DELETE, &g_nid);
-    Log(L"[host] tray icon removed");
+    Log(L"tray icon removed");
     UnregisterHotKey(g_hwnd, kHotkeyId);
     UnregisterHotKey(g_hwnd, kRecHotkeyId);
     DestroyWindow(g_hwnd);
@@ -252,7 +313,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     g_stop.Close();
     ReleaseMutex(g_mutex);
     g_mutex.Close();
-    Log(L"[host] exit");
+    Log(L"exit");
     g_logFile.Close();
     return 0;
 }

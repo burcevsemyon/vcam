@@ -13,6 +13,7 @@
 class SettingsWatcher {
 public:
     using ChangeCallback = std::function<void(const Settings&)>;
+    using LogCallback = std::function<void(const std::wstring&)>;
 
     SettingsWatcher();
     ~SettingsWatcher();
@@ -22,6 +23,8 @@ public:
 
     // Загружает текущие настройки (Current() доступен сразу) и стартует поток.
     bool Start(const std::wstring& path, ChangeCallback cb);
+    // Куда писать диагностику наблюдателя (напр. битый JSON → дефолт, P0.2).
+    void SetLogCallback(LogCallback cb);
     void Stop();
 
     bool Current(Settings& out) const;
@@ -30,10 +33,12 @@ public:
 private:
     static DWORD WINAPI ThreadProc(LPVOID self);
     void PollLoop();
+    void LogBrokenJson();
 
     mutable ATL::CComAutoCriticalSection cs_;
     std::wstring path_;
     ChangeCallback cb_;
+    LogCallback logCb_;
     Settings current_;
     bool hasCurrent_ = false;
     ATL::CHandle thread_;

@@ -16,8 +16,8 @@ description: >-
 
 ## Структура дистрибутива и версии
 
-- **Текущая версия**: `0.0.3` (инкрементируется при каждом релизе в `vcam_installer.iss` и
-  `vcam-installer.memory.md`); артефакты в `releases/VCamSetup-<ver>-x64.exe`.
+- **Текущая версия**: `0.0.3` (инкрементируется при каждом релизе в `vcam_installer.iss`
+  и `src/VCamVideoStreamProducer/version.rc` — оба места); артефакты в `releases/VCamSetup-<ver>-x64.exe`.
 - **Состав продукта (`Release|x64`)**:
   - `MediaSource.dll` → `C:\Program Files\VCam\MediaSource.dll` (фиксированный путь, критично для hash-guard E2E).
   - `VCamVideoStreamProducer.exe` (tray-хост, единственный писатель кадров).
@@ -103,15 +103,18 @@ description: >-
 
 ## Проверка после установки
 
-1. `CaptureTest inspect` → `count=2` (VCam присутствует с 3 медиатипами: NV12 + RGB32 720p/480p).
+1. `CaptureTest inspect` → `count=2` (VCam присутствует с 3+ медиатипами, `mediaTypes>=3`:
+   RGB32/NV12 720p + RGB32 640p + ladder; было ровно 3 — не матчить точное число).
 2. `VCamProducerCli status` → `host: running`, `writer section: frames are being written`.
 3. Камера видна в приложениях (ktalk, Windows Settings «Камеры»).
-4. **Лог хоста**: `%LOCALAPPDATA%\VCam\host.log` — строки с таймстампом `[HH:MM:SS.mmm]`,
-   ротация >1 МБ → `host.log.old`. Читается живьём (`Get-Content -Encoding UTF8`), пока хост пишет
+4. **Лог хоста**: `%LOCALAPPDATA%\VCam\host.log` — единый формат строк
+   `[YYYY-MM-DD HH:MM:SS.mmm] [уровень] [host] сообщение` (P0.1), ротация cap 1МБ →
+   `host.log.old` (на старте и в рантайме, P0.4). Читается живьём (`Get-Content -Encoding UTF8`), пока хост пишет
    (открыт с `FILE_SHARE_READ`; не открывать через `fopen` — блокирует чтение). Единственный источник
    правды при старте задачи/из UI (stdout теряется). Строки: `token: elevated=N SeCreateGlobalPrivilege=N`
    (1/2 = полный токен — ожидается от задачи VCamHost), `autostart enabled (Task Scheduler\VCamHost)`,
-   `writer ready (Global\...)`.
+   `config applied: ...` (что применено), `writer ready (Global\...)`,
+   `previous run did not shut down cleanly` (прошлое падение — P2.2).
 5. **Задача автозапуска**: `schtasks /Query /TN VCamHost` (+ `/XML` для `<Command>` целиком и
    `RunLevel`), лог создания — `%LOCALAPPDATA%\VCam\setup_task.log`.
 

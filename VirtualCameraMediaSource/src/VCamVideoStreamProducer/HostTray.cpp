@@ -91,7 +91,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         case ID_AUTOSTART: ToggleAutostart(); break;
         case ID_ABOUT: ShowAbout(); break;
         case ID_EXIT:
-            Log(L"[host] exit requested (tray menu)");
+            Log(L"exit requested (tray menu)");
             SetEvent(g_stop);
             StopCameraHolder();
             break;

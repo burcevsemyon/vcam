@@ -1,8 +1,9 @@
 ---
 name: vcam-e2e
 description: >-
-  E2E-тесты VCam: e2e_test.ps1 (фазы A/B/C/D/E/F: CLI hot-switch, camera,
-  device-режим через прокси FrameServer, fallback при остановке продьюсера),
+  E2E-тесты VCam: e2e_test.ps1 (фазы A/B/G/H/C/D/E/F: CLI hot-switch, dual-write
+  v1+v2, ladder 1080p, camera, device-режим через прокси FrameServer, fallback
+  при остановке продьюсера; Wait-Ready readiness-gate вместо Start-Sleep),
   бэкап/restore settings.json, конфликт двух писателей, тестовые медиа
   e2e_output, assert движения/статики/letterbox по BMP, HKCU-регистрация CLSID
   (non-elevated regsvr32 — no-op); живая диагностика симптомов потребителя
@@ -21,8 +22,8 @@ description: >-
 (`CaptureTest.exe` → BMP) → **ассерты** (nonBlack + SHA256 хэши кадров).
 
 Подробный скрипт: `VirtualCameraMediaSource/e2e_test.ps1`.
-Память задач: `VirtualCameraMediaSource/vcam-*.memory.md` (читать память
-вышестоящей задачи перед работой).
+Память задач: `VirtualCameraMediaSource/*.memory.md` (`memory.md` + `observability-*.memory.md`;
+читать память вышестоящей задачи перед работой).
 
 ## Перед прогоном (обязательно)
 
@@ -78,6 +79,12 @@ powershell -ExecutionPolicy Bypass -File e2e_test.ps1   # exit 0 = SUCCESS
   static → кадры идентичны (unique = 1) → video → движутся; в логе
   ≥2 × `[cli] switch:` и `[cli] source opened: type=video` (проверка
   hot-switch без перезапуска, через SettingsWatcher); `status` растёт.
+- **Фаза G** — dual-write v1+v2 (video, moving): `status` показывает обе секции
+  (`frames are being written` для v1 и v2); заголовки секций: v1 ver=1 1280×720,
+  v2 ver=2 (dims по quality).
+- **Фаза H** — ladder: static 1080p-источник рекламирует нативный 1920×1080
+  (WriteFrameNative); quality hot-switch `fixed720p`/`fixed1080p` без рестарта
+  (`[cli] switch: ... quality=fixed720p|fixed1080p` в логе, v2 dims следуют).
 - **Фаза C** — физическая камера (list-devices + `run --type camera`, негатив:
   несуществующий id → NO SIGNAL); камера занята → SKIP.
 - **Фазы D/E** — device-режим (`CaptureTest device <idx> W H`) через прокси
@@ -128,8 +135,10 @@ powershell -ExecutionPolicy Bypass -File e2e_test.ps1   # exit 0 = SUCCESS
   правки settings.json — честный hot-switch тестируется только без
   overrides (фаза B).
 - CLI из скрипта: `Start-Process -PassThru -RedirectStandard*`, остановка —
-  `Stop-Process` + `WaitForExit`; ожидание кадров — `Start-Sleep 4 c`
-  перед каждой проверкой (старт writer ≈ 1 с, первый кадр — сразу после).
+  `Stop-Process` + `WaitForExit`; готовность продьюсера — `Wait-Ready`
+  (poll `status --ready` каждые 500 мс до 10 с, `ready in ~1s`), НЕ `Start-Sleep 4`
+  (механика P1.3, skill `ps-wait-ready`). Остались sleep на hot-switch (3 с),
+  NO SIGNAL (7 с) и debounce — они не readiness, не трогать.
 - Единственный writer на время теста = CLI; после — убедиться, что процесс
   убит (`finally` в скрипте это делает, но при ручных запусках — проверить).
 - **regsvr32 из НЕ-elevated шелла = no-op (exit 5, E_ACCESSDENIED)**: HKLM не
@@ -146,8 +155,9 @@ powershell -ExecutionPolicy Bypass -File e2e_test.ps1   # exit 0 = SUCCESS
   VCam, и у реальной камеры → фолбэк «first unnamed» берёт device[0] =
   РЕАЛЬНУЮ камеру (метка в логе: «No device matched filter … accepting first
   device without FRIENDLY_NAME»). Индекс искать через `CaptureTest inspect`:
-  VCam = устройство с `mediaTypes=3` (RGB32 1280×720 + NV12 1280×720 +
-  RGB32 640×480); числовой фильтр = принудительный индекс
+  VCam = устройство с `mediaTypes>=3` И 720p И 640p-типами (логика `Find-VCamDevice`
+  в e2e: `mt -ge 3` + `has720` + `has640`; сейчас 4 типа — RGB32/NV12 720p + RGB32
+  640p + ladder; было 3 — не матчить ровно 3); числовой фильтр = принудительный индекс
   (`CaptureTest device 1 640 480 out`).
 - **Direct-режим НЕ использует shared allocator** (без прокси m_pAllocator =
   null → `local buffer (no shared allocator)`) — строк `Lock maxLen=` и
@@ -158,8 +168,8 @@ powershell -ExecutionPolicy Bypass -File e2e_test.ps1   # exit 0 = SUCCESS
   НЕ использовать; надёжные маркеры прокси-пути: `negotiated … allocator
   type RGB720/RGB640` и `Lock hr=0x00000000 … maxLen=…`.
 - UI round-trip тестов постоянного проекта НЕТ: воссоздаются временным
-  net10.0-windows проектом в `%TEMP%` (см. `vcam-video-ui.memory.md`,
-  §«Воспроизведение тестов»); тестовый файл
+  net10.0-windows проектом в `%TEMP%` (инструкция по воспроизведению — в памяти
+  соответствующей задачи, в репо как файл не хранится); тестовый файл
   `%TEMP%\vcam-ui-roundtrip-data\settings.json`, рабочий
   `%APPDATA%\VCam\settings.json` не трогать.
 - Быстрая живая диагностика без скрипта:
@@ -201,13 +211,12 @@ powershell -ExecutionPolicy Bypass -File e2e_test.ps1   # exit 0 = SUCCESS
   DLL (юзер → `%TEMP%\VCam\`, svchost → свой temp). **Без выданного ACL svchost
   пишет молча в никуда**: наследованный от ProgramData/Temp даёт LOCAL SERVICE
   только чтение — device-строки теряются (проверено 05.10.2026). e2e читает
-  окно по обоим файлам. Растёт сотнями МБ; **строки без даты**
-  (только время) — прошлые сутки смешиваются с сегодняшними! Отфильтровать
+  окно по обоим файлам. Cap 10МБ + ротация в `.old` (P0.4); формат единый P0.1
+  с датой: `[YYYY-MM-DD HH:MM:SS.mmm] [info] [msrc] pid=.. tid=.. ...`
+  (старые сборки без даты/`-> RGB32` — НЕ текущая DLL). Отфильтровать
   по `pid=` актуального svchost (новый pid появляется после каждого рестарта
-  FrameServer) и учесть, что старые сборки пишут другой формат строк
-  (`-> RGB32` вместо `-> %ux%u %s`) — это НЕ текущая DLL. Скрипт e2e не читает
-  весь файл: фиксирует offset до фаз и потом читает только окно
-  (`Read-DiagWindow`).
+  FrameServer). Скрипт e2e не читает весь файл: фиксирует offset до фаз
+  и потом читает только окно (`Read-DiagWindow`).
 - Ключевые строки (текущая сборка): `Stream.SetMediaType -> WxH fmt`,
   `SetMediaType handler SetCurrentMediaType hr=` (синк SD handler),
   `StartForSession negotiated WxH fmt -> allocator type …`,
@@ -229,10 +238,10 @@ powershell -ExecutionPolicy Bypass -File e2e_test.ps1   # exit 0 = SUCCESS
 - Диагностика: `VCamProducerCli.exe status` («no new frames in the last
   300 ms (seq N)») либо прямое чтение заголовка секции (offset: 9×uint32 →
   `seq` int64; PowerShell `MemoryMappedFile.OpenExisting(Global\VCam.FrameBuffer.v1, Read)`).
-- Причина из лога хоста: stdout хоста никуда не пишется, если запущен не
-  через redirect → **рестартовать хост с перехватом**:
-  `Start-Process VCamVideoStreamProducer.exe -RedirectStandardOutput host_out2.log -RedirectStandardError host_err2.log`
-  и смотреть хвост (`[host] no signal: …`).
+- Причина из лога хоста: хост пишет `%LOCALAPPDATA%\VCam\host.log` (файл, единый
+  формат P0.1; читается живьём) — рестарт с перехватом stdout больше не нужен.
+  Смотреть хвост (`no signal: …`, `config applied`, `previous run did not shut down
+  cleanly` для прошлых падений).
 - Известное: `ReadSample failed: 0x80070428` (ERROR_SERVICE_DISABLED) от
   физической камеры **после остановки FrameServer** — лечится просто
   рестартом хоста (open→active занимает ~8 с; в Fallback ретраи идут раз в 1 с,
@@ -243,6 +252,9 @@ powershell -ExecutionPolicy Bypass -File e2e_test.ps1   # exit 0 = SUCCESS
   создание/удаление требует прав; `HKCU\Run\VCamAutostart` — legacy, больше нет;
   hост-лог-маркер: `autostart enabled (Task Scheduler\VCamHost)`, токен —
   `token: elevated=1 SeCreateGlobalPrivilege=2`).
+- Системная диагностика средствами наблюдаемости (`status --json`, счётчики,
+  `config applied`, crash-маркер, `diag`-пакет) — skill `vcam-diag` (здесь выше —
+  только e2e/ktalk-специфика).
 
 ## Деплой MediaSource.dll (ритуал)
 

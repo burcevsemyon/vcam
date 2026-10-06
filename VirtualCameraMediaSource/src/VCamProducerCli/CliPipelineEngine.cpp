@@ -2,9 +2,12 @@
 
 #include <windows.h>
 
+#include "LogFormat.h"
+
 void CliLog(const std::wstring& msg)
 {
-    std::wstring line = msg + L'\n';
+    std::wstring line = vcam::FormatLogLine(vcam::LogLevel::Info, L"cli", msg);
+    line += L'\n';
     HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
     if (!h || h == INVALID_HANDLE_VALUE) return;
     DWORD mode = 0;
@@ -29,5 +32,5 @@ CliPipelineEngine::~CliPipelineEngine() = default;
 
 void CliPipelineEngine::Log(const std::wstring& msg)
 {
-    CliLog(L"[cli] " + msg);
+    CliLog(msg);
 }

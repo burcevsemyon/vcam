@@ -2,6 +2,8 @@
 
 #include "Settings.h"
 #include "SharedMemoryContract.h"
+#include "FailOpenCounters.h"
+#include "HostLogging.h"
 #include <atlbase.h>
 
 #include <windows.h>
@@ -83,7 +85,7 @@ HostPipelineEngine::~HostPipelineEngine()
 
 void HostPipelineEngine::Log(const std::wstring& msg)
 {
-    HostLog(L"[host] " + msg);
+    HostLog(msg);
 }
 
 void HostPipelineEngine::PostProcessFrame(uint8_t* bgrx, int stride, uint32_t w, uint32_t h)
@@ -107,11 +109,15 @@ bool HostPipelineEngine::StartRecording(const std::wstring& requested)
     if (path.empty() && haveSettings) path = cur.record.path;
     if (path.empty()) path = DefaultRecordPath();
     if (path.empty()) {
+        vcam::IncFailOpen(vcam::FailOpen::RecordStartFailed);
         Log(L"record start: no path resolved (settings + default both empty)");
         return false;
     }
+    LogDebug(L"record resolve: requested=%s haveSettings=%d -> %s",
+        requested.c_str(), haveSettings ? 1 : 0, path.c_str());
     std::wstring err;
     if (!m_rec.Start(path, err)) {
+        vcam::IncFailOpen(vcam::FailOpen::RecordStartFailed);
         Log(L"record start failed: " + path + L" (" + err + L")");
         return false;
     }

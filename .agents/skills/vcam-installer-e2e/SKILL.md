@@ -86,9 +86,11 @@ description: >-
   удалён ssPostInstall).
 - **Процессы**: `Registrar` (хост-холдер), `VCamVideoStreamProducer`.
 - **host.log** (`%LOCALAPPDATA%\VCam\host.log`): `starting → autostart → tray → camera holder started
-  → watching → writer ready (...) → switch → source opened → active`. Читается живьём
+  → watching → config applied (...) → writer ready (...) → switch → source opened → active`.
+  Формат строк единый P0.1 (`[дата время] [уровень] [host] ...`). Читается живьём
   (`Get-Content -Encoding UTF8`). Строка `camera holder started` = хост зарегистрировал камеру
-  (0.0.3+); при tray «Выход» ожидается `camera holder stopped`.
+  (0.0.3+); `config applied` = с каким конфигом работает (P1.4); при tray «Выход»
+  ожидается `camera holder stopped`.
 - **`CaptureTest inspect` → `count=1`** в VM (физ. камер нет; `count=2` — для рабочей машины).
 - **`VCamProducerCli list-devices` → `rows=0`** — фильтр `IsVirtualCamera` скрывает нашу камеру
   (в VM больше камер и нет — rows=0 = SUCCESS, не провал).
@@ -100,6 +102,10 @@ description: >-
 3. Сразу после входа зафиксировать состояние Winlogon (one-shot сброшен — норма).
 
 ### F4 — Верификация post-reboot (главная фаза)
+- **Сначала маркер прошлого падения**: `previous run did not shut down cleanly
+  (pid=.. last step: ..)` в начале host.log = прошлый хост упал/убит (P2.2;
+  lastStep покажет, где умер) — это НЕ тот же класс, что «чисто встал, но нет сигнала».
+  Нет маркера → разбираем текущий старт (ниже).
 - **host.log НЕ должен содержать** `writer open failed: CreateFileMappingW failed: 5` (исходный
   баг: автозапуск из HKCU\Run давал UAC-filtered токен **без SeCreateGlobalPrivilege**).
 - Ожидается: первая же строка токена — `token: elevated=1 SeCreateGlobalPrivilege=2` (хост от
@@ -146,5 +152,5 @@ description: >-
 
 ## Память задач
 
-`vcam-installer.memory.md`, `memory.md` (в `VirtualCameraMediaSource/`) — **локальные, в git не идут**
-(`.gitignore`: `memory.md`, `*.memory.md`); хранят факты прогона, фиксы и питфолы.
+`memory.md` (в `VirtualCameraMediaSource/`) + `observability-*.memory.md` — **локальные,
+в git не идут** (`.gitignore`: `memory.md`, `*.memory.md`); хранят факты прогона, фиксы и питфолы.

@@ -94,7 +94,7 @@ void WriteRecordState(const std::wstring& path)
     HANDLE raw = CreateFileW(sp.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
                              CREATE_ALWAYS, 0, nullptr);
     if (raw == INVALID_HANDLE_VALUE) {
-        Log(L"[host] record state write failed: %lu", GetLastError());
+        Log(L"record state write failed: %lu", GetLastError());
         return;
     }
     ATL::CHandle h(raw);

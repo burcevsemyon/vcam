@@ -38,6 +38,7 @@ bool SettingsWatcher::Start(const std::wstring& path, ChangeCallback cb)
 
     Settings s;
     bool loaded = s.Load(path_);
+    bool broken = s.WasBrokenJson();
     std::string raw;
     if (!ReadUtf8File(path_, raw)) raw.clear();
 
@@ -47,6 +48,7 @@ bool SettingsWatcher::Start(const std::wstring& path, ChangeCallback cb)
         hasCurrent_ = loaded;
         lastRaw_ = raw;
     }
+    if (broken) LogBrokenJson();
 
     stopEvent_.Attach(CreateEventW(nullptr, TRUE, FALSE, nullptr));
     if (!stopEvent_) return false;
@@ -56,6 +58,23 @@ bool SettingsWatcher::Start(const std::wstring& path, ChangeCallback cb)
         return false;
     }
     return true;
+}
+
+void SettingsWatcher::SetLogCallback(LogCallback cb)
+{
+    ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);
+    logCb_ = std::move(cb);
+}
+
+// Строка о битом JSON (P0.2): вызывается вне cs_ (Log не реентерабельно с cs_).
+void SettingsWatcher::LogBrokenJson()
+{
+    LogCallback lc;
+    {
+        ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);
+        lc = logCb_;
+    }
+    if (lc) lc(L"settings: broken/unrecognized JSON - using defaults (fail-open)");
 }
 
 void SettingsWatcher::Stop()
@@ -117,6 +136,7 @@ void SettingsWatcher::PollLoop()
 
         Settings s;
         if (!s.Load(path_)) continue;
+        if (s.WasBrokenJson()) LogBrokenJson();
 
         bool changed;
         ChangeCallback cb;

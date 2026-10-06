@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <atlbase.h>
 
+#include <ctime>
 #include <string>
 
 #include "HostGlobals.h"
@@ -8,6 +9,7 @@
 #include "HostRecording.h"
 #include "HostHotkey.h"
 #include "HostStatus.h"
+#include "FailOpenCounters.h"
 
 std::wstring TargetLabel(const SourceConfig& cfg)
 {
@@ -38,21 +40,98 @@ void CleanupStaleRecordFiles()
     std::wstring cp = RecordCommandPath();
     if (!cp.empty() && GetFileAttributesW(cp.c_str()) != INVALID_FILE_ATTRIBUTES) {
         DeleteFileW(cp.c_str());
-        Log(L"[host] record: stale command removed (not resuming after restart)");
+        vcam::IncFailOpen(vcam::FailOpen::StaleTransientRemoved);
+        Log(L"record: stale command removed (not resuming after restart)");
     }
     if (!cp.empty()) {
         std::wstring proc = cp + L".processing";
         if (GetFileAttributesW(proc.c_str()) != INVALID_FILE_ATTRIBUTES) {
             DeleteFileW(proc.c_str());
-            Log(L"[host] record: stale command processing removed (not resuming after restart)");
+            vcam::IncFailOpen(vcam::FailOpen::StaleTransientRemoved);
+            Log(L"record: stale command processing removed (not resuming after restart)");
         }
     }
     std::wstring curPath;
     long long curStarted = 0;
     if (TryReadRecordState(curPath, curStarted)) {
         ClearRecordState();
-        Log(L"[host] record: stale state removed (was: %s)", curPath.c_str());
+        vcam::IncFailOpen(vcam::FailOpen::StaleTransientRemoved);
+        Log(L"record: stale state removed (was: %s)", curPath.c_str());
     }
+}
+
+// --- P2.2: crash-маркер + последний шаг/фаза (переживают рестарт) ---
+namespace {
+std::wstring RunStatePath()
+{
+    wchar_t appdata[MAX_PATH] = {};
+    DWORD n = GetEnvironmentVariableW(L"APPDATA", appdata, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return {};
+    return std::wstring(appdata) + L"\\VCam\\host_runstate.json";
+}
+
+DWORD s_runPid = 0;
+long long s_runStarted = 0;
+std::wstring s_lastStep;
+
+bool WriteRunState()
+{
+    std::wstring path = RunStatePath();
+    if (path.empty() || s_runPid == 0) return false;
+    wchar_t buf[512];
+    int n = swprintf_s(buf, L"{\"pid\":%u,\"started\":%lld,\"cleanShutdown\":false,\"lastStep\":\"%s\"}\n",
+        (unsigned)s_runPid, s_runStarted, s_lastStep.c_str());
+    if (n <= 0) return false;
+    char utf8[1024] = {};
+    int m = WideCharToMultiByte(CP_UTF8, 0, buf, -1, utf8, sizeof(utf8), nullptr, nullptr);
+    if (m <= 1) return false;
+    std::wstring tmp = path + L".tmp";
+    HANDLE raw = CreateFileW(tmp.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                              CREATE_ALWAYS, 0, nullptr);
+    if (raw == INVALID_HANDLE_VALUE) return false;
+    {
+        ATL::CHandle h(raw);
+        DWORD written = 0;
+        if (!WriteFile(h, utf8, (DWORD)(m - 1), &written, nullptr) || written != (DWORD)(m - 1))
+            return false;
+    }
+    return MoveFileWithProgressW(tmp.c_str(), path.c_str(), nullptr, nullptr,
+                                  MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+}
+} // namespace
+
+void CheckPreviousRunCrash()
+{
+    s_runPid = GetCurrentProcessId();
+    s_runStarted = (long long)time(nullptr);
+    s_lastStep = L"starting";
+    std::wstring path = RunStatePath();
+    std::string json;
+    if (!path.empty() && ReadSmallFile(path, json) && !json.empty()) {
+        long long pid = 0, started = 0;
+        std::wstring lastStep;
+        ScanJsonInt(json, "pid", pid);
+        ScanJsonInt(json, "started", started);
+        ScanJsonString(json, "lastStep", lastStep);
+        Log(L"previous run did not shut down cleanly (pid=%lld started=%lld last step: %s) - possible crash/kill",
+            pid, started, lastStep.empty() ? L"(unknown)" : lastStep.c_str());
+    }
+    WriteRunState(); // свежий "starting" (перезаписывает stale)
+}
+
+void UpdateRunStep(const std::wstring& step)
+{
+    if (step == s_lastStep) return;
+    s_lastStep = step;
+    WriteRunState();
+}
+
+void ClearRunState()
+{
+    std::wstring path = RunStatePath();
+    if (!path.empty()) DeleteFileW(path.c_str());
+    s_runPid = 0;
+    s_lastStep.clear();
 }
 
 void ApplySettingsDiff(HostPipelineEngine& e, HotkeySection& curHotkey,
@@ -89,12 +168,23 @@ void ApplySettingsDiff(HostPipelineEngine& e, HotkeySection& curHotkey,
             g_hotkeyBorrowTickMs = 0;
         }
         ClearHotkeyState();
-        Log(L"[host] hotkey: manual switch away from borrowed video - borrow dropped");
+        Log(L"hotkey: manual switch away from borrowed video - borrow dropped");
         borrowed = false;
     }
     if (borrowed && want.type == L"video") want.playOnce = true;
-    if (!e.HasTarget() || want != e.Target() || s.quality != e.Quality())
+    // P1.4: что применено — на старте и каждом перечитывании настроек (Info).
+    Log(L"config applied: type=%s path=%s quality=%s record=%s",
+        want.type.c_str(), TargetLabel(want).c_str(), s.quality.c_str(),
+        s.record.path.empty() ? L"(default)" : s.record.path.c_str());
+    if (!e.HasTarget() || want != e.Target() || s.quality != e.Quality()) {
+        LogDebug(L"apply target: type=%s path=%s camName=%s capture=%s scaleMode=%s "
+                 L"crop=(%d,%d,%d,%d)%s quality=%s playOnce=%d",
+            want.type.c_str(), want.path.c_str(), want.camName.c_str(),
+            want.capture.c_str(), want.scaleMode.c_str(), want.cropX, want.cropY,
+            want.cropW, want.cropH, want.cropKeepAspect ? L" keepAspect" : L"",
+            s.quality.c_str(), want.playOnce ? 1 : 0);
         e.SetTarget(want, s.quality);
+    }
 }
 
 void CheckBorrowedReturn(HostPipelineEngine& e, const std::wstring& settingsPath)

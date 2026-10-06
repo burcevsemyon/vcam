@@ -1,4 +1,5 @@
 #include "PipelineEngine.h"
+#include "FailOpenCounters.h"
 
 #include <windows.h>
 
@@ -68,6 +69,7 @@ void PipelineEngine::SetTarget(const SourceConfig& want, const std::wstring& qua
         modeLabel +
         L" (was type=" + (m_hasTarget ? m_target.type : std::wstring(L"-")) + L" path=" +
         wasLabel + L" quality=" + (m_hasTarget ? m_quality : std::wstring(L"-")) + L")");
+    if (m_hasTarget) m_switchCount++; // P1.2: только реальные переключения, не инит
     CloseSource();
     m_target = want;
     m_quality = normQuality;
@@ -101,6 +103,7 @@ DWORD PipelineEngine::Step()
             } else {
                 m_nextAttempt = now + kOpenRetryMs;
                 Log(L"open failed: " + err);
+                vcam::IncFailOpen(vcam::FailOpen::SourceOpenFailed);
                 if (now - m_switchStart >= kSwitchWindowMs) {
                     EnterFallback(L"open failed: " + err);
                     return 0;
@@ -165,6 +168,7 @@ DWORD PipelineEngine::Step()
                     }
                 } else {
                     Log(L"retry open failed: " + err);
+                    vcam::IncFailOpen(vcam::FailOpen::SourceOpenFailed);
                 }
                 cand->Close();
             }
@@ -211,14 +215,30 @@ bool PipelineEngine::WriteOne()
     return m_writer.WriteFrame(m_buf.data(), (int)vcam::VCamStride);
 }
 
+void PipelineEngine::RecordFrameTime(LARGE_INTEGER t0)
+{
+    LARGE_INTEGER t1 = {}, freq = {};
+    QueryPerformanceCounter(&t1);
+    QueryPerformanceFrequency(&freq);
+    if (freq.QuadPart <= 0) return;
+    int64_t us = (t1.QuadPart - t0.QuadPart) * 1000000 / freq.QuadPart;
+    if (us < m_frameMinUs) m_frameMinUs = us;
+    if (us > m_frameMaxUs) m_frameMaxUs = us;
+    m_frameSumUs += us;
+    m_frameCount++;
+}
+
 bool PipelineEngine::RenderOne(IFrameSource* src, std::wstring& rerr)
 {
+    LARGE_INTEGER t0 = {};
+    QueryPerformanceCounter(&t0);
     uint32_t nw = 0, nh = 0;
     if (src->NativeSize(nw, nh) && nw != 0 && nh != 0 &&
         nw <= vcam::VCamNativeCapW && nh <= vcam::VCamNativeCapH &&
         EnsureFrameBuf(nw, nh)) {
         if (!src->Render(m_buf.data(), (int)(nw * 4), nw, nh, rerr)) return false;
         m_nativeKnown = true;
+        RecordFrameTime(t0); // P1.2: время успешного кадра
         return true;
     }
     if (!EnsureFrameBuf(vcam::VCamWidth, vcam::VCamHeight)) {
@@ -227,11 +247,13 @@ bool PipelineEngine::RenderOne(IFrameSource* src, std::wstring& rerr)
     }
     if (!src->Render(m_buf.data(), (int)vcam::VCamStride, rerr)) return false;
     m_nativeKnown = false;
+    RecordFrameTime(t0); // P1.2: время успешного кадра
     return true;
 }
 
 void PipelineEngine::EnterFallback(const std::wstring& reason)
 {
+    if (m_phase != Phase::Fallback) m_fallbackCount++; // P1.2: только переходы, не повторы
     CloseSource();
     m_phase = Phase::Fallback;
     m_nextAttempt = GetTickCount64() + kFallbackRetryMs;

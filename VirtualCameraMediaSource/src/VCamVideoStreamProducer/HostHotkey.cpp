@@ -7,6 +7,7 @@
 #include "HostLogging.h"
 #include "HostRecording.h"
 #include "HostHotkey.h"
+#include "FailOpenCounters.h"
 
 std::wstring HotkeyStatePath()
 {
@@ -58,7 +59,7 @@ void WriteHotkeyState(const std::wstring& returnTo)
     HANDLE raw = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
                              CREATE_ALWAYS, 0, nullptr);
     if (raw == INVALID_HANDLE_VALUE) {
-        Log(L"[host] hotkey state write failed: %lu", GetLastError());
+        Log(L"hotkey state write failed: %lu", GetLastError());
         return;
     }
     ATL::CHandle h(raw);
@@ -85,15 +86,17 @@ void ApplyHotkeyRegistration()
         rk = g_recHotkey;
     }
     if (RegisterHotKey(g_hwnd, kHotkeyId, (UINT)hk.modifiers, (UINT)hk.vk)) {
-        Log(L"[host] hotkey registered: %s", HotkeyDisplay(hk).c_str());
+        Log(L"hotkey registered: %s", HotkeyDisplay(hk).c_str());
     } else {
-        Log(L"[host] hotkey RegisterHotKey(%s) failed: %lu - hotkey disabled until settings change",
+        vcam::IncFailOpen(vcam::FailOpen::HotkeyBusy);
+        Log(L"hotkey RegisterHotKey(%s) failed: %lu - hotkey disabled until settings change",
             HotkeyDisplay(hk).c_str(), GetLastError());
     }
     if (RegisterHotKey(g_hwnd, kRecHotkeyId, (UINT)rk.modifiers, (UINT)rk.vk)) {
-        Log(L"[host] record hotkey registered: %s", HotkeyDisplay(rk).c_str());
+        Log(L"record hotkey registered: %s", HotkeyDisplay(rk).c_str());
     } else {
-        Log(L"[host] record hotkey RegisterHotKey(%s) failed: %lu - record hotkey disabled until settings change",
+        vcam::IncFailOpen(vcam::FailOpen::HotkeyBusy);
+        Log(L"record hotkey RegisterHotKey(%s) failed: %lu - record hotkey disabled until settings change",
             HotkeyDisplay(rk).c_str(), GetLastError());
     }
 }
@@ -112,7 +115,7 @@ bool AutoReturnBorrowedVideo(const std::wstring& settingsPath, const wchar_t* wh
     Settings back;
     bool loaded = !settingsPath.empty() && back.Load(settingsPath);
     if (!loaded) {
-        Log(L"[host] hotkey: %s, settings unreadable - retry later", why);
+        Log(L"hotkey: %s, settings unreadable - retry later", why);
         return false;
     }
     if (back.sourceType != L"video") {
@@ -131,7 +134,7 @@ bool AutoReturnBorrowedVideo(const std::wstring& settingsPath, const wchar_t* wh
         saved = back.Save(settingsPath);
     }
     if (!saved) {
-        Log(L"[host] hotkey: %s, auto-return save failed - retry later", why);
+        Log(L"hotkey: %s, auto-return save failed - retry later", why);
         return false;
     }
     {
@@ -140,7 +143,7 @@ bool AutoReturnBorrowedVideo(const std::wstring& settingsPath, const wchar_t* wh
         g_hotkeyBorrowTickMs = 0;
     }
     ClearHotkeyState();
-    Log(L"[host] hotkey: %s, auto-return to %s", why, ret.c_str());
+    Log(L"hotkey: %s, auto-return to %s", why, ret.c_str());
     return true;
 }
 
@@ -148,13 +151,13 @@ void OnHotkeyPressed()
 {
     std::wstring path = DefaultSettingsPath();
     if (path.empty()) {
-        Log(L"[host] hotkey: settings path is empty");
+        Log(L"hotkey: settings path is empty");
         return;
     }
     SettingsFileGuard fsg;
     Settings s;
     if (!s.Load(path)) {
-        Log(L"[host] hotkey: settings unreadable - ignored");
+        Log(L"hotkey: settings unreadable - ignored");
         return;
     }
     std::wstring display;
@@ -183,20 +186,20 @@ void OnHotkeyPressed()
                     g_hotkeyBorrowed = false;
                     g_hotkeyBorrowTickMs = 0;
                 }
-                Log(L"[host] hotkey %s: settings save failed - borrow cancelled",
+                Log(L"hotkey %s: settings save failed - borrow cancelled",
                     display.c_str());
                 return;
             }
             WriteHotkeyState(from);
-            Log(L"[host] hotkey %s: %s -> video (play-once, auto-return to %s)",
+            Log(L"hotkey %s: %s -> video (play-once, auto-return to %s)",
                 display.c_str(), from.c_str(), from.c_str());
         } else {
             s.sourceType = L"static";
             if (s.Save(path))
-                Log(L"[host] hotkey %s: video -> static (manual video, no borrow)",
+                Log(L"hotkey %s: video -> static (manual video, no borrow)",
                     display.c_str());
             else
-                Log(L"[host] hotkey %s: settings save failed", display.c_str());
+                Log(L"hotkey %s: settings save failed", display.c_str());
         }
         return;
     }
@@ -204,7 +207,7 @@ void OnHotkeyPressed()
     std::wstring back = retType.empty() ? L"static" : retType;
     s.sourceType = back;
     if (!s.Save(path)) {
-        Log(L"[host] hotkey %s: early return save failed - borrow kept", display.c_str());
+        Log(L"hotkey %s: early return save failed - borrow kept", display.c_str());
         return;
     }
     {
@@ -213,7 +216,7 @@ void OnHotkeyPressed()
         g_hotkeyBorrowTickMs = 0;
     }
     ClearHotkeyState();
-    Log(L"[host] hotkey %s: early return video -> %s", display.c_str(), back.c_str());
+    Log(L"hotkey %s: early return video -> %s", display.c_str(), back.c_str());
 }
 
 void OnRecordHotkeyPressed()
@@ -228,9 +231,9 @@ void OnRecordHotkeyPressed()
     long long curStarted = 0;
     if (TryReadRecordState(curPath, curStarted)) {
         if (!WriteRecordCommand(L"stop", L""))
-            Log(L"[host] record hotkey %s: stop command write failed", display.c_str());
+            Log(L"record hotkey %s: stop command write failed", display.c_str());
         else
-            Log(L"[host] record hotkey %s: stop requested", display.c_str());
+            Log(L"record hotkey %s: stop requested", display.c_str());
         return;
     }
     std::wstring want;
@@ -238,7 +241,7 @@ void OnRecordHotkeyPressed()
     Settings s;
     if (!sp.empty() && s.Load(sp)) want = s.record.path;
     if (!WriteRecordCommand(L"start", want))
-        Log(L"[host] record hotkey %s: start command write failed", display.c_str());
+        Log(L"record hotkey %s: start command write failed", display.c_str());
     else
-        Log(L"[host] record hotkey %s: start requested", display.c_str());
+        Log(L"record hotkey %s: start requested", display.c_str());
 }

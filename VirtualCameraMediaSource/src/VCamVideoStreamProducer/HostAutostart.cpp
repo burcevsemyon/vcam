@@ -71,7 +71,7 @@ bool ApplyAutostart(bool enabled)
     int rc = RunSchtasks(AutostartTaskArgs(enabled), false);
     if (rc != 0) rc = RunSchtasks(AutostartTaskArgs(enabled), true);
     if (rc != 0) {
-        Log(L"[host] autostart task apply failed (enabled=%d, rc=%d)", (int)enabled, rc);
+        Log(L"autostart task apply failed (enabled=%d, rc=%d)", (int)enabled, rc);
         return false;
     }
     return true;
@@ -80,19 +80,19 @@ bool ApplyAutostart(bool enabled)
 void ApplyAutostartFromSettings()
 {
     std::wstring path = DefaultSettingsPath();
-    if (path.empty()) { Log(L"[host] settings path is empty - autostart skipped"); return; }
+    if (path.empty()) { Log(L"settings path is empty - autostart skipped"); return; }
     Settings s;
     bool loaded = s.Load(path);
     if (!loaded && PathExists(path)) {
-        Log(L"[host] settings unreadable - autostart left untouched");
+        Log(L"settings unreadable - autostart left untouched");
         return;
     }
     bool present = IsAutostartTaskPresent();
     if (present == s.autostart) {
-        Log(L"[host] autostart %s (Task Scheduler\\%s)",
+        Log(L"autostart %s (Task Scheduler\\%s)",
             s.autostart ? L"enabled" : L"disabled", kAutostartTask);
     } else {
-        Log(L"[host] autostart mismatch (settings=%d, task=%s) - fix via tray menu",
+        Log(L"autostart mismatch (settings=%d, task=%s) - fix via tray menu",
             (int)s.autostart, present ? L"present" : L"absent");
     }
 }
@@ -108,7 +108,7 @@ void ToggleAutostart()
     Settings s;
     bool loaded = s.Load(path);
     if (!loaded && PathExists(path)) {
-        Log(L"[host] toggle autostart: settings unreadable");
+        Log(L"toggle autostart: settings unreadable");
         MessageBoxW(g_hwnd, L"Не удалось прочитать settings.json — автозагрузка не изменена.", L"VCam",
                     MB_OK | MB_ICONWARNING);
         return;
@@ -117,10 +117,10 @@ void ToggleAutostart()
     int rc = RunSchtasks(AutostartTaskArgs(want), false);
     if (rc != 0) {
         rc = RunSchtasks(AutostartTaskArgs(want), true);
-        if (rc == 1223) { Log(L"[host] autostart toggle: UAC declined"); return; }
+        if (rc == 1223) { Log(L"autostart toggle: UAC declined"); return; }
     }
     if (rc != 0) {
-        Log(L"[host] toggle autostart failed (rc=%d)", rc);
+        Log(L"toggle autostart failed (rc=%d)", rc);
         MessageBoxW(g_hwnd, L"Не удалось изменить задачу автозапуска (Task Scheduler).", L"VCam",
                     MB_OK | MB_ICONWARNING);
         return;
@@ -132,9 +132,9 @@ void ToggleAutostart()
         if (!fresh.Load(path)) fresh = s;
         fresh.autostart = want;
         if (!fresh.Save(path)) {
-            Log(L"[host] toggle autostart: settings save failed (task already changed)");
+            Log(L"toggle autostart: settings save failed (task already changed)");
             return;
         }
     }
-    Log(L"[host] autostart -> %s", want ? L"on" : L"off");
+    Log(L"autostart -> %s", want ? L"on" : L"off");
 }

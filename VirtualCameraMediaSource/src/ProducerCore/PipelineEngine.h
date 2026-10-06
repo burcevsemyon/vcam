@@ -36,6 +36,13 @@ public:
     const std::wstring& Quality() const { return m_quality; }
     std::unique_ptr<IFrameSource>& Src() { return m_src; }
     Phase& PhaseRef() { return m_phase; }
+    // P1.2: runtime-метрики (счётчики операций + время кадра, мкс).
+    int64_t SwitchCount() const { return m_switchCount; }
+    int64_t FallbackCount() const { return m_fallbackCount; }
+    int64_t FrameMinUs() const { return m_frameCount > 0 ? m_frameMinUs : 0; }
+    int64_t FrameMaxUs() const { return m_frameMaxUs; }
+    int64_t FrameAvgUs() const { return m_frameCount > 0 ? m_frameSumUs / m_frameCount : 0; }
+    int64_t FrameCount() const { return m_frameCount; }
 
     virtual void PostProcessFrame(uint8_t* bgrx, int stride, uint32_t w, uint32_t h) {}
 
@@ -65,11 +72,19 @@ private:
     uint32_t m_frameW = vcam::VCamWidth;
     uint32_t m_frameH = vcam::VCamHeight;
     bool m_nativeKnown = false;
+    // P1.2: счётчики (однопоточно в worker'е, plain int64 достаточно).
+    int64_t m_switchCount = 0;
+    int64_t m_fallbackCount = 0;
+    int64_t m_frameMinUs = INT64_MAX;
+    int64_t m_frameMaxUs = 0;
+    int64_t m_frameSumUs = 0;
+    int64_t m_frameCount = 0;
 
     void CloseSource();
     bool EnsureFrameBuf(uint32_t w, uint32_t h);
     bool WriteOne();
     bool RenderOne(IFrameSource* src, std::wstring& rerr);
+    void RecordFrameTime(LARGE_INTEGER t0);
     void EnterFallback(const std::wstring& reason);
     void FlushOrSleep();
 };

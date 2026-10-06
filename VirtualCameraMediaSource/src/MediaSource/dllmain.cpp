@@ -8,6 +8,8 @@
 #include "ModuleLifetime.h"
 #include "Activator.h"
 #include "GUIDs.h"
+#include "LogFormat.h"
+#include "LogRotate.h"
 
 static volatile LONG g_moduleLockCount = 0;
 static volatile LONG g_objectCount = 0;
@@ -19,17 +21,17 @@ void VCamObjectDec() { InterlockedDecrement(&g_objectCount); }
 // Debug-only verbose diagnostics (TEMP DIAGNOSTIC): every COM call is logged
 // to msrc_diag.log. Release builds compile VCamDiagLog as a no-op; the three
 // e2e-critical events go through VCamDiagEvent (always logged).
-static void DiagEmit(const wchar_t* fmt, va_list args)
+static void DiagEmit(vcam::LogLevel level, const wchar_t* fmt, va_list args)
 {
     wchar_t line[512];
     int len = _vsnwprintf(line, 511, fmt, args);
     if (len < 0) len = 511;
     line[len] = L'\0';
-    SYSTEMTIME st;
-    GetLocalTime(&st);
     wchar_t full[768];
-    swprintf_s(full, 768, L"[%02d:%02d:%02d.%03d] pid=%u tid=%u %ls\n",
-        st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, GetCurrentProcessId(), GetCurrentThreadId(), line);
+    int plen = vcam::FormatLogPrefix(full, 768, level, L"msrc");
+    if (plen < 0) plen = 0;
+    _snwprintf_s(full + plen, 768 - plen, _TRUNCATE, L"pid=%u tid=%u %ls\n",
+        GetCurrentProcessId(), GetCurrentThreadId(), line);
     wchar_t programData[MAX_PATH] = L"";
     DWORD pn = GetEnvironmentVariableW(L"ProgramData", programData, MAX_PATH);
     wchar_t tempDir[MAX_PATH] = L"";
@@ -53,6 +55,8 @@ static void DiagEmit(const wchar_t* fmt, va_list args)
         primary
     };
     for (const auto& p : paths) {
+        if (p[0] == L'\0') continue;
+        vcam::RotateLogIfOverCap(p, vcam::kMsrcDiagCapBytes); // P0.4: cap + ротация в .old
         FILE* f = nullptr;
         if (_wfopen_s(&f, p, L"a") == 0 && f != nullptr) {
             fputws(full, f);
@@ -66,10 +70,15 @@ void VCamDiagLog(const wchar_t* fmt, ...)
 #ifndef NDEBUG
     va_list args;
     va_start(args, fmt);
-    DiagEmit(fmt, args);
+    DiagEmit(vcam::LogLevel::Debug, fmt, args);
     va_end(args);
 #else
-    (void)fmt;
+    // Release: verbose только при VCAM_DEBUG=1 (P1.1), иначе no-op.
+    if (!vcam::IsDebugEnabled()) return;
+    va_list args;
+    va_start(args, fmt);
+    DiagEmit(vcam::LogLevel::Debug, fmt, args);
+    va_end(args);
 #endif
 }
 
@@ -77,7 +86,7 @@ void VCamDiagEvent(const wchar_t* fmt, ...)
 {
     va_list args;
     va_start(args, fmt);
-    DiagEmit(fmt, args);
+    DiagEmit(vcam::LogLevel::Info, fmt, args);
     va_end(args);
 }
 

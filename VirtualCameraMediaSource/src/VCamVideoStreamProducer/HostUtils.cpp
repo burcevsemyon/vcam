@@ -53,10 +53,10 @@ void LaunchHelper(const std::wstring& path)
     sei.lpDirectory = dir.c_str();
     sei.nShow = SW_SHOWNORMAL;
     if (!ShellExecuteExW(&sei)) {
-        Log(L"[host] launch failed: %s (%lu)", path.c_str(), GetLastError());
+        Log(L"launch failed: %s (%lu)", path.c_str(), GetLastError());
         return;
     }
-    Log(L"[host] launched: %s", path.c_str());
+    Log(L"launched: %s", path.c_str());
 }
 
 void OpenSettingsUi()
@@ -65,7 +65,7 @@ void OpenSettingsUi()
         L"VCamSettingsUi.exe",
         L"src\\VCamSettingsUi\\bin\\x64\\Release\\net10.0-windows\\VCamSettingsUi.exe");
     if (p.empty()) {
-        Log(L"[host] VCamSettingsUi.exe not found");
+        Log(L"VCamSettingsUi.exe not found");
         MessageBoxW(g_hwnd, L"VCamSettingsUi.exe не найден рядом с хостом и в исходниках репозитория.",
                     L"VCam", MB_OK | MB_ICONWARNING);
         return;
@@ -77,7 +77,7 @@ void OpenPreview()
 {
     std::wstring p = FindHelperExe(L"VCamPreview.exe", L"build\\x64\\Release\\VCamPreview.exe");
     if (p.empty()) {
-        Log(L"[host] VCamPreview.exe not found");
+        Log(L"VCamPreview.exe not found");
         MessageBoxW(g_hwnd, L"VCamPreview.exe не найден рядом с хостом и в папке build\\x64\\Release.",
                     L"VCam", MB_OK | MB_ICONWARNING);
         return;

@@ -57,12 +57,12 @@ bool IsConsumerActive()
 void StartCameraHolder()
 {
     if (IsRegistrarRunning()) {
-        Log(L"[host] camera holder already running");
+        Log(L"camera holder already running");
         return;
     }
     std::wstring p = FindHelperExe(L"Registrar.exe", L"build\\x64\\Release\\Registrar.exe");
     if (p.empty()) {
-        Log(L"[host] Registrar.exe not found - camera will NOT be registered");
+        Log(L"Registrar.exe not found - camera will NOT be registered");
         return;
     }
     std::wstring cmd = L"\"" + p + L"\" add VCam hold-watch";
@@ -72,22 +72,22 @@ void StartCameraHolder()
     PROCESS_INFORMATION pi = {};
     if (!CreateProcessW(nullptr, buf.data(), nullptr, nullptr, FALSE,
                         CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-        Log(L"[host] camera holder start failed: %s (%lu)", p.c_str(), GetLastError());
+        Log(L"camera holder start failed: %s (%lu)", p.c_str(), GetLastError());
         return;
     }
     ATL::CHandle th(pi.hThread);
     ATL::CHandle proc(pi.hProcess);
-    Log(L"[host] camera holder started: %s", p.c_str());
+    Log(L"camera holder started: %s", p.c_str());
 }
 
 void StopCameraHolder()
 {
     if (!IsRegistrarRunning()) {
-        Log(L"[host] camera holder not running - camera already gone");
+        Log(L"camera holder not running - camera already gone");
         return;
     }
     if (IsConsumerActive()) {
-        Log(L"[host] consumers active - camera kept (writers stopped -> NO SIGNAL in 7s)");
+        Log(L"consumers active - camera kept (writers stopped -> NO SIGNAL in 7s)");
         return;
     }
     wchar_t sys[MAX_PATH] = {};
@@ -99,7 +99,7 @@ void StopCameraHolder()
     PROCESS_INFORMATION pi = {};
     if (!CreateProcessW(nullptr, buf.data(), nullptr, nullptr, FALSE,
                         CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-        Log(L"[host] taskkill(Registrar) failed: %lu", GetLastError());
+        Log(L"taskkill(Registrar) failed: %lu", GetLastError());
         return;
     }
     ATL::CHandle th(pi.hThread);
@@ -108,7 +108,7 @@ void StopCameraHolder()
     DWORD rc = 1;
     GetExitCodeProcess(proc, &rc);
     if (rc == 0 && !IsRegistrarRunning())
-        Log(L"[host] camera holder stopped - camera removed from device list");
+        Log(L"camera holder stopped - camera removed from device list");
     else
-        Log(L"[host] taskkill(Registrar) rc=%lu - holder may still be running (elevated?)", rc);
+        Log(L"taskkill(Registrar) rc=%lu - holder may still be running (elevated?)", rc);
 }
