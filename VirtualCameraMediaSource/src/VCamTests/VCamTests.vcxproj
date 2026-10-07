@@ -53,7 +53,9 @@
     <ClCompile Include="test_v1downsample.cpp" />
     <ClCompile Include="test_letterbox_real.cpp" />
     <ClCompile Include="test_pipeline.cpp" />
+    <ClCompile Include="test_static_image.cpp" />
     <ClCompile Include="..\ProducerCore\Settings.cpp" />
+    <ClCompile Include="..\ProducerCore\StaticImageSource.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\Common\SharedMemoryContract.h" />
