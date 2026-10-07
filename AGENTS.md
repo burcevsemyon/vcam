@@ -118,3 +118,8 @@
   (см. глобальный `AGENTS.md`).
 - Изолируемую работу отдавать субагентам (лимит 2 раунда) с памятью
   вышестоящей задачи в промпте.
+
+## Бэклог
+
+Идеи и планы — в `VirtualCameraMediaSource/backlog/` (по одному .md на тему):
+`pipeline-first.md`, `observability.md`, `regression-safety.md`, `testing.md`.
