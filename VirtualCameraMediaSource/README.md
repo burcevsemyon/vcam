@@ -10,9 +10,9 @@
 |---|---|
 | `src/MediaSource` (MediaSource.dll) | COM media source: видео-потоки 1280×720@30 и 640×480@30 (RGB32 + NV12), автоматический даунскейлинг и конверсия в потоке. `IMFMediaSourceEx`, `IKsControl`, `IMFGetService`, синхронный pull-путь `RequestSample` (AllocateSample на COM-потоке клиента). |
 | `src/Registrar` (Registrar.exe) | Регистрация камеры: `add [name] [hold\|hold-watch]` / `remove`. Процесс нужно держать живым (Session lifetime). `hold` — вечно; `hold-watch` — сам выходит, когда писатель (seq секции) и потребители (heartbeat) молчат ≥30 с (хост запускает именно его). |
-| `src/ProducerCore` (ProducerCore.lib) | Общее ядро продюсеров: `Settings` (чтение/миграция/запись settings.json), `SettingsWatcher` (опрос 500 мс + debounce 200 мс), `FrameWriter` (запись в общую память, seqlock, FlushLast), источники `StaticImageSource` / `VideoFileSource` (loop + play-once с `Ended()`) / `CameraSource` (захват физической камеры, MF Source Reader, letterbox), `CameraDevices` (перечисление камер), `SourceFactory`, `ToSourceConfig`, `TraySourceMenu` (пункты подменю «Источник» для трей-меню хоста). Используется хостом и CLI. |
-| `src/VCamVideoStreamProducer` (VCamVideoStreamProducer.exe) | Основной продюсер-хост: tray-иконка с меню (статус, «Настройки VCam…», «Окно предпросмотра…», подменю «Источник» — static/video/camera с отметкой активного, «Автозагрузка», «О программе…», «Выход»), ядро state machine (hot-switch без перезапуска, fallback NO SIGNAL при ошибках источника), мьютекс `VCamVideoStreamProducer.Instance`, автозапуск через задачу Task Scheduler `VCamHost` по `settings.autostart`, глобальные хоткеи (ролик поверх эфира + старт/стоп записи), `Mp4Recorder` (запись эфира в H.264/MP4 720p@30), transient state/command JSON для хоткеев и записи. Точка врезки пост-процессинга — no-op хук `PostProcessFrame` между рендером кадра и записью в общую память. |
-| `src/VCamProducerCli` (VCamProducerCli.exe) | Консольный хост для отладки и E2E: `run [--type static\|video\|camera] [--path <file>] [--device <id>] [--settings <path>]` — то же ядро без tray (логи в stdout @30 FPS, остановка по Ctrl+C/Ctrl+Break/Esc); `list-devices` — перечисление физических камер (`id\tname` в stdout); `status [--json\|--ready]` — путь/схема settings, `source.type`, секции, автозапуск, состояние хоста и writer-секции (плюс метрики/счётчики и readiness-gate — см. «Наблюдаемость»); `list-controls`/`get-control`/`set-control` — интроспекция и чтение/запись контроллов физической камеры; `diag [--out <dir>]` — пакет диагностики для поддержки. |
+| `src/ProducerCore` (ProducerCore.lib) | Общее ядро продьюсеров: `Settings` (чтение/миграция/запись settings.json), `SettingsWatcher` (опрос 500 мс + debounce 200 мс), `FrameWriter` (запись в общую память, seqlock, FlushLast), источники `StaticImageSource` / `VideoFileSource` (loop + play-once с `Ended()`) / `CameraSource` (захват физической камеры, MF Source Reader, letterbox), `CameraDevices` (перечисление камер), `SourceFactory`, `ToSourceConfig`, `TraySourceMenu` (пункты подменю «Источник» для трей-меню хоста). Используется хостом и CLI. |
+| `src/VCamVideoStreamProducer` (VCamVideoStreamProducer.exe) | Основной продьюсер-хост: tray-иконка с меню (статус, «Настройки VCam…», «Окно предпросмотра…», подменю «Источник» — static/video/camera с отметкой активного, «Автозагрузка», «О программе…», «Выход»), ядро state machine (hot-switch без перезапуска, fallback NO SIGNAL при ошибках источника), мьютекс `VCamVideoStreamProducer.Instance`, автозапуск через задачу Task Scheduler `VCamHost` по `settings.autostart`, глобальные хоткеи (ролик поверх эфира + старт/стоп записи), `Mp4Recorder` (запись эфира в H.264/MP4 720p@30), transient state/command JSON для хоткеев и записи. Точка врезки пост-процессинга — no-op хук `PostProcessFrame` между рендером кадра и записью в общую память. |
+| `src/VCamProducerCli` (VCamProducerCli.exe) | Консольный хост для отладки и E2E: `run [--type static\|video\|camera] [--path <file>] [--device <id>] [--settings <path>]` — то же ядро без tray (логи в stdout @30 FPS, остановка по Ctrl+C/Ctrl+Break/Esc); `list-devices` — перечисление физических камер (`id\tname` в stdout); `status [--json\|--ready]` — путь/схема settings, `source.type`, секции, автозапуск, состояние хоста и writer-секции (плюс метрики/счётчики и readiness-gate — см. «Наблюдаемость»); `list-controls`/`get-control`/`set-control` — интроспекция и чтение/запись контролов физической камеры; `diag [--out <dir>]` — пакет диагностики для поддержки. |
 | `src/ProducerTest` (ProducerTest.exe) | Пишет анимированный test pattern в общую память @30 fps. |
 | `src/StaticProducer` (StaticProducer.exe) | Отдельная утилита: статическое изображение в общую память @30 fps. Понимает **legacy-поля** settings.json (`imagePath`/`mediaMode`/`mediaPath`, hot-reload ~0.7 с), аргумент командной строки — fallback. Для обычной работы используйте хост или CLI. |
 | `src/VideoProducer` (VideoProducer.exe) | Отдельная утилита: видеоролик в общую память @30 fps (декод Media Foundation, letterbox 1280×720, loop). Понимает **legacy-поля** settings.json (`mediaPath`, hot-reload), `argv[1]` — fallback. Для обычной работы используйте хост или CLI. |
@@ -40,12 +40,12 @@
    build\x64\Release\Registrar.exe add VCam hold
    ```
    Ручной режим/отладка: `hold` (вечно). Трей-хост при старте сам поднимает
-   `hold-watch` (само-выход при отсутствии писателя и потребителей ≥30 с) и
+   `hold-watch` (самовыход при отсутствии писателя и потребителей ≥30 с) и
    снимает камеру на tray «Выход» (если потребители есть — камеру оставляет,
    потребители видят NO SIGNAL через 7 с).
 3. Провайдер кадров:
    - **Основной способ — tray-хост** (отдельная консоль; в трее меню с настройками,
-     предпросмотром, подменьём «Источник» (static/video/camera) и автозагрузкой):
+     предпросмотром, подменю «Источник» (static/video/camera) и автозагрузкой):
      ```bat
      build\x64\Release\VCamVideoStreamProducer.exe
      ```
@@ -82,12 +82,12 @@
    quality fixed720p, фаза C — физическая камера: `list-devices`,
    `run --type camera --device <id>`, негатив с несуществующим id → NO SIGNAL;
    без камер в системе фаза C помечается SKIP; фазы D/E — device-режим через
-   прокси FrameServer 1280×720 + 640×480; фаза F — стоп продюсера → fallback →
+   прокси FrameServer 1280×720 + 640×480; фаза F — стоп продьюсера → fallback →
    рестарт), проверяет кадры `CaptureTest`
    (движение / статика) и логи CLI. `settings.json` сохраняется в бэкап и
    восстанавливается байт-в-байт в конце. Exit code 0 = успех.
 5. Проверка: камера видна в «Параметры → Bluetooth и устройства → Камеры» и в любых приложениях;
-   без запущенного продюсера — чёрные кадры (fallback, штатное состояние).
+   без запущенного продьюсера — чёрные кадры (fallback, штатное состояние).
    Диагностика:
    ```bat
    build\x64\Release\CaptureTest.exe inspect
@@ -193,7 +193,7 @@ UI (`src\VCamSettingsUi`): комбо **«Медиа»** — «статична�
 
 - **Устройство** выбирается по `camera.id` (MF symbolic link, стабилен для
   USB-порта); если не совпало — по `camera.name` (точное имя, затем подстрока).
-  Оба поля пусты → Open → false → NO SIGNAL (until выбора в UI).
+  Оба поля пусты → Open → false → NO SIGNAL (до выбора в UI).
 - **Формат**: запрашивается RGB32 1280×720@30; если камера не даёт такой выход —
   берётся ближайший тип и кадр честно вписывается (letterbox fit, без искажений,
   чёрные полосы); ровно 1280×720 — копия без масштабирования. Захват идёт в
@@ -275,7 +275,7 @@ src/Common/
   SharedMemoryContract.h         layout section, имена, DACL, VCamFrameSize
   SharedMemoryFrameSource.h/.cpp consumer: ожидание события, копия кадра (seqlock), fallback
   SampleAllocatorControl.h       IKS_SAMPLEALLOCATORCONTROL
-   ProducerApi.h                  SourceConfig, IFrameSource (общий API продюсеров)
+   ProducerApi.h                  SourceConfig, IFrameSource (общий API продьюсеров)
    QualityLadder.h                выбор размера v2-секции по quality (общий код продакшна и тестов)
    Letterbox.h                    вписывание кадра с letterbox (общий код продакшна и тестов)
    LogFormat.h                    единый формат строк лога `[дата] [уровень] [область]`

@@ -63,7 +63,7 @@
 
 ### MediaSource.dll / COM
 - **ThreadingModel=Both обязателен** в HKLM\SOFTWARE\Classes\CLSID\InprocServer32 — иначе MTA-клиент получает кросспартментный COM-прокси, QI IMFMediaSource2 → E_NOINTERFACE, кадры не идут (0xC00D3E9B = MF_E_MEDIA_SOURCE_WRONGSTATE, НЕ SHUTDOWN).
-- **Деплой MediaSource.dll** — только через ритуал FrameServer: `sc stop FrameServer` → copy → `sc start FrameServer` (иначе старый DLL в svchost).
+- **Деплой MediaSource.dll** — только через ритуал FrameServer: `sc stop FrameServer` → copy → `sc start FrameServer` (иначе старая DLL в svchost).
 - **MF API**: IMFSourceReader не имеет GetStreamCount/SetPosition; IMFMediaType — только SetGUID (нет SetMajorType/SetSubtype); `MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING=TRUE` обязателен для RGB32.
 - **CComPtr**: `#include <cguid.h>` после windows.h (INITGUID не даёт GUID_NULL); порядок Release в Shutdown/Close критичен — `= nullptr` до MFShutdown/CoUninitialize.
 
