@@ -10,12 +10,14 @@
 |---|---|
 | `MediaSource/` | Камера (in-proc COM DLL). Регистрация: `build\x64\Release\Registrar.exe add VCam hold` (elevated, процесс не закрывать); страницу «Камеры» Windows Settings перезапускать. |
 | `Common/` | Контракты: `SharedMemoryContract.h` (секция `Global\VCam.FrameBuffer.v1`, 1280×720 BGRX, stride 5120, 8 слотов seqlock — **не менять без согласования**), `ProducerApi.h` (`IFrameSource`/`SourceConfig`/`CreateSource`), `SharedMemoryFrameSource` (чтение камеры). |
-| `ProducerCore/` | Библиотека источников: `StaticImageSource`, `VideoFileSource`, `FrameWriter` (единственный писатель, 30 FPS pacing, `FlushLast` для hot-switch), `Settings` (новая схема + миграция legacy), `SettingsWatcher` (hot-reload), `SourceFactory`. |
-| `VCamVideoStreamProducer/` | Основной tray-хост: single-instance (`VCamVideoStreamProducer.Instance`), Stop-event, автозапуск через задачу Task Scheduler `VCamHost` по `settings.autostart`, hot-switch static↔video, fallback NO SIGNAL. |
-| `VCamProducerCli/` | Консольный хост отладки/e2e: `run [--type --path --settings]`, `status`. |
+| `ProducerCore/` | Библиотека источников: `StaticImageSource`, `VideoFileSource`, `FrameWriter` (единственный писатель, 30 FPS pacing, `FlushLast` для hot-switch), `Settings` (новая схема + миграция legacy), `SettingsWatcher` (hot-reload), `SourceFactory`, `TraySourceMenu` (подменю «Источник» + `ApplySourceSwitch` для трей-меню). |
+| `VCamVideoStreamProducer/` | Основной tray-хост: single-instance (`VCamVideoStreamProducer.Instance`), Stop-event, автозапуск через задачу Task Scheduler `VCamHost` по `settings.autostart`, hot-switch static↔video (в т.ч. подменю «Источник» в трее), fallback NO SIGNAL. |
+| `VCamProducerCli/` | Консольный хост отладки/e2e: `run [--type --path --settings]`, `status [--json\|--ready]`, `diag`, `list-devices`, `list-controls`/`get-control`/`set-control`. |
 | `VCamPreview/` | Плавающее окно предпросмотра (GDI+ HighQualityBicubic, single-instance `VCamPreview.Instance`). |
 | `VCamSettingsUi/` | C# WinForms настройки (выбор источника, crop, превью, кнопки запуска хоста; single-instance `VCamSettingsUi.Instance`). |
 | `CaptureTest/` | Диагностика: захват кадров камеры в BMP (`inspect`, `device`, direct `<n> <prefix>`). |
+| `VCamTests/` | Doctest-юниты C++ (сборка только через sln; bin в `src\VCamTests\build\`, фильтр `-tc="..."`). |
+| `VCamUiTests/` | Постоянные UIA-тесты UI (FlaUI+xUnit): `dotnet test src\VCamUiTests\VCamUiTests.csproj -c Release`. |
 | `ProducerTest/` | Анимированный test pattern → общая память. |
 | `StaticProducer/`, `VideoProducer/` | Legacy-утилиты (оставлены для отладки; для работы — хост или CLI). |
 
@@ -44,13 +46,14 @@
   tray-хост — два писателя интерливят кадры. Вся эмпирика (фазы A/B, ассерты,
   питфолы, ручная диагностика): skill **vcam-e2e**
   (`.agents/skills/vcam-e2e/SKILL.md`) — читать его, а не пересматривать скрипт.
-- Постоянного unit-тест-проекта нет; UI round-trip тесты создаются временным
-  проектом в `%TEMP%`.
+- **Юниты**: `VCamTests` (doctest C++) — сборка только через sln, bin в
+  `src\VCamTests\build\`; `VCamUiTests` (FlaUI+xUnit) —
+  `dotnet test src\VCamUiTests\VCamUiTests.csproj -c Release`.
 
 ## Настройки и среда
 
 - `%APPDATA%\VCam\settings.json` — новая схема
-  `{"source":{"type":"static|video|camera"},"static":{...},"video":{...},"camera":{...},"autostart":bool}`;
+  `{"source":{"type":"static|video|camera"},"static":{...},"video":{...},"camera":{...},"quality":...,"hotkey":{...},"recordHotkey":{...},"record":{...},"autostart":bool}`;
   пишет UI и e2e, читают хост и CLI; **UTF-8 без BOM**
   (`Set-Content -Encoding UTF8` даёт BOM — не использовать); файл не блокируется,
   изменения подхватываются на лету.
@@ -97,7 +100,7 @@
 ### Профили / настройки
 - **Профили = полные снапшоты** — Apply переписывает settings.json побайтово копией профиля (File.Copy); EnsureSeeded встраивает живые source-секции.
 - **Сиды с пустым static.path → NO SIGNAL** — честный снапшот; UI показывает warn-хинт.
-- **Transient-файлы** (%APPDATA%\VCam\): `record_command.json`, `record_state.json`, `hotkey_state.json` — при крахе хоста могут висеть; стартовый worker удаляет stale.
+- **Transient-файлы** (%APPDATA%\VCam\): `record_command.json`, `record_state.json` (stale удаляет стартовый worker), `hotkey_state.json`, `failopen_counters.json`, `runtime_counters.json` (просто перезаписываются), `host_runstate.json` (существует = прошлый выход грязный/краш, маркер в логе; удаляется только при чистом выходе).
 
 ### Установщик
 - **Версия 0.0.3**; нумерация «по порядку релизов»; фикс «после ребута нет сигнала» — writer-цепочка Create(Global) → Open(Global) → Create(Local).
@@ -108,6 +111,8 @@
 - **HKCU-приоритет** — bogus-путь → 0x8007007E (HKCU выигрывает у HKLM).
 - **CaptureTest device-индекс** — в VM = 0 (одна камера); на хосте = 1.
 - **E2E матчит подстроки логов CLI** — `writer ready`, `[cli] switch:`, `[cli] active:`, `frames are being written`; переименование лог-строк ломает фазы (проверено: молчание `SetTarget` роняло B/H).
+- **Фаза B flaky** — `frames differ (unique=2), static source expected`: захват стартовал до применения hot-switch после перезаписи settings.json (гонка, не регрессия) → перепрогнать.
+- **«installed DLL is STALE»** — после пересборки MediaSource.dll e2e даёт exit 1 и D/E SKIP: guard деплоя, не регрессия → обновить установленную копию (ритуал FrameServer) или дождаться деплоя.
 
 ### Превью
 - **GDI+ HighQualityBicubic** — MAE 0.023 к эталону (nearest даёт 7.174); ~11 мс/кадр (бюджет 4 мс превышен, кадры не срываются).
@@ -123,3 +128,4 @@
 
 Идеи и планы — в `VirtualCameraMediaSource/backlog/` (по одному .md на тему):
 `pipeline-first.md`, `observability.md`, `regression-safety.md`, `testing.md`.
+Новые темы: `audio-mix.md`, `drag-drop-source.md`, `tray-source-switch.md`.

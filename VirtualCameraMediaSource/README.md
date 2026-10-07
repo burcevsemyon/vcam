@@ -10,15 +10,17 @@
 |---|---|
 | `src/MediaSource` (MediaSource.dll) | COM media source: видео-потоки 1280×720@30 и 640×480@30 (RGB32 + NV12), автоматический даунскейлинг и конверсия в потоке. `IMFMediaSourceEx`, `IKsControl`, `IMFGetService`, синхронный pull-путь `RequestSample` (AllocateSample на COM-потоке клиента). |
 | `src/Registrar` (Registrar.exe) | Регистрация камеры: `add [name] [hold\|hold-watch]` / `remove`. Процесс нужно держать живым (Session lifetime). `hold` — вечно; `hold-watch` — сам выходит, когда писатель (seq секции) и потребители (heartbeat) молчат ≥30 с (хост запускает именно его). |
-| `src/ProducerCore` (ProducerCore.lib) | Общее ядро продюсеров: `Settings` (чтение/миграция/запись settings.json), `SettingsWatcher` (опрос 500 мс + debounce 200 мс), `FrameWriter` (запись в общую память, seqlock, FlushLast), источники `StaticImageSource` / `VideoFileSource` (loop + play-once с `Ended()`) / `CameraSource` (захват физической камеры, MF Source Reader, letterbox), `CameraDevices` (перечисление камер), `SourceFactory`, `ToSourceConfig`. Используется хостом и CLI. |
-| `src/VCamVideoStreamProducer` (VCamVideoStreamProducer.exe) | Основной продюсер-хост: tray-иконка с меню (статус, «Настройки VCam…», «Окно предпросмотра…», «Автозагрузка», «Выход»), ядро state machine (hot-switch без перезапуска, fallback NO SIGNAL при ошибках источника), мьютекс `VCamVideoStreamProducer.Instance`, автозапуск через задачу Task Scheduler `VCamHost` по `settings.autostart`, глобальные хоткеи (ролик поверх эфира + старт/стоп записи), `Mp4Recorder` (запись эфира в H.264/MP4 720p@30), transient state/command JSON для хоткеев и записи. Точка врезки пост-процессинга — no-op хук `PostProcessFrame` между рендером кадра и записью в общую память. |
-| `src/VCamProducerCli` (VCamProducerCli.exe) | Консольный хост для отладки и E2E: `run [--type static\|video\|camera] [--path <file>] [--device <id>] [--settings <path>]` — то же ядро без tray (логи в stdout @30 FPS, остановка по Ctrl+C/Ctrl+Break/Esc); `list-devices` — перечисление физических камер (`id\tname` в stdout); `status` — путь/схема settings, `source.type`, секции, автозапуск, состояние хоста и writer-секции. |
+| `src/ProducerCore` (ProducerCore.lib) | Общее ядро продюсеров: `Settings` (чтение/миграция/запись settings.json), `SettingsWatcher` (опрос 500 мс + debounce 200 мс), `FrameWriter` (запись в общую память, seqlock, FlushLast), источники `StaticImageSource` / `VideoFileSource` (loop + play-once с `Ended()`) / `CameraSource` (захват физической камеры, MF Source Reader, letterbox), `CameraDevices` (перечисление камер), `SourceFactory`, `ToSourceConfig`, `TraySourceMenu` (пункты подменю «Источник» для трей-меню хоста). Используется хостом и CLI. |
+| `src/VCamVideoStreamProducer` (VCamVideoStreamProducer.exe) | Основной продюсер-хост: tray-иконка с меню (статус, «Настройки VCam…», «Окно предпросмотра…», подменю «Источник» — static/video/camera с отметкой активного, «Автозагрузка», «О программе…», «Выход»), ядро state machine (hot-switch без перезапуска, fallback NO SIGNAL при ошибках источника), мьютекс `VCamVideoStreamProducer.Instance`, автозапуск через задачу Task Scheduler `VCamHost` по `settings.autostart`, глобальные хоткеи (ролик поверх эфира + старт/стоп записи), `Mp4Recorder` (запись эфира в H.264/MP4 720p@30), transient state/command JSON для хоткеев и записи. Точка врезки пост-процессинга — no-op хук `PostProcessFrame` между рендером кадра и записью в общую память. |
+| `src/VCamProducerCli` (VCamProducerCli.exe) | Консольный хост для отладки и E2E: `run [--type static\|video\|camera] [--path <file>] [--device <id>] [--settings <path>]` — то же ядро без tray (логи в stdout @30 FPS, остановка по Ctrl+C/Ctrl+Break/Esc); `list-devices` — перечисление физических камер (`id\tname` в stdout); `status [--json\|--ready]` — путь/схема settings, `source.type`, секции, автозапуск, состояние хоста и writer-секции (плюс метрики/счётчики и readiness-gate — см. «Наблюдаемость»); `list-controls`/`get-control`/`set-control` — интроспекция и чтение/запись контроллов физической камеры; `diag [--out <dir>]` — пакет диагностики для поддержки. |
 | `src/ProducerTest` (ProducerTest.exe) | Пишет анимированный test pattern в общую память @30 fps. |
 | `src/StaticProducer` (StaticProducer.exe) | Отдельная утилита: статическое изображение в общую память @30 fps. Понимает **legacy-поля** settings.json (`imagePath`/`mediaMode`/`mediaPath`, hot-reload ~0.7 с), аргумент командной строки — fallback. Для обычной работы используйте хост или CLI. |
 | `src/VideoProducer` (VideoProducer.exe) | Отдельная утилита: видеоролик в общую память @30 fps (декод Media Foundation, letterbox 1280×720, loop). Понимает **legacy-поля** settings.json (`mediaPath`, hot-reload), `argv[1]` — fallback. Для обычной работы используйте хост или CLI. |
 | `src/VCamSettingsUi` (VCamSettingsUi.exe) | C# WinForms UI: переключатель «Медиа» (статичная картинка / видеоролик / физическая камера), выбор файла, предпросмотр fit/cover, интерактивный crop (рамка мышью), просмотр 1:1 с зумом, список физических камер, запуск окна предпросмотра VCamPreview, сохранение настроек (новая схема), live-синхронизация с файлом (watcher + dirty-guard + «Обновить»), кнопка REC + путь записи, строка-подсказка хоткеев и индикатор borrowed-видео. |
 | `src/VCamPreview` (VCamPreview.exe) | Плавающее окно предпросмотра кадра: always-on-top, читает общую память, NO SIGNAL без провайдера, Esc/Ctrl+Q — выход. |
 | `src/CaptureTest` (CaptureTest.exe) | Диагностический захват: `inspect`, `device [strict] [name\|index] [width] [height] [prefix]`, bare `[numFrames] [prefix]`; сохраняет BMP. |
+| `src/VCamTests` (VCamTests.exe) | Doctest-юниты C++ (settings, pipeline, контракт секции, хоткеи, tray-меню и др.): сборка только через solution, бинарь в `src\VCamTests\build\x64\Release\`, фильтр `-tc="tray*"`; warning C5285 на doctest — предсуществующий. |
+| `src/VCamUiTests` | Постоянные UIA-тесты формы настроек (FlaUI.UIA2 + xUnit, net10.0-windows): `dotnet test src\VCamUiTests\VCamUiTests.csproj -c Release`. |
 
 ## Сборка
 
@@ -43,7 +45,7 @@
    потребители видят NO SIGNAL через 7 с).
 3. Провайдер кадров:
    - **Основной способ — tray-хост** (отдельная консоль; в трее меню с настройками,
-     предпросмотром и автозагрузкой):
+     предпросмотром, подменьём «Источник» (static/video/camera) и автозагрузкой):
      ```bat
      build\x64\Release\VCamVideoStreamProducer.exe
      ```
@@ -291,6 +293,7 @@ src/ProducerCore/
   CameraDevices.h/.cpp           перечисление камер (id + friendly name)
   StaticImageSource.h/.cpp       PNG/JPG/BMP -> RGB32 (WIC, fit/cover/crop)
   SourceFactory.h/.cpp           тип -> источник
+  TraySourceMenu.h/.cpp          подменю «Источник» для трей-меню: пункты/checkmark + ApplySourceSwitch (Save без перезаписи при совпадении типа)
   PipelineEngine.h/.cpp          общее ядро state machine (Switch/Active/Fallback, writer open, hot-switch окно, `switch:`-лог); хост и CLI наследуют (`HostPipelineEngine` + Mp4Recorder, `CliPipelineEngine` + CliLog)
 src/VCamVideoStreamProducer/
   Mp4Recorder.h/.cpp             запись эфира: SinkWriter H.264 8 Мбит/с 720p@30 (bottom-up флип!), Finalize
@@ -311,6 +314,8 @@ src/VideoProducer/VideoProducer.cpp   legacy-утилита: видеороли�
 src/VCamPreview/VCamPreview.cpp     окно предпросмотра из общей памяти (always-on-top, NO SIGNAL, Esc)
 src/VCamSettingsUi/               C# WinForms UI: медиа static|video|camera, выбор/предпросмотр/зум/crop-рамка, список камер, запуск VCamPreview, settings.json (новая схема), watcher/dirty-guard, REC, хоткей-хинты
 src/CaptureTest/main.cpp         inspect/capture → BMP
+src/VCamTests/                  doctest-юниты C++ (сборка через sln, bin в src\VCamTests\build\)
+src/VCamUiTests/                UIA-тесты формы настроек (FlaUI + xUnit, dotnet test)
 register.bat, unregister.bat     регистрация (от администратора)
 e2e_test.ps1                     автоматический E2E-тест (через VCamProducerCli run)
 memory.md                        состояние проекта (resume-документ)

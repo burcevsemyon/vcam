@@ -46,6 +46,7 @@
     <ClCompile Include="SettingsWatcher.cpp" />
     <ClCompile Include="SourceFactory.cpp" />
     <ClCompile Include="StaticImageSource.cpp" />
+    <ClCompile Include="TraySourceMenu.cpp" />
     <ClCompile Include="VideoFileSource.cpp" />
     <ClCompile Include="VideoProcessorScaler.cpp" />
   </ItemGroup>
@@ -58,6 +59,7 @@
     <ClInclude Include="Settings.h" />
     <ClInclude Include="SettingsWatcher.h" />
     <ClInclude Include="StaticImageSource.h" />
+    <ClInclude Include="TraySourceMenu.h" />
     <ClInclude Include="VideoFileSource.h" />
     <ClInclude Include="VideoProcessorScaler.h" />
     <ClInclude Include="..\Common\ProducerApi.h" />

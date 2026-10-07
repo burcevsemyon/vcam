@@ -54,14 +54,17 @@
     <ClCompile Include="test_letterbox_real.cpp" />
     <ClCompile Include="test_pipeline.cpp" />
     <ClCompile Include="test_static_image.cpp" />
+    <ClCompile Include="test_tray_menu.cpp" />
     <ClCompile Include="..\ProducerCore\Settings.cpp" />
     <ClCompile Include="..\ProducerCore\StaticImageSource.cpp" />
+    <ClCompile Include="..\ProducerCore\TraySourceMenu.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\Common\SharedMemoryContract.h" />
     <ClInclude Include="..\Common\ProducerApi.h" />
     <ClInclude Include="..\Common\QualityLadder.h" />
     <ClInclude Include="..\ProducerCore\Settings.h" />
+    <ClInclude Include="..\ProducerCore\TraySourceMenu.h" />
     <ClInclude Include="..\ProducerCore\ImageLayout.h" />
     <ClInclude Include="..\..\third_party\doctest\doctest.h" />
   </ItemGroup>
