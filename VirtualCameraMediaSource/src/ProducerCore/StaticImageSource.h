@@ -26,6 +26,10 @@ public:
     const wchar_t* Name() const override { return L"static"; }
 
 private:
+    // Клампнутый crop-rect cfg_ в координатах натива sw x sh; false — режим не
+    // crop или rect пуст (рендер идёт как fit). Общий для NativeSize и Render.
+    bool ComputeCropNative(UINT sw, UINT sh, int& rx, int& ry, int& rw, int& rh) const;
+
     SourceConfig cfg_;
     bool open_ = false;
     std::vector<uint8_t> frame_; // 1280x720 BGRX (WIC legacy)

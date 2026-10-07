@@ -239,6 +239,24 @@ bool DecodeNativeImage(const wchar_t* filePath, std::vector<uint8_t>& pixels,
     return ok;
 }
 
+bool StaticImageSource::ComputeCropNative(UINT sw, UINT sh, int& rx, int& ry,
+                                          int& rw, int& rh) const
+{
+    rx = ry = rw = rh = 0;
+    if (ParseMode(cfg_.scaleMode) != ScaleMode::Crop) return false;
+    rx = (int)llround(cfg_.cropX * cropScaleX_);
+    ry = (int)llround(cfg_.cropY * cropScaleY_);
+    rw = (int)llround(cfg_.cropW * cropScaleX_);
+    rh = (int)llround(cfg_.cropH * cropScaleY_);
+    if (rx < 0) rx = 0;
+    if (ry < 0) ry = 0;
+    if (rx >= (int)sw) rx = 0;
+    if (ry >= (int)sh) ry = 0;
+    if (rw <= 0 || rw > (int)sw - rx) rw = (int)sw - rx;
+    if (rh <= 0 || rh > (int)sh - ry) rh = (int)sh - ry;
+    return rw > 0 && rh > 0;
+}
+
 bool StaticImageSource::Open(const SourceConfig& cfg, std::wstring& err)
 {
     if (open_ && cfg == cfg_) return true;
@@ -297,6 +315,16 @@ bool StaticImageSource::NativeSize(uint32_t& w, uint32_t& h)
         h = vcam::VCamHeight;
         return false;
     }
+    // Crop: содержимое кадра — crop-rect, поэтому «натив кадра» — его
+    // пропорции, а не пропорции исходника. Иначе портретный исходник +
+    // горизонтальный crop рендерятся в портретный буфер: crop растягивается,
+    // v1 (letterbox в 720p) получает чёрные пилларбоксы по бокам.
+    int rx, ry, rw, rh;
+    if (ComputeCropNative(nativeW_, nativeH_, rx, ry, rw, rh)) {
+        w = (uint32_t)rw;
+        h = (uint32_t)rh;
+        return true;
+    }
     w = nativeW_;
     h = nativeH_;
     return true;
@@ -338,17 +366,8 @@ bool StaticImageSource::Render(uint8_t* dst, int stride, uint32_t w, uint32_t h,
         return true;
     }
     // Crop: rect из конфига (исходные пиксели) -> в нативные координаты.
-    int rx = (int)llround(cfg_.cropX * cropScaleX_);
-    int ry = (int)llround(cfg_.cropY * cropScaleY_);
-    int rw = (int)llround(cfg_.cropW * cropScaleX_);
-    int rh = (int)llround(cfg_.cropH * cropScaleY_);
-    if (rx < 0) rx = 0;
-    if (ry < 0) ry = 0;
-    if (rx >= (int)sw) rx = 0;
-    if (ry >= (int)sh) ry = 0;
-    if (rw <= 0 || rw > (int)sw - rx) rw = (int)sw - rx;
-    if (rh <= 0 || rh > (int)sh - ry) rh = (int)sh - ry;
-    if (rw <= 0 || rh <= 0) { // пустой rect после клампа — как fit
+    int rx, ry, rw, rh;
+    if (!ComputeCropNative(sw, sh, rx, ry, rw, rh)) { // пустой rect после клампа — как fit
         vcam::LetterboxBilinearEx(base, sw, sh, sstride, dst, w, h, (LONG)stride);
         return true;
     }

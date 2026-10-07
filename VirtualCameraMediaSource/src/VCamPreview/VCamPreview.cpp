@@ -160,6 +160,9 @@ bool TryConnect(UINT64 now)
     // v2 вперёд (натив, резче), затем v1 как раньше. Только чтение
     // (FILE_MAP_READ), писателя не открываем. Мусорная v2 — не приговор:
     // идём дальше по кандидатам (фолбэк на v1).
+    // Исключение — не-16:9 v2 (портретный натив при fit/source, crop с
+    // не-16:9 ректом): эфирный вид — всегда 16:9, поэтому такой v2
+    // пропускаем в пользу v1 (1280x720).
     struct Cand { const wchar_t* name; bool v2; };
     const Cand cands[] = {
         { vcam::VCamSectionNameV2, true },
@@ -193,6 +196,10 @@ bool TryConnect(UINT64 now)
         bool ok = (cb >= sizeof(vcam::VCamSectionHeader));
         if (ok && c.v2) {
             ok = ValidateHeaderV2(h);
+            if (ok) {
+                double aspect = (double)h->width / (double)h->height;
+                ok = (aspect >= 1.6 && aspect <= 1.95); // ~16:9 (16:10..1.9:1)
+            }
             pitch = (SIZE_T)vcam::VCamV2MaxFrameSize;
         } else if (ok) {
             ok = ValidateHeader(h);
