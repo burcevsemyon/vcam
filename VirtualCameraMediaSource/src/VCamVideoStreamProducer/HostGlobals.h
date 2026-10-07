@@ -23,6 +23,9 @@ inline constexpr UINT ID_PREVIEW = 103;
 inline constexpr UINT ID_AUTOSTART = 104;
 inline constexpr UINT ID_EXIT = 105;
 inline constexpr UINT ID_ABOUT = 106;
+inline constexpr UINT ID_SOURCE_STATIC = 107;
+inline constexpr UINT ID_SOURCE_VIDEO = 108;
+inline constexpr UINT ID_SOURCE_CAMERA = 109;
 
 inline constexpr DWORD kFrameMs = 33;
 inline constexpr DWORD kSwitchWindowMs = 5000;

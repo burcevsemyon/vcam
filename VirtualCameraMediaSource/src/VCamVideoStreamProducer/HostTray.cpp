@@ -57,6 +57,14 @@ void ShowTrayMenu(HWND hwnd)
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, ID_SETTINGS, L"Настройки VCam…");
     AppendMenuW(menu, MF_STRING, ID_PREVIEW, L"Окно предпросмотра…");
+    HMENU srcMenu = CreatePopupMenu();
+    AppendMenuW(srcMenu, MF_STRING | (s.sourceType == L"static" ? MF_CHECKED : 0),
+                ID_SOURCE_STATIC, L"Static");
+    AppendMenuW(srcMenu, MF_STRING | (s.sourceType == L"video" ? MF_CHECKED : 0),
+                ID_SOURCE_VIDEO, L"Video");
+    AppendMenuW(srcMenu, MF_STRING | (s.sourceType == L"camera" ? MF_CHECKED : 0),
+                ID_SOURCE_CAMERA, L"Camera");
+    AppendMenuW(menu, MF_POPUP, (UINT_PTR)srcMenu, L"Источник");
     AppendMenuW(menu, MF_STRING | (s.autostart ? MF_CHECKED : 0), ID_AUTOSTART, L"Автозагрузка");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, ID_ABOUT, L"О программе…");
@@ -68,6 +76,44 @@ void ShowTrayMenu(HWND hwnd)
     DestroyMenu(menu);
     PostMessageW(hwnd, WM_NULL, 0, 0);
     if (cmd) SendMessageW(hwnd, WM_COMMAND, cmd, 0);
+}
+
+void SwitchTraySource(const wchar_t* type)
+{
+    std::wstring path = DefaultSettingsPath();
+    if (path.empty()) {
+        Log(L"tray: settings path is empty");
+        return;
+    }
+    SettingsFileGuard fsg;
+    Settings s;
+    if (!s.Load(path)) {
+        Log(L"tray: settings unreadable - source switch ignored");
+        return;
+    }
+    bool changed = false;
+    if (s.sourceType != type) {
+        s.sourceType = type;
+        if (!s.Save(path)) {
+            Log(L"tray: source switch -> %s: settings save failed", type);
+            return;
+        }
+        changed = true;
+    }
+    // явный выбор из меню сбрасывает borrow, иначе автовозврат перезапишет выбор
+    bool borrowed;
+    {
+        ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(g_hotkeyCs);
+        borrowed = g_hotkeyBorrowed;
+        g_hotkeyBorrowed = false;
+        g_hotkeyBorrowTickMs = 0;
+    }
+    if (borrowed) {
+        ClearHotkeyState();
+        Log(L"tray: source switch -> %s (borrow dropped)", type);
+    } else if (changed) {
+        Log(L"tray: source switch -> %s", type);
+    }
 }
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
@@ -88,6 +134,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         switch (LOWORD(wp)) {
         case ID_SETTINGS: OpenSettingsUi(); break;
         case ID_PREVIEW: OpenPreview(); break;
+        case ID_SOURCE_STATIC: SwitchTraySource(L"static"); break;
+        case ID_SOURCE_VIDEO: SwitchTraySource(L"video"); break;
+        case ID_SOURCE_CAMERA: SwitchTraySource(L"camera"); break;
         case ID_AUTOSTART: ToggleAutostart(); break;
         case ID_ABOUT: ShowAbout(); break;
         case ID_EXIT:
