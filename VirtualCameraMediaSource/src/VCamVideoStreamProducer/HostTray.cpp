@@ -13,6 +13,7 @@
 #include "HostCameraLifecycle.h"
 #include "HostStatus.h"
 #include "HostTray.h"
+#include "TraySourceMenu.h"
 
 void OnSettingsChanged(const Settings&) { SetEvent(g_dirty); }
 
@@ -57,14 +58,7 @@ void ShowTrayMenu(HWND hwnd)
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, ID_SETTINGS, L"Настройки VCam…");
     AppendMenuW(menu, MF_STRING, ID_PREVIEW, L"Окно предпросмотра…");
-    HMENU srcMenu = CreatePopupMenu();
-    AppendMenuW(srcMenu, MF_STRING | (s.sourceType == L"static" ? MF_CHECKED : 0),
-                ID_SOURCE_STATIC, L"Static");
-    AppendMenuW(srcMenu, MF_STRING | (s.sourceType == L"video" ? MF_CHECKED : 0),
-                ID_SOURCE_VIDEO, L"Video");
-    AppendMenuW(srcMenu, MF_STRING | (s.sourceType == L"camera" ? MF_CHECKED : 0),
-                ID_SOURCE_CAMERA, L"Camera");
-    AppendMenuW(menu, MF_POPUP, (UINT_PTR)srcMenu, L"Источник");
+    AppendSourceSubmenu(menu, s, ID_SOURCE_STATIC, ID_SOURCE_VIDEO, ID_SOURCE_CAMERA);
     AppendMenuW(menu, MF_STRING | (s.autostart ? MF_CHECKED : 0), ID_AUTOSTART, L"Автозагрузка");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, ID_ABOUT, L"О программе…");
@@ -86,19 +80,14 @@ void SwitchTraySource(const wchar_t* type)
         return;
     }
     SettingsFileGuard fsg;
-    Settings s;
-    if (!s.Load(path)) {
+    SourceSwitchResult r = ApplySourceSwitch(path, type);
+    if (r == SourceSwitchResult::LoadFailed) {
         Log(L"tray: settings unreadable - source switch ignored");
         return;
     }
-    bool changed = false;
-    if (s.sourceType != type) {
-        s.sourceType = type;
-        if (!s.Save(path)) {
-            Log(L"tray: source switch -> %s: settings save failed", type);
-            return;
-        }
-        changed = true;
+    if (r == SourceSwitchResult::SaveFailed) {
+        Log(L"tray: source switch -> %s: settings save failed", type);
+        return;
     }
     // явный выбор из меню сбрасывает borrow, иначе автовозврат перезапишет выбор
     bool borrowed;
@@ -111,7 +100,7 @@ void SwitchTraySource(const wchar_t* type)
     if (borrowed) {
         ClearHotkeyState();
         Log(L"tray: source switch -> %s (borrow dropped)", type);
-    } else if (changed) {
+    } else if (r == SourceSwitchResult::Saved) {
         Log(L"tray: source switch -> %s", type);
     }
 }
