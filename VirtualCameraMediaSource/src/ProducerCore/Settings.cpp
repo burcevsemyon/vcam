@@ -190,7 +190,7 @@ bool HasAnyKnownKey(const std::string& json)
     static const char* keys[] = {
         // новая схема
         "source", "static", "video", "camera", "quality", "hotkey",
-        "recordHotkey", "record", "autostart",
+        "recordHotkey", "videoHotkey", "record", "autostart",
         // legacy-схема
         "imagePath", "mediaPath", "mediaMode", "scaleMode",
         "cropX", "cropY", "cropW", "cropH", "cropKeepAspect"
@@ -318,7 +318,9 @@ void ParseNewSchema(const std::string& json, Settings& s)
         s.st.cropKeepAspect = JsonGetBool(sec, "cropKeepAspect", false);
     }
     if (FindObjectRange(json, "video", b, e)) {
-        JsonGetString(json.substr(b, e - b), "path", s.video.path);
+        std::string sec = json.substr(b, e - b);
+        JsonGetString(sec, "path", s.video.path);
+        s.video.loop = JsonGetBool(sec, "loop", false);
     }
     if (FindObjectRange(json, "camera", b, e)) {
         std::string sec = json.substr(b, e - b);
@@ -349,6 +351,14 @@ void ParseNewSchema(const std::string& json, Settings& s)
         int vk = JsonGetInt(sec, "vk", 0x52);
         s.recordHotkey.vk = (vk >= 0x08 && vk <= 0xFE) ? vk : 0x52;
     }
+    if (FindObjectRange(json, "videoHotkey", b, e)) {
+        std::string sec = json.substr(b, e - b);
+        // videoHotkey: те же правила, дефолт Ctrl+Alt+P.
+        int mods = JsonGetInt(sec, "modifiers", 3);
+        s.videoHotkey.modifiers = (mods >= 1 && mods <= 15) ? mods : 3;
+        int vk = JsonGetInt(sec, "vk", 0x50);
+        s.videoHotkey.vk = (vk >= 0x08 && vk <= 0xFE) ? vk : 0x50;
+    }
     if (FindObjectRange(json, "record", b, e)) {
         JsonGetString(json.substr(b, e - b), "path", s.record.path);
     }
@@ -378,12 +388,15 @@ void ParseLegacySchema(const std::string& json, Settings& s)
     s.st.cropKeepAspect = JsonGetBool(json, "cropKeepAspect", false);
 
     s.video.path = mediaPath;
+    s.video.loop = false; // legacy без ключа loop -> один проход (default)
     s.quality = L"source"; // legacy без ключа quality -> source
     s.cam.capture = L"max"; // legacy без секции camera -> max
     s.hotkey.modifiers = 3; // legacy без секции hotkey -> Ctrl+Alt+V
     s.hotkey.vk = 0x56;
     s.recordHotkey.modifiers = 3; // legacy без recordHotkey -> Ctrl+Alt+R
     s.recordHotkey.vk = 0x52;
+    s.videoHotkey.modifiers = 3; // legacy без videoHotkey -> Ctrl+Alt+P
+    s.videoHotkey.vk = 0x50;
     s.record.path.clear(); // legacy без секции record -> дефолт хоста (Videos\...)
     s.autostart = JsonGetBool(json, "autostart", true);
 }
@@ -441,7 +454,8 @@ std::string Settings::Serialize() const
            ", \"cropW\": " + std::to_string(st.cropW) +
            ", \"cropH\": " + std::to_string(st.cropH) +
            ", \"cropKeepAspect\": " + (st.cropKeepAspect ? "true" : "false") + " },\n";
-    out += "  \"video\": { \"path\": \"" + EscapeJson(video.path) + "\" },\n";
+    out += "  \"video\": { \"path\": \"" + EscapeJson(video.path) +
+           "\", \"loop\": " + (video.loop ? "true" : "false") + " },\n";
     out += "  \"camera\": { \"id\": \"" + EscapeJson(cam.id) +
            "\", \"name\": \"" + EscapeJson(cam.name) +
            "\", \"capture\": \"" + EscapeJson(cam.capture) + "\" },\n";
@@ -450,6 +464,8 @@ std::string Settings::Serialize() const
            ", \"vk\": " + std::to_string(hotkey.vk) + " },\n";
     out += "  \"recordHotkey\": { \"modifiers\": " + std::to_string(recordHotkey.modifiers) +
            ", \"vk\": " + std::to_string(recordHotkey.vk) + " },\n";
+    out += "  \"videoHotkey\": { \"modifiers\": " + std::to_string(videoHotkey.modifiers) +
+           ", \"vk\": " + std::to_string(videoHotkey.vk) + " },\n";
     out += "  \"record\": { \"path\": \"" + EscapeJson(record.path) + "\" },\n";
     out += "  \"autostart\": ";
     out += autostart ? "true" : "false";
@@ -474,6 +490,7 @@ SourceConfig ToSourceConfig(const Settings& s, const std::wstring& type)
     if (type == L"video") {
         cfg.path = s.video.path;
         cfg.scaleMode = L"fit";
+        cfg.loop = s.video.loop;
     } else if (type == L"camera") {
         cfg.path = s.cam.id;
         cfg.camName = s.cam.name; // scaleMode/crop не задаём — для camera не имеют смысла

@@ -78,12 +78,15 @@ void ApplyHotkeyRegistration()
     if (!g_hwnd) return;
     UnregisterHotKey(g_hwnd, kHotkeyId);
     UnregisterHotKey(g_hwnd, kRecHotkeyId);
+    UnregisterHotKey(g_hwnd, kVideoHotkeyId);
     HotkeySection hk;
     RecordHotkeySection rk;
+    VideoHotkeySection vk;
     {
         ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(g_hotkeyCs);
         hk = g_hotkey;
         rk = g_recHotkey;
+        vk = g_videoHotkey;
     }
     if (RegisterHotKey(g_hwnd, kHotkeyId, (UINT)hk.modifiers, (UINT)hk.vk)) {
         Log(L"hotkey registered: %s", HotkeyDisplay(hk).c_str());
@@ -98,6 +101,13 @@ void ApplyHotkeyRegistration()
         vcam::IncFailOpen(vcam::FailOpen::HotkeyBusy);
         Log(L"record hotkey RegisterHotKey(%s) failed: %lu - record hotkey disabled until settings change",
             HotkeyDisplay(rk).c_str(), GetLastError());
+    }
+    if (RegisterHotKey(g_hwnd, kVideoHotkeyId, (UINT)vk.modifiers, (UINT)vk.vk)) {
+        Log(L"video play/pause hotkey registered: %s", HotkeyDisplay(vk).c_str());
+    } else {
+        vcam::IncFailOpen(vcam::FailOpen::HotkeyBusy);
+        Log(L"video hotkey RegisterHotKey(%s) failed: %lu - video hotkey disabled until settings change",
+            HotkeyDisplay(vk).c_str(), GetLastError());
     }
 }
 
@@ -244,4 +254,19 @@ void OnRecordHotkeyPressed()
         Log(L"record hotkey %s: start command write failed", display.c_str());
     else
         Log(L"record hotkey %s: start requested", display.c_str());
+}
+
+// Play/pause видео: только взводим флаг — toggle применяет worker к живому
+// источнику (у UI-потока нет мьютекса источника; seek только в DecodeLoop).
+void OnVideoPlayHotkeyPressed()
+{
+    std::wstring display;
+    {
+        ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(g_hotkeyCs);
+        display = HotkeyDisplay(g_videoHotkey);
+        g_videoToggleRequested = true;
+    }
+    // Разбудить worker немедленно (иначе ждёт свой кадровый таймаут).
+    if (g_dirty) SetEvent(g_dirty);
+    Log(L"video hotkey %s: play/pause toggle requested", display.c_str());
 }

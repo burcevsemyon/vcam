@@ -35,6 +35,12 @@ public sealed class MainForm : Form
     // in video mode, reads the transient %APPDATA%\VCam\hotkey_state.json the
     // host writes while a hotkey-borrowed clip is on air.
     private readonly Label _hotkeyBorrowLabel = new();
+    // Clip options: video.loop checkbox + videoHotkey (play/pause) hint line
+    // with the «Изменить…» editor (same pattern as the record hotkey row).
+    private readonly CheckBox _videoLoopCheck = new();
+    private readonly Label _videoHotkeyHint = new();
+    private readonly Button _videoHotkeyEdit = new();
+    private int _videoHotkeyMods = 3, _videoHotkeyVk = 0x50;
 
     // Physical camera panel (replaces the preview in camera mode). The device
     // list is produced by "VCamProducerCli list-devices" (stdout rows id\tname).
@@ -408,8 +414,10 @@ public sealed class MainForm : Form
             "Ролик декодируется хостом VCamVideoStreamProducer.exe и всегда масштабируется letterbox в 1280×720.\r\n" +
             "Настройки scaleMode и crop для видео не применяются (см. секцию static).\r\n" +
             "Смена файла подхватывается автоматически (~1 с), без перезапуска.\r\n" +
-            "Обычное видео крутится по кругу; ролик, вызванный горячей клавишей, " +
-            "играет один раз и возвращает предыдущий источник.\r\n" +
+            "Повтор выключен — после конца ролика кадр замирает (как в плеере), " +
+            "клавиша play запускает сначала; включён — ролик крутится по кругу.\r\n" +
+            "Ролик, вызванный горячей клавишей показа видео, играет один раз и " +
+            "возвращает предыдущий источник.\r\n" +
             "Встроенное превью картинки — то же, что идёт в эфир.";
 
         _previewButton.Location = new Point(16, 184);
@@ -418,10 +426,31 @@ public sealed class MainForm : Form
         _previewButton.Name = "previewButton";
         _previewButton.Click += OnPreviewClicked;
 
+        // video.loop: saved on «Сохранить», the host re-creates the source
+        // (~1 с) — a running clip restarts with the new loop mode.
+        _videoLoopCheck.Location = new Point(410, 192);
+        _videoLoopCheck.Size = new Size(280, 24);
+        _videoLoopCheck.Text = "Повтор ролика (по кругу)";
+        _videoLoopCheck.Name = "videoLoopCheck";
+        _videoLoopCheck.CheckedChanged += (_, _) => MarkDirty();
+
         _previewHint.Location = new Point(16, 228);
-        _previewHint.Size = new Size(820, 96);
+        _previewHint.Size = new Size(820, 64);
         _previewHint.ForeColor = Color.DimGray;
         _previewHint.Name = "previewHint";
+
+        // videoHotkey row (play/pause): hint + editor, mirrors the record row.
+        _videoHotkeyHint.Location = new Point(16, 298);
+        _videoHotkeyHint.Size = new Size(640, 22);
+        _videoHotkeyHint.ForeColor = Color.DimGray;
+        _videoHotkeyHint.Name = "videoHotkeyHint";
+        UpdateVideoHotkeyHint();
+
+        _videoHotkeyEdit.Location = new Point(666, 294);
+        _videoHotkeyEdit.Size = new Size(110, 28);
+        _videoHotkeyEdit.Text = "Изменить…";
+        _videoHotkeyEdit.Name = "videoHotkeyEditButton";
+        _videoHotkeyEdit.Click += OnVideoHotkeyEditClicked;
 
         // Borrowed-video indicator: empty unless the host holds a hotkey borrow
         // (transient hotkey_state.json). Free space below the preview hint.
@@ -430,7 +459,7 @@ public sealed class MainForm : Form
         _hotkeyBorrowLabel.ForeColor = Color.DimGray;
         _hotkeyBorrowLabel.Name = "hotkeyBorrowLabel";
 
-        _videoPanel.Controls.AddRange(new Control[] { _videoTitle, _videoPathLabel, _videoInfoLabel, _previewButton, _previewHint, _hotkeyBorrowLabel });
+        _videoPanel.Controls.AddRange(new Control[] { _videoTitle, _videoPathLabel, _videoInfoLabel, _previewButton, _videoLoopCheck, _previewHint, _videoHotkeyHint, _videoHotkeyEdit, _hotkeyBorrowLabel });
     }
 
     // Same style as _videoPanel: white, FixedSingle, 856x455 over the preview.
@@ -995,6 +1024,10 @@ public sealed class MainForm : Form
         _hotkeyVk = s.HotkeyVk;
         _recHotkeyMods = s.RecordHotkeyModifiers;
         _recHotkeyVk = s.RecordHotkeyVk;
+        _videoHotkeyMods = s.VideoHotkeyModifiers;
+        _videoHotkeyVk = s.VideoHotkeyVk;
+        UpdateVideoHotkeyHint();
+        _videoLoopCheck.Checked = s.VideoLoop;
         UpdateHotkeyHint();
         UpdateHotkeyBorrowLabel();
         // В4: пустой record.path показываем пустым боксом (имя-файл генерится
@@ -1245,6 +1278,23 @@ public sealed class MainForm : Form
         _recHotkeyVk = dlg.Vk;
         MarkDirty();
         UpdateRecHint();
+    }
+
+    private void OnVideoHotkeyEditClicked(object? sender, EventArgs e)
+    {
+        using var dlg = new HotkeyEditForm("Хоткей — play/pause видео", _videoHotkeyMods, _videoHotkeyVk);
+        if (dlg.ShowDialog(this) != DialogResult.OK) return;
+        _videoHotkeyMods = dlg.Modifiers;
+        _videoHotkeyVk = dlg.Vk;
+        MarkDirty();
+        UpdateVideoHotkeyHint();
+    }
+
+    // videoHotkey hint line (video panel): current play/pause combination.
+    private void UpdateVideoHotkeyHint()
+    {
+        _videoHotkeyHint.Text = "Play/Pause: " + HotkeyDisplayMods(_videoHotkeyMods, _videoHotkeyVk) +
+            " — пауза/возобновление, после конца ролика — сначала.";
     }
 
     // Always-visible hotkey line: current combination + what it does.
@@ -1913,6 +1963,11 @@ public sealed class MainForm : Form
         settings.HotkeyVk = _hotkeyVk;
         settings.RecordHotkeyModifiers = _recHotkeyMods;
         settings.RecordHotkeyVk = _recHotkeyVk;
+        settings.VideoHotkeyModifiers = _videoHotkeyMods;
+        settings.VideoHotkeyVk = _videoHotkeyVk;
+        // video.loop lives in the video panel but saves regardless of the
+        // selected mode (the value round-trips from Load otherwise).
+        settings.VideoLoop = _videoLoopCheck.Checked;
 
         if (CurrentSourceType == SourceTypes.Video)
         {

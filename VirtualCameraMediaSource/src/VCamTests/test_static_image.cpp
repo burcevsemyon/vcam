@@ -150,3 +150,33 @@ TEST_CASE("static fit: NativeSize still reports native")
     DeleteFileW(path.c_str());
 }
 
+// IFrameSource play/pause defaults: не-video источники игнорируют команду
+// хоткея (PlayPauseToggle no-op) и не заявляют паузу/конец. Ломается дефолт —
+// хост получит мусор при вызове ToggleVideoPlay на static/camera.
+TEST_CASE("framesource: play/pause defaults are no-ops for static")
+{
+    const UINT sw = 64, sh = 64;
+    auto path = TempPath(L"vcam_test_toggle_defaults.png");
+    REQUIRE(MakeSolidPng(path, sw, sh, 10, 20, 30));
+
+    SourceConfig cfg;
+    cfg.type = L"static";
+    cfg.path = path;
+
+    StaticImageSource src;
+    std::wstring err;
+    REQUIRE(src.Open(cfg, err));
+
+    CHECK(src.IsPaused() == false);
+    CHECK(src.Ended() == false);
+    src.PlayPauseToggle(); // не должно менять состояние и не должно падать
+    CHECK(src.IsPaused() == false);
+    CHECK(src.Ended() == false);
+
+    uint32_t w = 0, h = 0;
+    CHECK(src.NativeSize(w, h)); // источник по-прежнему рабочий
+
+    src.Close();
+    DeleteFileW(path.c_str());
+}
+

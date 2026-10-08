@@ -10,12 +10,13 @@ namespace VCamSettingsUi;
 //     "static": { "path": "...", "scaleMode": "fit" | "cover" | "crop",
 //                 "cropX": int, "cropY": int, "cropW": int, "cropH": int,
 //                 "cropKeepAspect": bool },
-//     "video":  { "path": "..." },
+//     "video":  { "path": "...", "loop": bool },
 //     "camera": { "id": "<MF symbolic link>", "name": "<friendly name>",
 ///                "capture": "max" | "720p" | "1080p" },
 //     "quality": "source" | "fixed1080p" | "fixed720p",
 //     "hotkey": { "modifiers": int 1-15, "vk": int 0x08-0xFE },
 //     "recordHotkey": { "modifiers": int 1-15, "vk": int 0x08-0xFE },
+//     "videoHotkey": { "modifiers": int 1-15, "vk": int 0x08-0xFE },
 //     "record": { "path": "..." },
 //     "autostart": bool }
 // Unknown sections (e.g. legacy "effects" from older versions) are ignored
@@ -87,6 +88,10 @@ public sealed class Settings
 
     // Section "video" (clip).
     public string VideoPath { get; set; } = "";
+    // video.loop: true = loop the clip; false (default) = one pass, then the
+    // last frame freezes (media-player end, NOT no-signal). Mirrors
+    // VideoSection.loop on the C++ side.
+    public bool VideoLoop { get; set; }
 
     // Section "camera" (physical webcam device): id = MF symbolic link
     // (stable per USB port), name = friendly name. Both empty = not chosen.
@@ -114,6 +119,12 @@ public sealed class Settings
     // Ctrl+Alt+R (3, 0x52).
     public int RecordHotkeyModifiers { get; set; } = 3;
     public int RecordHotkeyVk { get; set; } = 0x52;
+
+    // Section "videoHotkey" (host video play/pause toggle): mirrors
+    // VideoHotkeySection on the C++ side. Same rules as hotkey, default
+    // Ctrl+Alt+P (3, 0x50).
+    public int VideoHotkeyModifiers { get; set; } = 3;
+    public int VideoHotkeyVk { get; set; } = 0x50;
 
     // Section "record" (default output path for the ether recording): mirrors
     // RecordSection on the C++ side. Empty = the host generates
@@ -195,7 +206,10 @@ public sealed class Settings
                 }
 
                 if (root.TryGetProperty("video", out var vd) && vd.ValueKind == JsonValueKind.Object)
+                {
                     s.VideoPath = GetString(vd, "path");
+                    s.VideoLoop = GetBool(vd, "loop");
+                }
 
                 if (root.TryGetProperty("camera", out var cm) && cm.ValueKind == JsonValueKind.Object)
                 {
@@ -217,6 +231,12 @@ public sealed class Settings
                 {
                     s.RecordHotkeyModifiers = ParseHotkeyModifiers(GetInt(rhk, "modifiers", 3));
                     s.RecordHotkeyVk = ParseRecordHotkeyVk(GetInt(rhk, "vk", 0x52));
+                }
+
+                if (root.TryGetProperty("videoHotkey", out var vhk) && vhk.ValueKind == JsonValueKind.Object)
+                {
+                    s.VideoHotkeyModifiers = ParseHotkeyModifiers(GetInt(vhk, "modifiers", 3));
+                    s.VideoHotkeyVk = ParseVideoHotkeyVk(GetInt(vhk, "vk", 0x50));
                 }
 
                 if (root.TryGetProperty("record", out var rc) && rc.ValueKind == JsonValueKind.Object)
@@ -286,6 +306,7 @@ public sealed class Settings
             ["video"] = new Dictionary<string, object>
             {
                 ["path"] = VideoPath,
+                ["loop"] = VideoLoop,
             },
             ["camera"] = new Dictionary<string, object>
             {
@@ -313,6 +334,11 @@ public sealed class Settings
             {
                 ["modifiers"] = RecordHotkeyModifiers,
                 ["vk"] = RecordHotkeyVk,
+            },
+            ["videoHotkey"] = new Dictionary<string, object>
+            {
+                ["modifiers"] = VideoHotkeyModifiers,
+                ["vk"] = VideoHotkeyVk,
             },
             ["record"] = new Dictionary<string, object>
             {
@@ -411,6 +437,11 @@ public sealed class Settings
     // default Ctrl+Alt+R (0x52) instead of Ctrl+Alt+V.
     private static int ParseRecordHotkeyVk(int vk) =>
         vk >= 0x08 && vk <= 0xFE ? vk : 0x52;
+
+    // Mirrors the C++ VideoHotkeySection parsing exactly: same ranges,
+    // default Ctrl+Alt+P (0x50).
+    private static int ParseVideoHotkeyVk(int vk) =>
+        vk >= 0x08 && vk <= 0xFE ? vk : 0x50;
 
     // Mirrors the C++ ParseCapture exactly: only "720p"/"1080p" pass (ordinal),
     // everything else (missing/garbage/future tokens) is Max.

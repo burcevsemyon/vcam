@@ -87,6 +87,7 @@ TEST_CASE("sourceconfig: == detects every field change")
     b.cropH = 99; CHECK(a != b); b.cropH = a.cropH; CHECK(a == b);
     b.cropKeepAspect = false; CHECK(a != b); b.cropKeepAspect = a.cropKeepAspect; CHECK(a == b);
     b.playOnce = true; CHECK(a != b); b.playOnce = a.playOnce; CHECK(a == b);
+    b.loop = true; CHECK(a != b); b.loop = a.loop; CHECK(a == b);
 }
 
 // VCamSectionHeader layout — общий контракт v1/v2. Сдвиг полей = рассинхрон
@@ -132,6 +133,7 @@ TEST_CASE("settings: Serialize writes required JSON keys")
     CHECK(json.find("\"cropH\"") != std::string::npos);
     CHECK(json.find("\"cropKeepAspect\"") != std::string::npos);
     CHECK(json.find("\"video\"") != std::string::npos);
+    CHECK(json.find("\"loop\"") != std::string::npos);
     CHECK(json.find("\"camera\"") != std::string::npos);
     CHECK(json.find("\"id\"") != std::string::npos);
     CHECK(json.find("\"name\"") != std::string::npos);
@@ -141,6 +143,7 @@ TEST_CASE("settings: Serialize writes required JSON keys")
     CHECK(json.find("\"modifiers\"") != std::string::npos);
     CHECK(json.find("\"vk\"") != std::string::npos);
     CHECK(json.find("\"recordHotkey\"") != std::string::npos);
+    CHECK(json.find("\"videoHotkey\"") != std::string::npos);
     CHECK(json.find("\"record\"") != std::string::npos);
     CHECK(json.find("\"autostart\"") != std::string::npos);
 }

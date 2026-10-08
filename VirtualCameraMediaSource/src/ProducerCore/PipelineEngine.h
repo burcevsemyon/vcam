@@ -26,6 +26,11 @@ public:
 
     void SetTarget(const SourceConfig& want, const std::wstring& quality);
 
+    // Хоткей play/pause видео: toggle на живом m_src (ended → restart,
+    // paused → play, playing → pause) — без CloseSource/SetTarget. false =
+    // не видео/источник не готов (команда игнорируется, в лог пишет вызывающий).
+    bool ToggleVideoPlay();
+
     bool IsWriterOpen() const { return m_writerOpen; }
     const std::wstring& WriterErr() const { return m_writerErr; }
     const std::wstring& SectionOpenedAs() const { return m_writer.SectionOpenedAs(); }

@@ -23,8 +23,12 @@ struct StaticSection {
 
 struct VideoSection {
     std::wstring path;
+    // Повтор ролика: true = луп; false (default) = один проход, на конце —
+    // freeze последнего кадра (не NO SIGNAL). Меняется горячо (== в SourceConfig
+    // → SetTarget → пересоздание источника с начала).
+    bool loop = false;
 
-    bool operator==(const VideoSection& o) const { return path == o.path; }
+    bool operator==(const VideoSection& o) const { return path == o.path && loop == o.loop; }
 };
 
 struct CameraSection {
@@ -67,6 +71,20 @@ struct RecordHotkeySection {
     bool operator!=(const RecordHotkeySection& o) const { return !(*this == o); }
 };
 
+// Хоткей play/pause видео (секция videoHotkey): toggle на живом источнике
+// (ended → restart с начала, paused → play, playing → pause), без
+// переоткрытия. Та же семантика полей; мусор/отсутствие → дефолт Ctrl+Alt+P.
+struct VideoHotkeySection {
+    int modifiers = 3; // MOD_CONTROL | MOD_ALT
+    int vk = 0x50;     // 'P'
+
+    bool operator==(const VideoHotkeySection& o) const
+    {
+        return modifiers == o.modifiers && vk == o.vk;
+    }
+    bool operator!=(const VideoHotkeySection& o) const { return !(*this == o); }
+};
+
 // Путь по умолчанию для записи эфира (секция record). Пусто = хост
 // сгенерирует %Videos%\VCam_ГГГГММДД_ЧЧММСС.mp4 при старте записи.
 // Состояние записи (идёт/нет) здесь НЕ живёт — только transient
@@ -94,6 +112,9 @@ struct Settings {
     HotkeySection hotkey;
     // Хоткей записи (секция recordHotkey): смена — только перерегистрация.
     RecordHotkeySection recordHotkey;
+    // Хоткей play/pause видео (секция videoHotkey): смена — только
+    // перерегистрация, команда идёт на живой источник без переоткрытия.
+    VideoHotkeySection videoHotkey;
     // Путь записи по умолчанию (секция record): смена — без переоткрытия
     // (в SourceConfig не входит; хост читает при старте записи).
     RecordSection record;
@@ -106,7 +127,8 @@ struct Settings {
         return sourceType == o.sourceType && st == o.st && video == o.video &&
                cam == o.cam && autostart == o.autostart && quality == o.quality &&
                hotkey == o.hotkey &&
-                recordHotkey == o.recordHotkey && record == o.record;
+                recordHotkey == o.recordHotkey && videoHotkey == o.videoHotkey &&
+                record == o.record;
     }
     bool operator!=(const Settings& o) const { return !(*this == o); }
 

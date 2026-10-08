@@ -88,3 +88,29 @@ TEST_CASE("recordHotkey: vk clamped to 0x08-0xFE (default 0x52)")
     Settings s8 = LoadJson(R"({"static":{},"recordHotkey":{"modifiers":3,"vk":8}})");
     CHECK(s8.recordHotkey.vk == 8);
 }
+
+TEST_CASE("videoHotkey: default Ctrl+Alt+P when missing")
+{
+    Settings s = LoadJson("{}");
+    CHECK(s.videoHotkey.modifiers == 3);
+    CHECK(s.videoHotkey.vk == 0x50); // 'P'
+}
+
+TEST_CASE("videoHotkey: valid values pass through")
+{
+    Settings s = LoadJson(R"({"static":{},"videoHotkey":{"modifiers":7,"vk":80}})");
+    CHECK(s.videoHotkey.modifiers == 7);
+    CHECK(s.videoHotkey.vk == 80);
+}
+
+TEST_CASE("videoHotkey: vk clamped to 0x08-0xFE (default 0x50)")
+{
+    Settings s0 = LoadJson(R"({"static":{},"videoHotkey":{"modifiers":3,"vk":0}})");
+    CHECK(s0.videoHotkey.vk == 0x50);
+    Settings sFF = LoadJson(R"({"static":{},"videoHotkey":{"modifiers":3,"vk":255}})");
+    CHECK(sFF.videoHotkey.vk == 0x50);
+    Settings s8 = LoadJson(R"({"static":{},"videoHotkey":{"modifiers":3,"vk":8}})");
+    CHECK(s8.videoHotkey.vk == 8);
+    Settings sMods = LoadJson(R"({"static":{},"videoHotkey":{"modifiers":16,"vk":80}})");
+    CHECK(sMods.videoHotkey.modifiers == 3);
+}

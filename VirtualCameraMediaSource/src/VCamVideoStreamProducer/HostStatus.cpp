@@ -135,7 +135,8 @@ void ClearRunState()
 }
 
 void ApplySettingsDiff(HostPipelineEngine& e, HotkeySection& curHotkey,
-                       RecordHotkeySection& curRecHotkey)
+                       RecordHotkeySection& curRecHotkey,
+                       VideoHotkeySection& curVideoHotkey)
 {
     Settings s;
     g_watcher.Current(s);
@@ -152,6 +153,14 @@ void ApplySettingsDiff(HostPipelineEngine& e, HotkeySection& curHotkey,
         {
             ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(g_hotkeyCs);
             g_recHotkey = s.recordHotkey;
+        }
+        PostMessageW(g_hwnd, WM_REAPPLY_HOTKEY, 0, 0);
+    }
+    if (s.videoHotkey != curVideoHotkey) {
+        curVideoHotkey = s.videoHotkey;
+        {
+            ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(g_hotkeyCs);
+            g_videoHotkey = s.videoHotkey;
         }
         PostMessageW(g_hwnd, WM_REAPPLY_HOTKEY, 0, 0);
     }
@@ -178,11 +187,11 @@ void ApplySettingsDiff(HostPipelineEngine& e, HotkeySection& curHotkey,
         s.record.path.empty() ? L"(default)" : s.record.path.c_str());
     if (!e.HasTarget() || want != e.Target() || s.quality != e.Quality()) {
         LogDebug(L"apply target: type=%s path=%s camName=%s capture=%s scaleMode=%s "
-                 L"crop=(%d,%d,%d,%d)%s quality=%s playOnce=%d",
+                 L"crop=(%d,%d,%d,%d)%s quality=%s playOnce=%d loop=%d",
             want.type.c_str(), want.path.c_str(), want.camName.c_str(),
             want.capture.c_str(), want.scaleMode.c_str(), want.cropX, want.cropY,
             want.cropW, want.cropH, want.cropKeepAspect ? L" keepAspect" : L"",
-            s.quality.c_str(), want.playOnce ? 1 : 0);
+            s.quality.c_str(), want.playOnce ? 1 : 0, want.loop ? 1 : 0);
         e.SetTarget(want, s.quality);
     }
 }

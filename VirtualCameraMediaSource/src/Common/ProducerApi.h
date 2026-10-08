@@ -17,8 +17,12 @@ struct SourceConfig {
     int cropH = 0;
     bool cropKeepAspect = false;
     // Хоткей static→video: true = проиграть video один раз и сообщить Ended()
-    // (хост вернёт запомненный источник). false (default) = луп как раньше.
+    // (хост вернёт запомненный источник). false = луп как раньше.
     bool playOnce = false;
+    // video.loop (секция настроек): true = крутить ролик по кругу. false
+    // (default) = один проход, на конце — ended_ + freeze последнего кадра
+    // (не NO SIGNAL). playOnce (borrow) отменяет луп независимо от этого флага.
+    bool loop = false;
 
     bool operator==(const SourceConfig& o) const
     {
@@ -26,7 +30,7 @@ struct SourceConfig {
                 capture == o.capture && scaleMode == o.scaleMode &&
                 cropX == o.cropX && cropY == o.cropY && cropW == o.cropW &&
                 cropH == o.cropH && cropKeepAspect == o.cropKeepAspect &&
-                playOnce == o.playOnce;
+                playOnce == o.playOnce && loop == o.loop;
     }
     bool operator!=(const SourceConfig& o) const { return !(*this == o); }
 };
@@ -46,10 +50,15 @@ struct IFrameSource {
     // Нативные размеры источника (кламп к cap). false = неизвестны
     // (не открыт / первый кадр ещё не готов) — вызывающий ждёт/фолбэчит 720p.
     virtual bool NativeSize(uint32_t& w, uint32_t& h) = 0;
-    // Конец воспроизведения в режиме playOnce (video доиграло файл один раз:
-    // Render дальше даёт false с причиной "ended"). Default false; луп-режим
-    // никогда не заканчивается.
+    // Конец воспроизведения (video доиграло файл: ended_ взведён, Render
+    // freeze'ит последний кадр). Default false; луп-режим никогда не
+    // заканчивается. Borrow-автовозврат хоста опирается на этот флаг.
     virtual bool Ended() const { return false; }
+    // Play/pause toggle по хоткею: video — ended → restart с начала,
+    // paused → play, playing → pause; остальные источники — no-op.
+    virtual void PlayPauseToggle() {}
+    // true = воспроизведение приостановлено (для логов/наблюдаемости).
+    virtual bool IsPaused() const { return false; }
     virtual void Close() = 0;
     virtual const wchar_t* Name() const = 0;
     virtual ~IFrameSource() = default;

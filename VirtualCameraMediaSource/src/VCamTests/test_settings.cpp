@@ -38,6 +38,9 @@ TEST_CASE("settings: default values")
     CHECK(s.hotkey.vk == 0x56);
     CHECK(s.recordHotkey.modifiers == 3);
     CHECK(s.recordHotkey.vk == 0x52);
+    CHECK(s.video.loop == false); // default: один проход, freeze на конце
+    CHECK(s.videoHotkey.modifiers == 3);
+    CHECK(s.videoHotkey.vk == 0x50); // 'P'
 }
 
 TEST_CASE("settings: round-trip preserves all fields")
@@ -52,6 +55,7 @@ TEST_CASE("settings: round-trip preserves all fields")
     s.st.cropH = 200;
     s.st.cropKeepAspect = true;
     s.video.path = L"C:\\test\\video.mp4";
+    s.video.loop = true;
     s.cam.id = L"\\\\?\\usb#vid_1234";
     s.cam.name = L"TestCam";
     s.cam.capture = L"1080p";
@@ -61,6 +65,8 @@ TEST_CASE("settings: round-trip preserves all fields")
     s.hotkey.vk = 0x41;
     s.recordHotkey.modifiers = 5;
     s.recordHotkey.vk = 0x52;
+    s.videoHotkey.modifiers = 6;
+    s.videoHotkey.vk = 0x42;
     s.record.path = L"C:\\test\\out.mp4";
 
     Settings r = RoundTrip(s);
@@ -73,6 +79,7 @@ TEST_CASE("settings: round-trip preserves all fields")
     CHECK(r.st.cropH == 200);
     CHECK(r.st.cropKeepAspect == true);
     CHECK(r.video.path == L"C:\\test\\video.mp4");
+    CHECK(r.video.loop == true);
     CHECK(r.cam.id == L"\\\\?\\usb#vid_1234");
     CHECK(r.cam.name == L"TestCam");
     CHECK(r.cam.capture == L"1080p");
@@ -82,6 +89,8 @@ TEST_CASE("settings: round-trip preserves all fields")
     CHECK(r.hotkey.vk == 0x41);
     CHECK(r.recordHotkey.modifiers == 5);
     CHECK(r.recordHotkey.vk == 0x52);
+    CHECK(r.videoHotkey.modifiers == 6);
+    CHECK(r.videoHotkey.vk == 0x42);
     CHECK(r.record.path == L"C:\\test\\out.mp4");
 }
 
@@ -99,6 +108,16 @@ TEST_CASE("settings: operator== detects changes")
     CHECK(a == b);
     b.st.cropKeepAspect = true;
     CHECK(a != b);
+    b.st.cropKeepAspect = false;
+    CHECK(a == b);
+    b.video.loop = true; // смена повтора обязана пересоздать источник
+    CHECK(a != b);
+    b.video.loop = false;
+    CHECK(a == b);
+    b.videoHotkey.vk = 0x41; // смена play/pause-хоткея — перерегистрация
+    CHECK(a != b);
+    b.videoHotkey.vk = 0x50;
+    CHECK(a == b);
 }
 
 TEST_CASE("settings: parse scaleMode insensitive")
@@ -188,6 +207,35 @@ TEST_CASE("settings: legacy flat format migration")
     CHECK(s.st.cropKeepAspect == true);
     CHECK(s.autostart == false);
     CHECK(s.quality == L"source"); // legacy без quality -> source
+    CHECK(s.video.loop == false); // legacy без loop -> один проход
+    CHECK(s.videoHotkey.modifiers == 3); // legacy без videoHotkey -> Ctrl+Alt+P
+    CHECK(s.videoHotkey.vk == 0x50);
+    DeleteFileW(path.c_str());
+}
+
+TEST_CASE("settings: parse video.loop")
+{
+    wchar_t tmp[MAX_PATH];
+    GetTempPathW(MAX_PATH, tmp);
+    std::wstring path = std::wstring(tmp) + L"vcam_test_loop.json";
+
+    // true/false проходят; отсутствие/мусор -> false (default).
+    struct { const char* json; bool want; } cases[] = {
+        { R"({"video":{"path":"a.mp4","loop":true}})", true },
+        { R"({"video":{"path":"a.mp4","loop":false}})", false },
+        { R"({"video":{"path":"a.mp4"}})", false },
+        { R"({"video":{"loop":1}})", false }, // не bool -> default
+    };
+    for (auto& c : cases)
+    {
+        FILE* f = _wfopen(path.c_str(), L"wb");
+        REQUIRE(f != nullptr);
+        fwrite(c.json, 1, strlen(c.json), f);
+        fclose(f);
+        Settings s;
+        s.Load(path);
+        CHECK(s.video.loop == c.want);
+    }
     DeleteFileW(path.c_str());
 }
 
@@ -225,6 +273,11 @@ TEST_CASE("settings: ToSourceConfig video forces fit")
     CHECK(cfg.type == L"video");
     CHECK(cfg.path == L"C:\\vid.mp4");
     CHECK(cfg.scaleMode == L"fit"); // video always fit
+    CHECK(cfg.loop == false); // default: без повтора
+
+    s.video.loop = true;
+    cfg = ToSourceConfig(s, L"video");
+    CHECK(cfg.loop == true); // loop прокидывается в SourceConfig
 }
 
 TEST_CASE("settings: ToSourceConfig camera normalizes capture")

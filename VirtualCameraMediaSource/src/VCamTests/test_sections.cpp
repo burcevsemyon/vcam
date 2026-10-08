@@ -27,13 +27,16 @@ TEST_CASE("sections: StaticSection == detects all fields")
     b.cropKeepAspect = false; CHECK(a != b); b.cropKeepAspect = a.cropKeepAspect; CHECK(a == b);
 }
 
-TEST_CASE("sections: VideoSection == detects path change")
+TEST_CASE("sections: VideoSection detects path and loop change")
 {
     VideoSection a;
     a.path = L"C:\\vid.mp4";
+    a.loop = false;
     VideoSection b = a;
     CHECK(a == b);
-    b.path = L"x"; CHECK(a != b);
+    b.path = L"x"; CHECK(a != b); b.path = a.path; CHECK(a == b);
+    b.loop = true; CHECK(a != b); // смена повтора обязана пересоздать источник
+    b.loop = false; CHECK(a == b);
 }
 
 TEST_CASE("sections: CameraSection == detects all fields")
@@ -73,6 +76,21 @@ TEST_CASE("sections: RecordHotkeySection == and !=")
     a.vk = 0x52;
     RecordHotkeySection b = a;
     CHECK(a == b);
+    b.vk = 0x41;
+    CHECK(a != b);
+}
+
+TEST_CASE("sections: VideoHotkeySection == and !=")
+{
+    VideoHotkeySection a;
+    a.modifiers = 3;
+    a.vk = 0x50;
+    VideoHotkeySection b = a;
+    CHECK(a == b);
+    CHECK(!(a != b));
+    b.modifiers = 6;
+    CHECK(a != b);
+    b.modifiers = 3;
     b.vk = 0x41;
     CHECK(a != b);
 }

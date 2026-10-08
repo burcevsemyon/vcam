@@ -189,6 +189,19 @@ void PipelineEngine::CloseSource()
     }
 }
 
+bool PipelineEngine::ToggleVideoPlay()
+{
+    if (m_target.type != L"video" || !m_src) return false;
+    m_src->PlayPauseToggle();
+    if (m_src->Ended())
+        Log(L"video: play pressed (restart from beginning)");
+    else if (m_src->IsPaused())
+        Log(L"video: paused");
+    else
+        Log(L"video: playing");
+    return true;
+}
+
 bool PipelineEngine::EnsureFrameBuf(uint32_t w, uint32_t h)
 {
     if (w == 0 || h == 0 || w > vcam::VCamNativeCapW || h > vcam::VCamNativeCapH)

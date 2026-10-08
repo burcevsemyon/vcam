@@ -11,13 +11,16 @@
 #include "VideoProcessorScaler.h"
 
 // Видеофайл через MF SourceReader: декод в фоновом потоке с frame-holding по
-// timestamp и лупом SetPosition(0) (default; SourceConfig.playOnce=true =
-// один проход без seek + Ended()/Render-"ended" в конце). Декод — в нативном
-// кадр хранится в frame_); Render отдаёт последний декодированный кадр;
-// legacy Render(bgrx, stride) = 720p letterbox (MFT, fallback CPU);
-// sized Render = произвольный размер (натив — memcpy, 720p — MFT/CPU,
-// остальное — CPU fit). При ошибке открытия/декодирования возвращает false
-// с причиной (без «продолжаем прошлый клип»).
+// timestamp. Луп: SourceConfig.loop (video.loop в настройках, default false =
+// один проход) && !playOnce (borrow-хоткей отменяет луп); без лупа на конце —
+// ended_ + freeze последнего кадра в Render (не NO SIGNAL) с ожиданием
+// play-команды (restart с начала) или stop. PlayPauseToggle: ended → restart,
+// paused → play, playing → pause (таймлайн замирает, кадр freeze'ится).
+// Декод — в нативном кадре хранится в frame_); Render отдаёт последний
+// декодированный кадр; legacy Render(bgrx, stride) = 720p letterbox (MFT,
+// fallback CPU); sized Render = произвольный размер (натив — memcpy, 720p —
+// MFT/CPU, остальное — CPU fit). При ошибке открытия/декодирования возвращает
+// false с причиной (без «продолжаем прошлый клип»).
 class VideoFileSource : public IFrameSource {
 public:
     VideoFileSource();
@@ -33,8 +36,13 @@ public:
     bool NativeSize(uint32_t& w, uint32_t& h) override;
     void Close() override;
     const wchar_t* Name() const override { return L"video"; }
-    // true = файл доигран один раз в режиме playOnce (Render даёт false/"ended").
+    // true = файл доигран (ended_ взведён; Render freeze'ит последний кадр).
     bool Ended() const override;
+    // Хоткей play/pause: ended → restart с начала, paused → play, playing →
+    // pause. Команда уходит decode-потоку через cmdEvent_ (reader не
+    // потокобезопасен — seek только из DecodeLoop).
+    void PlayPauseToggle() override;
+    bool IsPaused() const override;
 
 private:
     static DWORD WINAPI ThreadProc(LPVOID self);
@@ -56,6 +64,9 @@ private:
     SourceConfig cfg_;
     ATL::CHandle thread_;
     ATL::CHandle stopEvent_;
+    // auto-reset: будит DecodeLoop на команду play/pause/restart (пауза и
+    // ended замирают на WaitForMultipleObjects{stopEvent_, cmdEvent_}).
+    ATL::CHandle cmdEvent_;
     std::vector<uint8_t> frame_; // натив BGRX (кламп к cap), stride frameW_*4
     UINT frameW_ = 0;
     UINT frameH_ = 0;
@@ -63,10 +74,21 @@ private:
     bool frameReady_ = false;
     bool failed_ = false;
     std::wstring failReason_;
-    // Режим play-once (из SourceConfig.playOnce): файл играется один раз,
-    // на end-of-stream seek НЕ делается, взводится ended_ (Render=false/"ended").
-    // Default false = луп SetPosition(0) как раньше.
+    // Луп (SourceConfig.loop && !playOnce): true — seek(0) на end-of-stream.
+    // Копируется в локальную на время жизни DecodeLoop (пишется в Open/Shutdown
+    // под остановленный поток).
+    bool loop_ = false;
+    // Режим play-once (из SourceConfig.playOnce): borrow-хоткей — отменяет луп,
+    // на EOS взводится ended_.
     bool playOnce_ = false;
+    // Конец файла (без лупа): поток жив и ждёт play-команду (restart) или
+    // stop; Render freeze'ит последний кадр. Сбрасывается только в DecodeLoop
+    // после SetPosition(0) — не трогать из PlayPauseToggle (гонка с Render).
     bool ended_ = false;
+    // PlayPauseToggle выставляет под cs_; DecodeLoop замирает до cmd/stop.
+    bool paused_ = false;
+    // Запрошен restart (с начала): взводится при toggle в ended-состоянии,
+    // снимается в DecodeLoop перед SetPosition(0).
+    bool restartRequested_ = false;
     VideoProcessorScaler mftScaler_; // GPU-скейл; недоступен -> CPU-fallback
 };

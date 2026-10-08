@@ -14,7 +14,8 @@ void CheckPreviousRunCrash(); // на старте: маркер прошлог�
 void UpdateRunStep(const std::wstring& step); // при смене фазы (только если изменился)
 void ClearRunState(); // при чистом выходе: удалить файл
 void ApplySettingsDiff(HostPipelineEngine& e, HotkeySection& curHotkey,
-                       RecordHotkeySection& curRecHotkey);
+                       RecordHotkeySection& curRecHotkey,
+                       VideoHotkeySection& curVideoHotkey);
 void CheckBorrowedReturn(HostPipelineEngine& e, const std::wstring& settingsPath);
 void SetStatus(const std::wstring& text);
 std::wstring GetStatus();

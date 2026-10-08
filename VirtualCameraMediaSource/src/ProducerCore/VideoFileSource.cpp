@@ -310,7 +310,10 @@ bool VideoFileSource::Open(const SourceConfig& cfg, std::wstring& err)
         failed_ = false;
         failReason_.clear();
         playOnce_ = cfg.playOnce;
+        loop_ = cfg.loop;
         ended_ = false;
+        paused_ = false;
+        restartRequested_ = false;
     }
 
     stopEvent_.Attach(CreateEventW(nullptr, TRUE, FALSE, nullptr));
@@ -319,10 +322,20 @@ bool VideoFileSource::Open(const SourceConfig& cfg, std::wstring& err)
         frame_.clear();
         return false;
     }
+    // auto-reset: команда play/pause/restart из PlayPauseToggle (любой поток)
+    // будит DecodeLoop, замирший в ended/паузе.
+    cmdEvent_.Attach(CreateEventW(nullptr, FALSE, FALSE, nullptr));
+    if (!cmdEvent_) {
+        err = L"CreateEventW(cmd) failed: " + std::to_wstring(GetLastError());
+        stopEvent_.Close();
+        frame_.clear();
+        return false;
+    }
     thread_.Attach(CreateThread(nullptr, 0, ThreadProc, this, 0, nullptr));
     if (!thread_) {
         err = L"CreateThread failed: " + std::to_wstring(GetLastError());
         stopEvent_.Close();
+        cmdEvent_.Close();
         frame_.clear();
         return false;
     }
@@ -339,7 +352,9 @@ bool VideoFileSource::Render(uint8_t* bgrx, int stride, std::wstring& err)
         ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);
         if (!open_) err = L"video source is not open";
         else if (failed_) err = failReason_;
-        else if (ended_) err = L"ended";
+        // ended без кадров = нет сигнала; с кадром — freeze последнего (плеер),
+        // не fallback.
+        else if (ended_ && !frameReady_) err = L"ended";
         else if (!frameReady_) err = L"no frame decoded yet";
         else ready = ScaleFrameTo720pLocked(bgrx, (LONG)stride);
     }
@@ -360,7 +375,7 @@ bool VideoFileSource::Render(uint8_t* dst, int stride, uint32_t w, uint32_t h,
         ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);
         if (!open_) err = L"video source is not open";
         else if (failed_) err = failReason_;
-        else if (ended_) err = L"ended";
+        else if (ended_ && !frameReady_) err = L"ended";
         else if (!frameReady_) err = L"no frame decoded yet";
         else if (w == frameW_ && h == frameH_) {
             vcam::CopyFrameRowwise(dst, (size_t)stride, frame_.data(), (size_t)frameW_ * 4,
@@ -393,6 +408,38 @@ bool VideoFileSource::Ended() const
     return e;
 }
 
+void VideoFileSource::PlayPauseToggle()
+{
+    bool logRestart = false, logPause = false, logResume = false;
+    {
+        ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);
+        if (!open_ || failed_) return;
+        if (ended_) {
+            // Конец ролика: play = restart с начала (ended_ сбросит сам
+            // DecodeLoop после SetPosition(0) — иначе гонка с Render).
+            restartRequested_ = true;
+            paused_ = false;
+            logRestart = true;
+        } else if (paused_) {
+            paused_ = false;
+            logResume = true;
+        } else {
+            paused_ = true;
+            logPause = true;
+        }
+    }
+    if (cmdEvent_) SetEvent(cmdEvent_);
+    if (logRestart) LogVideo(L"play: restart from beginning");
+    else if (logPause) LogVideo(L"pause");
+    else if (logResume) LogVideo(L"resume");
+}
+
+bool VideoFileSource::IsPaused() const
+{
+    ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);
+    return paused_;
+}
+
 void VideoFileSource::Close()
 {
     Shutdown(3000);
@@ -415,13 +462,17 @@ bool VideoFileSource::Shutdown(DWORD timeoutMs)
         failed_ = false;
         failReason_.clear();
         playOnce_ = false;
+        loop_ = false;
         ended_ = false;
+        paused_ = false;
+        restartRequested_ = false;
     }
 
     frame_.clear();
     frame_.shrink_to_fit();
     frameW_ = frameH_ = 0;
     cfg_ = SourceConfig();
+    cmdEvent_.Close();
     return true;
 }
 
@@ -431,9 +482,11 @@ DWORD WINAPI VideoFileSource::ThreadProc(LPVOID self)
     return 0;
 }
 
-// Фоновый декод: pacing по timestamp (frame-holding), letterbox в frame_ под cs_,
-// луп SetPosition(0) на end-of-stream (default) или ended_-стоп без seek в
-// режиме playOnce. Ошибка → SetFailed (Render даст false).
+// Фоновый декод: pacing по timestamp (frame-holding), кадр в frame_ под cs_.
+// Луп loop_ && !playOnce → SetPosition(0) на end-of-stream; без лупа — ended_ и
+// замирание в цикле до play-команды (restart) или stop (Render freeze'ит
+// последний кадр). Пауза (paused_) — таймлайн тоже замирает. Ошибка →
+// SetFailed (Render даст false).
 void VideoFileSource::DecodeLoop()
 {
     HRESULT hrCo = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
@@ -459,11 +512,67 @@ void VideoFileSource::DecodeLoop()
     ULONGLONG wallStart = GetTickCount64();
     LONGLONG baseMs = 0;
     bool failed = false;
-    // playOnce_ стабилен на время жизни потока (пишется в Open/Shutdown под
-    // остановленный DecodeLoop) — копируем в локальную для проверки EOS.
-    const bool playOnce = playOnce_;
+    // loop_/playOnce_ стабильны на время жизни потока (пишутся в Open/Shutdown
+    // под остановленный DecodeLoop) — копируем в локальные. playOnce (borrow)
+    // отменяет луп независимо от настройки loop.
+    const bool loop = loop_ && !playOnce_;
 
     while (WaitForSingleObject(stopEvent_, 0) != WAIT_OBJECT_0) {
+        // ended/пауза: замираем до команды play (restart/resume) или stop.
+        bool stopNow = false;
+        for (;;) {
+            bool restart = false, idle = false;
+            {
+                ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);
+                restart = restartRequested_;
+                idle = ended_ || paused_;
+            }
+            if (restart || !idle) break;
+            HANDLE hs[2] = { static_cast<HANDLE>(stopEvent_),
+                             static_cast<HANDLE>(cmdEvent_) };
+            DWORD w = WaitForMultipleObjects(2, hs, FALSE, INFINITE);
+            if (w == WAIT_OBJECT_0) { // stop
+                stopNow = true;
+                break;
+            }
+            // cmd-событие: перепроверить restart/ended/paused (авто-сброс).
+        }
+        if (stopNow) break;
+
+        // Restart с начала (toggle из ended-состояния): seek только здесь —
+        // reader не потокобезопасен, PlayPauseToggle лишь взводит флаг.
+        bool doRestart = false;
+        {
+            ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);
+            doRestart = restartRequested_;
+            if (doRestart) {
+                restartRequested_ = false;
+                paused_ = false;
+            }
+        }
+        if (doRestart) {
+            PROPVARIANT pv;
+            PropVariantInit(&pv);
+            pv.vt = VT_I8;
+            pv.hVal.QuadPart = 0;
+            HRESULT hrSeek = vs.reader->SetCurrentPosition(GUID_NULL, pv);
+            PropVariantClear(&pv);
+            if (FAILED(hrSeek)) {
+                SetFailed(L"SetPosition(0) failed: " + HrHex(hrSeek));
+                failed = true;
+                break;
+            }
+            {
+                ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);
+                ended_ = false;
+            }
+            // ts после seek ~0: target должен совпасть с now (не ждать
+            // анти-дрейфа по старому baseMs).
+            baseMs = (LONGLONG)(GetTickCount64() - wallStart);
+            LogVideo(L"restarted from beginning");
+            continue;
+        }
+
         ATL::CComPtr<IMFMediaBuffer> buf;
         DWORD actualStream = 0;
         DWORD flags = 0;
@@ -530,26 +639,27 @@ void VideoFileSource::DecodeLoop()
         }
 
         if (flags & MF_SOURCE_READERF_ENDOFSTREAM) {
-            if (playOnce) {
-                // Один проход сыгран: кадров больше не будет, seek не делаем.
-                // Последний кадр остаётся в frame_, но Render даёт "ended".
+            if (loop) {
+                PROPVARIANT pv;
+                PropVariantInit(&pv);
+                pv.vt = VT_I8;
+                pv.hVal.QuadPart = 0;
+                HRESULT hrSeek = vs.reader->SetCurrentPosition(GUID_NULL, pv);
+                PropVariantClear(&pv);
+                if (FAILED(hrSeek)) {
+                    SetFailed(L"SetPosition(0) failed: " + HrHex(hrSeek));
+                    failed = true;
+                    break;
+                }
+            } else {
+                // Конец ролика: кадр freeze'ится (Render), поток живёт в
+                // idle-wait до play-команды (restart) или stop.
                 {
                     ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);
                     ended_ = true;
                 }
-                LogVideo(L"end of stream (play-once, no loop)");
-                break;
-            }
-            PROPVARIANT pv;
-            PropVariantInit(&pv);
-            pv.vt = VT_I8;
-            pv.hVal.QuadPart = 0;
-            HRESULT hrSeek = vs.reader->SetCurrentPosition(GUID_NULL, pv);
-            PropVariantClear(&pv);
-            if (FAILED(hrSeek)) {
-                SetFailed(L"SetPosition(0) failed: " + HrHex(hrSeek));
-                failed = true;
-                break;
+                LogVideo(L"end of stream (no loop, frame frozen - play restarts)");
+                continue;
             }
         }
     }

@@ -11,3 +11,4 @@ void ApplyHotkeyRegistration();
 bool AutoReturnBorrowedVideo(const std::wstring& settingsPath, const wchar_t* why);
 void OnHotkeyPressed();
 void OnRecordHotkeyPressed();
+void OnVideoPlayHotkeyPressed();

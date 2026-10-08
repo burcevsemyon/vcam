@@ -115,6 +115,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_HOTKEY:
         if (wp == kHotkeyId) OnHotkeyPressed();
         else if (wp == kRecHotkeyId) OnRecordHotkeyPressed();
+        else if (wp == kVideoHotkeyId) OnVideoPlayHotkeyPressed();
         return 0;
     case WM_REAPPLY_HOTKEY:
         ApplyHotkeyRegistration();

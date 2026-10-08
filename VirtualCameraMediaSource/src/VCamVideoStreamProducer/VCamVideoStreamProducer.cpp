@@ -49,6 +49,8 @@ HotkeySection g_hotkey;
 std::wstring g_hotkeyReturnType = L"static";
 bool g_hotkeyBorrowed = false;
 ULONGLONG g_hotkeyBorrowTickMs = 0;
+VideoHotkeySection g_videoHotkey;
+bool g_videoToggleRequested = false;
 
 ATL::CComAutoCriticalSection g_settingsCs;
 SettingsFileGuard::SettingsFileGuard() : guard_(g_settingsCs) {}
@@ -83,13 +85,14 @@ DWORD WINAPI WorkerProc(LPVOID)
     const std::wstring settingsPath = DefaultSettingsPath();
     HotkeySection curHotkey;
     RecordHotkeySection curRecHotkey;
+    VideoHotkeySection curVideoHotkey;
     ULONGLONG lastCountersFlush = GetTickCount64();
     for (;;) {
         DWORD r = WaitForMultipleObjects(2, waits, FALSE, timeout);
         if (r == WAIT_OBJECT_0) break;
         if (first || r == WAIT_OBJECT_0 + 1) {
             first = false;
-            ApplySettingsDiff(engine, curHotkey, curRecHotkey);
+            ApplySettingsDiff(engine, curHotkey, curRecHotkey, curVideoHotkey);
         }
         {
             std::wstring rcmd, rpath;
@@ -98,6 +101,16 @@ DWORD WINAPI WorkerProc(LPVOID)
                 else if (rcmd == L"stop") engine.StopRecording(L"команда UI/хоткея");
                 else Log(L"record: unknown command ignored");
             }
+        }
+        { // play/pause-хоткей: команда на живой источник, без переоткрытия
+            bool toggle = false;
+            {
+                ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(g_hotkeyCs);
+                toggle = g_videoToggleRequested;
+                g_videoToggleRequested = false;
+            }
+            if (toggle && !engine.ToggleVideoPlay())
+                Log(L"video play/pause hotkey: not a playing video source - ignored");
         }
         timeout = engine.Step();
         CheckBorrowedReturn(engine, settingsPath);
@@ -249,6 +262,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
             ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(g_hotkeyCs);
             g_hotkey = initS.hotkey;
             g_recHotkey = initS.recordHotkey;
+            g_videoHotkey = initS.videoHotkey;
         }
     }
     ApplyHotkeyRegistration();
@@ -306,6 +320,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     Log(L"tray icon removed");
     UnregisterHotKey(g_hwnd, kHotkeyId);
     UnregisterHotKey(g_hwnd, kRecHotkeyId);
+    UnregisterHotKey(g_hwnd, kVideoHotkeyId);
     DestroyWindow(g_hwnd);
     g_hwnd = nullptr;
 

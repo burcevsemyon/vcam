@@ -17,6 +17,7 @@ inline constexpr UINT WM_TRAYICON = WM_APP + 1;
 inline constexpr UINT WM_REAPPLY_HOTKEY = WM_APP + 2;
 inline constexpr UINT kHotkeyId = 1;
 inline constexpr UINT kRecHotkeyId = 2;
+inline constexpr UINT kVideoHotkeyId = 3;
 inline constexpr UINT ID_STATUS = 101;
 inline constexpr UINT ID_SETTINGS = 102;
 inline constexpr UINT ID_PREVIEW = 103;
@@ -53,6 +54,10 @@ extern HotkeySection g_hotkey;
 extern std::wstring g_hotkeyReturnType;
 extern bool g_hotkeyBorrowed;
 extern ULONGLONG g_hotkeyBorrowTickMs;
+// Хоткей play/pause видео: UI-поток взводит, worker снимает и зовёт
+// engine.ToggleVideoPlay() (мьютекса источника у UI нет — только флаг).
+extern VideoHotkeySection g_videoHotkey;
+extern bool g_videoToggleRequested;
 
 extern ATL::CComAutoCriticalSection g_settingsCs;
 struct SettingsFileGuard {

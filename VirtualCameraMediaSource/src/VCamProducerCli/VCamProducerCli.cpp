@@ -424,11 +424,11 @@ DWORD WINAPI WorkerProc(LPVOID)
                 s.record.path.empty() ? L"(default)" : s.record.path.c_str());
             if (!engine.HasTarget() || want != engine.Target() || s.quality != engine.Quality()) {
                 RunLogDebug(L"apply target: type=%s path=%s camName=%s capture=%s scaleMode=%s "
-                            L"crop=(%d,%d,%d,%d)%s quality=%s playOnce=%d",
+                            L"crop=(%d,%d,%d,%d)%s quality=%s playOnce=%d loop=%d",
                     want.type.c_str(), want.path.c_str(), want.camName.c_str(),
                     want.capture.c_str(), want.scaleMode.c_str(), want.cropX, want.cropY,
                     want.cropW, want.cropH, want.cropKeepAspect ? L" keepAspect" : L"",
-                    s.quality.c_str(), want.playOnce ? 1 : 0);
+                    s.quality.c_str(), want.playOnce ? 1 : 0, want.loop ? 1 : 0);
                 engine.SetTarget(want, s.quality);
             }
         }
