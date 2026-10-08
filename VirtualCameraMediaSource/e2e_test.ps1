@@ -80,7 +80,7 @@ function Write-TestSettings([string]$type, [string]$quality = "source", [string]
 {
   "source": { "type": "$type" },
   "static": { "path": "$img", "scaleMode": "fit", "cropX": 0, "cropY": 0, "cropW": 0, "cropH": 0, "cropKeepAspect": false },
-  "video": { "path": "$vid" },
+  "video": { "path": "$vid", "loop": true },
   "quality": "$quality",
   "autostart": false
 }
@@ -473,6 +473,9 @@ $settingsBackupHash = if ($settingsExisted) { (Get-FileHash $SettingsPath -Algor
 $cliProc = $null
 try {
     Write-Host "=== 4. Phase A: VCamProducerCli run --type video --path test_video.mp4 ==="
+    # loop=true: video autoplays (with loop off the source now starts paused
+    # and frames would freeze - the user plays via hotkey, not in e2e).
+    Write-TestSettings "video"
     $logA = Join-Path $OutDir "cli_phase_a.log"
     $errA = Join-Path $OutDir "cli_phase_a.err"
     $cliProc = Start-Process -FilePath $Cli -ArgumentList @("run", "--type", "video", "--path", $TestVideo) `

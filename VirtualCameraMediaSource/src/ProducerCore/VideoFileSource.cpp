@@ -312,7 +312,9 @@ bool VideoFileSource::Open(const SourceConfig& cfg, std::wstring& err)
         playOnce_ = cfg.playOnce;
         loop_ = cfg.loop;
         ended_ = false;
-        paused_ = false;
+        // Старт-пауза: loop выкл — первый кадр стоит статикой (play по хоткею),
+        // как в плеере. loop вкл или borrow-показ (playOnce) — автозапуск.
+        paused_ = !cfg.loop && !cfg.playOnce;
         restartRequested_ = false;
     }
 
@@ -508,6 +510,11 @@ void VideoFileSource::DecodeLoop()
     }
     LogVideo(L"opened: " + cfg_.path + L" (" + std::to_wstring(vs.outW) + L"x" +
              std::to_wstring(vs.outH) + L" stride=" + std::to_wstring(vs.stride) + L")");
+    {
+        ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);
+        if (paused_)
+            LogVideo(L"start paused (loop off - first frame stands until play)");
+    }
 
     ULONGLONG wallStart = GetTickCount64();
     LONGLONG baseMs = 0;
@@ -525,7 +532,9 @@ void VideoFileSource::DecodeLoop()
             {
                 ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);
                 restart = restartRequested_;
-                idle = ended_ || paused_;
+                // Старт-пауза (frameReady_ ещё false) не замирает — сначала
+                // нужен первый кадр, иначе статика никогда не покажется.
+                idle = ended_ || (paused_ && frameReady_);
             }
             if (restart || !idle) break;
             HANDLE hs[2] = { static_cast<HANDLE>(stopEvent_),
