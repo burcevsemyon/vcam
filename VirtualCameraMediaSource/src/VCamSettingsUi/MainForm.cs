@@ -42,6 +42,20 @@ public sealed class MainForm : Form
     private readonly Button _videoHotkeyEdit = new();
     private int _videoHotkeyMods = 3, _videoHotkeyVk = 0x50;
 
+    // Source-switch hotkeys (sourceStaticHotkey/sourceVideoHotkey/
+    // sourceCameraHotkey): set source.type like the tray submenu. One compact
+    // row of three hint+«Изменить…» pairs under the show-video hotkey line.
+    private readonly GroupBox _sourceHotkeyGroup = new();
+    private readonly Label _srcStaticHotkeyHint = new();
+    private readonly Label _srcVideoHotkeyHint = new();
+    private readonly Label _srcCameraHotkeyHint = new();
+    private readonly Button _srcStaticHotkeyEdit = new();
+    private readonly Button _srcVideoHotkeyEdit = new();
+    private readonly Button _srcCameraHotkeyEdit = new();
+    private int _srcStaticHotkeyMods = 3, _srcStaticHotkeyVk = 0x31;
+    private int _srcVideoHotkeyMods = 3, _srcVideoHotkeyVk = 0x32;
+    private int _srcCameraHotkeyMods = 3, _srcCameraHotkeyVk = 0x33;
+
     // Physical camera panel (replaces the preview in camera mode). The device
     // list is produced by "VCamProducerCli list-devices" (stdout rows id\tname).
     private readonly Panel _cameraPanel = new();
@@ -156,8 +170,8 @@ public sealed class MainForm : Form
         MaximizeBox = true;
         MinimizeBox = true;
         StartPosition = FormStartPosition.CenterScreen;
-        ClientSize = new Size(880, 784);
-        MinimumSize = new Size(900, 834);
+        ClientSize = new Size(880, 848);
+        MinimumSize = new Size(900, 898);
         Font = new Font("Segoe UI", 9f);
         try
         {
@@ -175,13 +189,14 @@ public sealed class MainForm : Form
         SetupVideoPanel();
         SetupCameraPanel();
         SetupSourceRow();
+        SetupSourceHotkeyGroup();
         SetupRecGroup();
         SetupHostRow();
         SetupCropFields();
         SetupFooter();
 
         Controls.AddRange(new Control[] { _preview, _cropView, _videoPanel, _cameraPanel, _pathLabel, _mediaLabel, _mediaCombo,
-            _qualityLabel, _qualityCombo, _recGroup, _hotkeyHint, _hotkeyEdit,
+            _qualityLabel, _qualityCombo, _recGroup, _hotkeyHint, _hotkeyEdit, _sourceHotkeyGroup,
             _mode, _openButton, _fullSizeButton, _saveButton, _reloadButton, _hostStatusLabel, _hostButton, _helpButton,
             _cropXLabel, _cropX, _cropYLabel, _cropY, _cropWLabel, _cropW, _cropHLabel, _cropH, _cropKeepAspect, _hintLabel });
 
@@ -306,9 +321,44 @@ public sealed class MainForm : Form
         _hotkeyEdit.Click += OnHotkeyEditClicked;
     }
 
+    // Source-switch hotkey editors: one compact row of three hint+button pairs
+    // (Static/Video/Camera). Values land in settings.json on «Сохранить»; the
+    // host re-registers live (~1 с) and sets source.type on press.
+    private void SetupSourceHotkeyGroup()
+    {
+        _sourceHotkeyGroup.Location = new Point(12, 586);
+        _sourceHotkeyGroup.Size = new Size(856, 62);
+        _sourceHotkeyGroup.Text = "Хоткеи источников";
+        _sourceHotkeyGroup.Name = "sourceHotkeyGroup";
+        _sourceHotkeyGroup.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+
+        void Place(Label hint, Button edit, int x, string name, EventHandler onClick)
+        {
+            hint.Location = new Point(x, 26);
+            hint.Size = new Size(168, 20);
+            hint.ForeColor = Color.DimGray;
+            hint.Name = name + "Hint";
+            hint.AutoEllipsis = true;
+
+            edit.Location = new Point(x + 170, 22);
+            edit.Size = new Size(84, 26);
+            edit.Text = "Изменить…";
+            edit.Name = name + "EditButton";
+            edit.Click += onClick;
+        }
+        Place(_srcStaticHotkeyHint, _srcStaticHotkeyEdit, 16, "srcStaticHotkey", OnSrcStaticHotkeyEditClicked);
+        Place(_srcVideoHotkeyHint, _srcVideoHotkeyEdit, 286, "srcVideoHotkey", OnSrcVideoHotkeyEditClicked);
+        Place(_srcCameraHotkeyHint, _srcCameraHotkeyEdit, 556, "srcCameraHotkey", OnSrcCameraHotkeyEditClicked);
+        UpdateSourceHotkeyHints();
+
+        _sourceHotkeyGroup.Controls.AddRange(new Control[]
+            { _srcStaticHotkeyHint, _srcStaticHotkeyEdit, _srcVideoHotkeyHint, _srcVideoHotkeyEdit,
+              _srcCameraHotkeyHint, _srcCameraHotkeyEdit });
+    }
+
     private void SetupCropFields()
     {
-        int fieldY = 588;
+        int fieldY = 652;
         PlaceCropField(_cropXLabel, _cropX, 12, fieldY, "X");
         PlaceCropField(_cropYLabel, _cropY, 140, fieldY, "Y");
         PlaceCropField(_cropWLabel, _cropW, 268, fieldY, "Ширина");
@@ -351,6 +401,7 @@ public sealed class MainForm : Form
             _mode, _fullSizeButton, _hostButton,
             _cropX, _cropY, _cropW, _cropH, _cropKeepAspect,
             _recGroup, _reloadButton, _helpButton,
+            _srcStaticHotkeyEdit, _srcVideoHotkeyEdit, _srcCameraHotkeyEdit,
         };
         for (var ti = 0; ti < tabVisual.Length; ti++) tabVisual[ti].TabIndex = ti;
         _videoPanel.TabIndex = 2;
@@ -547,7 +598,7 @@ public sealed class MainForm : Form
     // record-hotkey hint. Below the crop fields.
     private void SetupRecGroup()
     {
-        _recGroup.Location = new Point(12, 614);
+        _recGroup.Location = new Point(12, 678);
         _recGroup.Size = new Size(856, 110);
         _recGroup.Text = "Запись эфира";
         _recGroup.Name = "recGroup";
@@ -1026,6 +1077,13 @@ public sealed class MainForm : Form
         _recHotkeyVk = s.RecordHotkeyVk;
         _videoHotkeyMods = s.VideoHotkeyModifiers;
         _videoHotkeyVk = s.VideoHotkeyVk;
+        _srcStaticHotkeyMods = s.SourceStaticHotkeyModifiers;
+        _srcStaticHotkeyVk = s.SourceStaticHotkeyVk;
+        _srcVideoHotkeyMods = s.SourceVideoHotkeyModifiers;
+        _srcVideoHotkeyVk = s.SourceVideoHotkeyVk;
+        _srcCameraHotkeyMods = s.SourceCameraHotkeyModifiers;
+        _srcCameraHotkeyVk = s.SourceCameraHotkeyVk;
+        UpdateSourceHotkeyHints();
         UpdateVideoHotkeyHint();
         _videoLoopCheck.Checked = s.VideoLoop;
         UpdateHotkeyHint();
@@ -1295,6 +1353,44 @@ public sealed class MainForm : Form
     {
         _videoHotkeyHint.Text = "Play/Pause: " + HotkeyDisplayMods(_videoHotkeyMods, _videoHotkeyVk) +
             " — пауза/возобновление, после конца ролика — сначала.";
+    }
+
+    private void OnSrcStaticHotkeyEditClicked(object? sender, EventArgs e)
+    {
+        using var dlg = new HotkeyEditForm("Хоткей — источник: картинка", _srcStaticHotkeyMods, _srcStaticHotkeyVk);
+        if (dlg.ShowDialog(this) != DialogResult.OK) return;
+        _srcStaticHotkeyMods = dlg.Modifiers;
+        _srcStaticHotkeyVk = dlg.Vk;
+        MarkDirty();
+        UpdateSourceHotkeyHints();
+    }
+
+    private void OnSrcVideoHotkeyEditClicked(object? sender, EventArgs e)
+    {
+        using var dlg = new HotkeyEditForm("Хоткей — источник: видео", _srcVideoHotkeyMods, _srcVideoHotkeyVk);
+        if (dlg.ShowDialog(this) != DialogResult.OK) return;
+        _srcVideoHotkeyMods = dlg.Modifiers;
+        _srcVideoHotkeyVk = dlg.Vk;
+        MarkDirty();
+        UpdateSourceHotkeyHints();
+    }
+
+    private void OnSrcCameraHotkeyEditClicked(object? sender, EventArgs e)
+    {
+        using var dlg = new HotkeyEditForm("Хоткей — источник: камера", _srcCameraHotkeyMods, _srcCameraHotkeyVk);
+        if (dlg.ShowDialog(this) != DialogResult.OK) return;
+        _srcCameraHotkeyMods = dlg.Modifiers;
+        _srcCameraHotkeyVk = dlg.Vk;
+        MarkDirty();
+        UpdateSourceHotkeyHints();
+    }
+
+    // Source-switch hotkey hints: current combinations (switch source on press).
+    private void UpdateSourceHotkeyHints()
+    {
+        _srcStaticHotkeyHint.Text = "Картинка: " + HotkeyDisplayMods(_srcStaticHotkeyMods, _srcStaticHotkeyVk);
+        _srcVideoHotkeyHint.Text = "Видео: " + HotkeyDisplayMods(_srcVideoHotkeyMods, _srcVideoHotkeyVk);
+        _srcCameraHotkeyHint.Text = "Камера: " + HotkeyDisplayMods(_srcCameraHotkeyMods, _srcCameraHotkeyVk);
     }
 
     // Always-visible hotkey line: current combination + what it does.
@@ -1965,6 +2061,12 @@ public sealed class MainForm : Form
         settings.RecordHotkeyVk = _recHotkeyVk;
         settings.VideoHotkeyModifiers = _videoHotkeyMods;
         settings.VideoHotkeyVk = _videoHotkeyVk;
+        settings.SourceStaticHotkeyModifiers = _srcStaticHotkeyMods;
+        settings.SourceStaticHotkeyVk = _srcStaticHotkeyVk;
+        settings.SourceVideoHotkeyModifiers = _srcVideoHotkeyMods;
+        settings.SourceVideoHotkeyVk = _srcVideoHotkeyVk;
+        settings.SourceCameraHotkeyModifiers = _srcCameraHotkeyMods;
+        settings.SourceCameraHotkeyVk = _srcCameraHotkeyVk;
         // video.loop lives in the video panel but saves regardless of the
         // selected mode (the value round-trips from Load otherwise).
         settings.VideoLoop = _videoLoopCheck.Checked;

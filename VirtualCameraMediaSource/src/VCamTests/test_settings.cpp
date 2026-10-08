@@ -41,6 +41,12 @@ TEST_CASE("settings: default values")
     CHECK(s.video.loop == false); // default: один проход, freeze на конце
     CHECK(s.videoHotkey.modifiers == 3);
     CHECK(s.videoHotkey.vk == 0x50); // 'P'
+    CHECK(s.sourceStaticHotkey.modifiers == 3);
+    CHECK(s.sourceStaticHotkey.vk == 0x31); // '1'
+    CHECK(s.sourceVideoHotkey.modifiers == 3);
+    CHECK(s.sourceVideoHotkey.vk == 0x32); // '2'
+    CHECK(s.sourceCameraHotkey.modifiers == 3);
+    CHECK(s.sourceCameraHotkey.vk == 0x33); // '3'
 }
 
 TEST_CASE("settings: round-trip preserves all fields")
@@ -67,6 +73,12 @@ TEST_CASE("settings: round-trip preserves all fields")
     s.recordHotkey.vk = 0x52;
     s.videoHotkey.modifiers = 6;
     s.videoHotkey.vk = 0x42;
+    s.sourceStaticHotkey.modifiers = 5;
+    s.sourceStaticHotkey.vk = 0x31;
+    s.sourceVideoHotkey.modifiers = 6;
+    s.sourceVideoHotkey.vk = 0x32;
+    s.sourceCameraHotkey.modifiers = 7;
+    s.sourceCameraHotkey.vk = 0x33;
     s.record.path = L"C:\\test\\out.mp4";
 
     Settings r = RoundTrip(s);
@@ -91,6 +103,12 @@ TEST_CASE("settings: round-trip preserves all fields")
     CHECK(r.recordHotkey.vk == 0x52);
     CHECK(r.videoHotkey.modifiers == 6);
     CHECK(r.videoHotkey.vk == 0x42);
+    CHECK(r.sourceStaticHotkey.modifiers == 5);
+    CHECK(r.sourceStaticHotkey.vk == 0x31);
+    CHECK(r.sourceVideoHotkey.modifiers == 6);
+    CHECK(r.sourceVideoHotkey.vk == 0x32);
+    CHECK(r.sourceCameraHotkey.modifiers == 7);
+    CHECK(r.sourceCameraHotkey.vk == 0x33);
     CHECK(r.record.path == L"C:\\test\\out.mp4");
 }
 
@@ -117,6 +135,10 @@ TEST_CASE("settings: operator== detects changes")
     b.videoHotkey.vk = 0x41; // смена play/pause-хоткея — перерегистрация
     CHECK(a != b);
     b.videoHotkey.vk = 0x50;
+    CHECK(a == b);
+    b.sourceCameraHotkey.vk = 0x41; // смена source-хоткея — перерегистрация
+    CHECK(a != b);
+    b.sourceCameraHotkey.vk = 0x33;
     CHECK(a == b);
 }
 
@@ -210,6 +232,10 @@ TEST_CASE("settings: legacy flat format migration")
     CHECK(s.video.loop == false); // legacy без loop -> один проход
     CHECK(s.videoHotkey.modifiers == 3); // legacy без videoHotkey -> Ctrl+Alt+P
     CHECK(s.videoHotkey.vk == 0x50);
+    CHECK(s.sourceStaticHotkey.modifiers == 3); // legacy -> Ctrl+Alt+1/2/3
+    CHECK(s.sourceStaticHotkey.vk == 0x31);
+    CHECK(s.sourceVideoHotkey.vk == 0x32);
+    CHECK(s.sourceCameraHotkey.vk == 0x33);
     DeleteFileW(path.c_str());
 }
 

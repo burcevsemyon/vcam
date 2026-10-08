@@ -15,7 +15,10 @@ void UpdateRunStep(const std::wstring& step); // при смене фазы (т�
 void ClearRunState(); // при чистом выходе: удалить файл
 void ApplySettingsDiff(HostPipelineEngine& e, HotkeySection& curHotkey,
                        RecordHotkeySection& curRecHotkey,
-                       VideoHotkeySection& curVideoHotkey);
+                       VideoHotkeySection& curVideoHotkey,
+                       SourceSwitchHotkeySection& curSrcStaticHotkey,
+                       SourceSwitchHotkeySection& curSrcVideoHotkey,
+                       SourceSwitchHotkeySection& curSrcCameraHotkey);
 void CheckBorrowedReturn(HostPipelineEngine& e, const std::wstring& settingsPath);
 void SetStatus(const std::wstring& text);
 std::wstring GetStatus();

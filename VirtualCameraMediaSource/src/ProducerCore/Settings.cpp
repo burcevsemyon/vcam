@@ -191,6 +191,7 @@ bool HasAnyKnownKey(const std::string& json)
         // новая схема
         "source", "static", "video", "camera", "quality", "hotkey",
         "recordHotkey", "videoHotkey", "record", "autostart",
+        "sourceStaticHotkey", "sourceVideoHotkey", "sourceCameraHotkey",
         // legacy-схема
         "imagePath", "mediaPath", "mediaMode", "scaleMode",
         "cropX", "cropY", "cropW", "cropH", "cropKeepAspect"
@@ -362,6 +363,21 @@ void ParseNewSchema(const std::string& json, Settings& s)
     if (FindObjectRange(json, "record", b, e)) {
         JsonGetString(json.substr(b, e - b), "path", s.record.path);
     }
+    // sourceStaticHotkey/sourceVideoHotkey/sourceCameraHotkey: те же правила,
+    // что у hotkey; дефолты Ctrl+Alt+1/2/3 (мусор/ноль → дефолт секции).
+    struct { const char* key; int defVk; SourceSwitchHotkeySection* out; } shks[] = {
+        { "sourceStaticHotkey", 0x31, &s.sourceStaticHotkey },
+        { "sourceVideoHotkey",  0x32, &s.sourceVideoHotkey },
+        { "sourceCameraHotkey", 0x33, &s.sourceCameraHotkey },
+    };
+    for (auto& shk : shks) {
+        if (!FindObjectRange(json, shk.key, b, e)) continue;
+        std::string sec = json.substr(b, e - b);
+        int mods = JsonGetInt(sec, "modifiers", 3);
+        shk.out->modifiers = (mods >= 1 && mods <= 15) ? mods : 3;
+        int vk = JsonGetInt(sec, "vk", shk.defVk);
+        shk.out->vk = (vk >= 0x08 && vk <= 0xFE) ? vk : shk.defVk;
+    }
 }
 
 // Старый формат: корневые imagePath/mediaMode/mediaPath/scaleMode/crop*.
@@ -397,6 +413,12 @@ void ParseLegacySchema(const std::string& json, Settings& s)
     s.recordHotkey.vk = 0x52;
     s.videoHotkey.modifiers = 3; // legacy без videoHotkey -> Ctrl+Alt+P
     s.videoHotkey.vk = 0x50;
+    s.sourceStaticHotkey.modifiers = 3; // legacy без source*Hotkey -> Ctrl+Alt+1/2/3
+    s.sourceStaticHotkey.vk = 0x31;
+    s.sourceVideoHotkey.modifiers = 3;
+    s.sourceVideoHotkey.vk = 0x32;
+    s.sourceCameraHotkey.modifiers = 3;
+    s.sourceCameraHotkey.vk = 0x33;
     s.record.path.clear(); // legacy без секции record -> дефолт хоста (Videos\...)
     s.autostart = JsonGetBool(json, "autostart", true);
 }
@@ -466,6 +488,12 @@ std::string Settings::Serialize() const
            ", \"vk\": " + std::to_string(recordHotkey.vk) + " },\n";
     out += "  \"videoHotkey\": { \"modifiers\": " + std::to_string(videoHotkey.modifiers) +
            ", \"vk\": " + std::to_string(videoHotkey.vk) + " },\n";
+    out += "  \"sourceStaticHotkey\": { \"modifiers\": " + std::to_string(sourceStaticHotkey.modifiers) +
+           ", \"vk\": " + std::to_string(sourceStaticHotkey.vk) + " },\n";
+    out += "  \"sourceVideoHotkey\": { \"modifiers\": " + std::to_string(sourceVideoHotkey.modifiers) +
+           ", \"vk\": " + std::to_string(sourceVideoHotkey.vk) + " },\n";
+    out += "  \"sourceCameraHotkey\": { \"modifiers\": " + std::to_string(sourceCameraHotkey.modifiers) +
+           ", \"vk\": " + std::to_string(sourceCameraHotkey.vk) + " },\n";
     out += "  \"record\": { \"path\": \"" + EscapeJson(record.path) + "\" },\n";
     out += "  \"autostart\": ";
     out += autostart ? "true" : "false";

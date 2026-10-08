@@ -144,6 +144,9 @@ TEST_CASE("settings: Serialize writes required JSON keys")
     CHECK(json.find("\"vk\"") != std::string::npos);
     CHECK(json.find("\"recordHotkey\"") != std::string::npos);
     CHECK(json.find("\"videoHotkey\"") != std::string::npos);
+    CHECK(json.find("\"sourceStaticHotkey\"") != std::string::npos);
+    CHECK(json.find("\"sourceVideoHotkey\"") != std::string::npos);
+    CHECK(json.find("\"sourceCameraHotkey\"") != std::string::npos);
     CHECK(json.find("\"record\"") != std::string::npos);
     CHECK(json.find("\"autostart\"") != std::string::npos);
 }

@@ -136,7 +136,10 @@ void ClearRunState()
 
 void ApplySettingsDiff(HostPipelineEngine& e, HotkeySection& curHotkey,
                        RecordHotkeySection& curRecHotkey,
-                       VideoHotkeySection& curVideoHotkey)
+                       VideoHotkeySection& curVideoHotkey,
+                       SourceSwitchHotkeySection& curSrcStaticHotkey,
+                       SourceSwitchHotkeySection& curSrcVideoHotkey,
+                       SourceSwitchHotkeySection& curSrcCameraHotkey)
 {
     Settings s;
     g_watcher.Current(s);
@@ -163,6 +166,27 @@ void ApplySettingsDiff(HostPipelineEngine& e, HotkeySection& curHotkey,
             g_videoHotkey = s.videoHotkey;
         }
         PostMessageW(g_hwnd, WM_REAPPLY_HOTKEY, 0, 0);
+    }
+    // Хоткеи переключения источника: смена — только перерегистрация.
+    {
+        struct {
+            SourceSwitchHotkeySection* cur;
+            SourceSwitchHotkeySection* glob;
+            const SourceSwitchHotkeySection* want;
+        } srcHks[] = {
+            { &curSrcStaticHotkey, &g_sourceStaticHotkey, &s.sourceStaticHotkey },
+            { &curSrcVideoHotkey, &g_sourceVideoHotkey, &s.sourceVideoHotkey },
+            { &curSrcCameraHotkey, &g_sourceCameraHotkey, &s.sourceCameraHotkey },
+        };
+        for (auto& sh : srcHks) {
+            if (*sh.want == *sh.cur) continue;
+            *sh.cur = *sh.want;
+            {
+                ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(g_hotkeyCs);
+                *sh.glob = *sh.want;
+            }
+            PostMessageW(g_hwnd, WM_REAPPLY_HOTKEY, 0, 0);
+        }
     }
     SourceConfig want = ToSourceConfig(s);
     bool borrowed = false;

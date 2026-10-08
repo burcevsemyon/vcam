@@ -121,11 +121,15 @@
     "cropH": 0,
     "cropKeepAspect": false
   },
-  "video": { "path": "C:\\path\\to\\clip.mp4" },
+  "video": { "path": "C:\\path\\to\\clip.mp4", "loop": false },
   "camera": { "id": "\\\\?\\usb#vid_046d&pid_0949#...\\global", "name": "Brio 90", "capture": "max" },
   "quality": "source",
   "hotkey": { "modifiers": 3, "vk": 86 },
   "recordHotkey": { "modifiers": 3, "vk": 82 },
+  "videoHotkey": { "modifiers": 3, "vk": 80 },
+  "sourceStaticHotkey": { "modifiers": 3, "vk": 49 },
+  "sourceVideoHotkey": { "modifiers": 3, "vk": 50 },
+  "sourceCameraHotkey": { "modifiers": 3, "vk": 51 },
   "record": { "path": "" },
   "autostart": true
 }
@@ -138,13 +142,18 @@
 | `static.scaleMode` | `fit` \| `cover` \| `crop` | `fit` — вписать в 1280×720 с чёрными полосами; `cover` — заполнить, center-crop без искажений; `crop` — обрезать по прямоугольнику ниже. Только для картинки: у видео всегда letterbox |
 | `static.cropX/Y/W/H` | пиксели исходника | область обрезки (только для `crop`); невалидный прямоугольник → clamp к границам, нулевой → вся картинка. По умолчанию результат **растягивается на 1280×720 без сохранения пропорций** |
 | `static.cropKeepAspect` | `true` \| `false` | только для `crop`: `true` — вписать область с сохранением пропорций (чёрные полосы) вместо растяжки |
-| `video.path` | путь к файлу | источник ролика (MP4/MKV/…), letterbox 1280×720, бесконечный loop |
+| `video.path` | путь к файлу | источник ролика (MP4/MKV/…), letterbox 1280×720 |
+| `video.loop` | `true` \| `false` | `false` (по умолчанию) — один проход: старт на паузе, конец замирает на последнем кадре; `true` — автозапуск по кругу |
 | `camera.id` | MF symbolic link | физическая камера (USB-устройство); пусто **и** пустое `camera.name` → источник не открывается, NO SIGNAL до выбора в UI |
 | `camera.name` | friendly name | запасной ключ поиска (точное имя → подстрока), если `id` не совпал (камера переставлена в другой порт); обычно заполняет UI |
 | `camera.capture` | `max` \| `720p` \| `1080p` | высота нативного захвата (`max` — лучшее в пределах cap 4K); смена = переоткрытие |
 | `quality` | `source` \| `fixed1080p` \| `fixed720p` | качество v2-секции: натив источника, фикс 1080p или фикс 720p (лесенка только вниз; одно на все источники) |
 | `hotkey` | `{modifiers, vk}` | глобальный хоткей «ролик поверх эфира» (default `3`/`0x56` = Ctrl+Alt+V; биты: Alt=1, Ctrl=2, Shift=4, Win=8); занят другим процессом → fail-open с логом, лечится сменой комбинации |
 | `recordHotkey` | `{modifiers, vk}` | глобальный хоткей старт/стоп записи (default `3`/`0x52` = Ctrl+Alt+R) |
+| `videoHotkey` | `{modifiers, vk}` | глобальный хоткей play/pause ролика (default `3`/`0x50` = Ctrl+Alt+P): пауза/возобновление, после конца — с начала |
+| `sourceStaticHotkey` | `{modifiers, vk}` | глобальный хоткей источника «картинка» (default `3`/`0x31` = Ctrl+Alt+1) |
+| `sourceVideoHotkey` | `{modifiers, vk}` | глобальный хоткей источника «видео» (default `3`/`0x32` = Ctrl+Alt+2) |
+| `sourceCameraHotkey` | `{modifiers, vk}` | глобальный хоткей источника «камера» (default `3`/`0x33` = Ctrl+Alt+3) |
 | `record.path` | путь к `.mp4` | файл записи; пусто → `%Videos%\VCam_ГГГГММДД_ЧЧММСС.mp4` в момент старта |
 | `autostart` | `true` \| `false` | автозагрузка tray-хоста: при старте хост применяет флаг к задаче Task Scheduler `VCamHost` (ONLOGON, Highest); пункт меню «Автозагрузка» переключает и сохраняет. CLI `autostart` только показывает в `status` |
 

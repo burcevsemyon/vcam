@@ -79,14 +79,21 @@ void ApplyHotkeyRegistration()
     UnregisterHotKey(g_hwnd, kHotkeyId);
     UnregisterHotKey(g_hwnd, kRecHotkeyId);
     UnregisterHotKey(g_hwnd, kVideoHotkeyId);
+    UnregisterHotKey(g_hwnd, kSourceStaticHotkeyId);
+    UnregisterHotKey(g_hwnd, kSourceVideoHotkeyId);
+    UnregisterHotKey(g_hwnd, kSourceCameraHotkeyId);
     HotkeySection hk;
     RecordHotkeySection rk;
     VideoHotkeySection vk;
+    SourceSwitchHotkeySection shkStatic, shkVideo, shkCamera;
     {
         ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(g_hotkeyCs);
         hk = g_hotkey;
         rk = g_recHotkey;
         vk = g_videoHotkey;
+        shkStatic = g_sourceStaticHotkey;
+        shkVideo = g_sourceVideoHotkey;
+        shkCamera = g_sourceCameraHotkey;
     }
     if (RegisterHotKey(g_hwnd, kHotkeyId, (UINT)hk.modifiers, (UINT)hk.vk)) {
         Log(L"hotkey registered: %s", HotkeyDisplay(hk).c_str());
@@ -108,6 +115,21 @@ void ApplyHotkeyRegistration()
         vcam::IncFailOpen(vcam::FailOpen::HotkeyBusy);
         Log(L"video hotkey RegisterHotKey(%s) failed: %lu - video hotkey disabled until settings change",
             HotkeyDisplay(vk).c_str(), GetLastError());
+    }
+    // Хоткеи переключения источника: те же правила, что у остальных.
+    struct { UINT id; const SourceSwitchHotkeySection* hk; const wchar_t* what; } shks[] = {
+        { kSourceStaticHotkeyId, &shkStatic, L"source static" },
+        { kSourceVideoHotkeyId, &shkVideo, L"source video" },
+        { kSourceCameraHotkeyId, &shkCamera, L"source camera" },
+    };
+    for (auto& shk : shks) {
+        if (RegisterHotKey(g_hwnd, shk.id, (UINT)shk.hk->modifiers, (UINT)shk.hk->vk)) {
+            Log(L"%s hotkey registered: %s", shk.what, HotkeyDisplay(*shk.hk).c_str());
+        } else {
+            vcam::IncFailOpen(vcam::FailOpen::HotkeyBusy);
+            Log(L"%s hotkey RegisterHotKey(%s) failed: %lu - hotkey disabled until settings change",
+                shk.what, HotkeyDisplay(*shk.hk).c_str(), GetLastError());
+        }
     }
 }
 

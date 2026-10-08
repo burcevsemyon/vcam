@@ -28,4 +28,13 @@ Low
 
 ## Статус
 
-Идея
+**Сделано (08.10.2026):**
+- Подменю «Источник» в трее (Static/Video/Camera) + `ApplySourceSwitch`
+  (`ProducerCore/TraySourceMenu.*`).
+- Глобальные хоткеи переключения источника (секции `sourceStaticHotkey` /
+  `sourceVideoHotkey` / `sourceCameraHotkey`, дефолты Ctrl+Alt+1/2/3):
+  `RegisterHotKey` в `VCamVideoStreamProducer` (id 4/5/6), диспатч на
+  `SwitchSource(type, origin)`, hot-reload через `ApplySettingsDiff`,
+  редакторы в `VCamSettingsUi` (группа «Хоткеи источников»).
+  Юниты: `test_hotkey`/`test_settings`/`test_sections`/`test_framecopy_layout`
+  (C++) и `SettingsSourceHotkeyTests` (C#).

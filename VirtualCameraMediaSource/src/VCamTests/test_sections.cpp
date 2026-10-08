@@ -95,6 +95,21 @@ TEST_CASE("sections: VideoHotkeySection == and !=")
     CHECK(a != b);
 }
 
+TEST_CASE("sections: SourceSwitchHotkeySection == and !=")
+{
+    SourceSwitchHotkeySection a;
+    a.modifiers = 3;
+    a.vk = 0x31;
+    SourceSwitchHotkeySection b = a;
+    CHECK(a == b);
+    CHECK(!(a != b));
+    b.modifiers = 6;
+    CHECK(a != b);
+    b.modifiers = 3;
+    b.vk = 0x41;
+    CHECK(a != b);
+}
+
 TEST_CASE("sections: Settings == detects quality change")
 {
     Settings a, b;

@@ -52,6 +52,10 @@ ULONGLONG g_hotkeyBorrowTickMs = 0;
 VideoHotkeySection g_videoHotkey;
 bool g_videoToggleRequested = false;
 
+SourceSwitchHotkeySection g_sourceStaticHotkey;
+SourceSwitchHotkeySection g_sourceVideoHotkey{3, 0x32};
+SourceSwitchHotkeySection g_sourceCameraHotkey{3, 0x33};
+
 ATL::CComAutoCriticalSection g_settingsCs;
 SettingsFileGuard::SettingsFileGuard() : guard_(g_settingsCs) {}
 SettingsFileGuard::~SettingsFileGuard() = default;
@@ -86,13 +90,17 @@ DWORD WINAPI WorkerProc(LPVOID)
     HotkeySection curHotkey;
     RecordHotkeySection curRecHotkey;
     VideoHotkeySection curVideoHotkey;
+    SourceSwitchHotkeySection curSrcStaticHotkey;                    // 3, 0x31
+    SourceSwitchHotkeySection curSrcVideoHotkey{3, 0x32};
+    SourceSwitchHotkeySection curSrcCameraHotkey{3, 0x33};
     ULONGLONG lastCountersFlush = GetTickCount64();
     for (;;) {
         DWORD r = WaitForMultipleObjects(2, waits, FALSE, timeout);
         if (r == WAIT_OBJECT_0) break;
         if (first || r == WAIT_OBJECT_0 + 1) {
             first = false;
-            ApplySettingsDiff(engine, curHotkey, curRecHotkey, curVideoHotkey);
+            ApplySettingsDiff(engine, curHotkey, curRecHotkey, curVideoHotkey,
+                              curSrcStaticHotkey, curSrcVideoHotkey, curSrcCameraHotkey);
         }
         {
             std::wstring rcmd, rpath;
@@ -263,6 +271,9 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
             g_hotkey = initS.hotkey;
             g_recHotkey = initS.recordHotkey;
             g_videoHotkey = initS.videoHotkey;
+            g_sourceStaticHotkey = initS.sourceStaticHotkey;
+            g_sourceVideoHotkey = initS.sourceVideoHotkey;
+            g_sourceCameraHotkey = initS.sourceCameraHotkey;
         }
     }
     ApplyHotkeyRegistration();
@@ -321,6 +332,9 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     UnregisterHotKey(g_hwnd, kHotkeyId);
     UnregisterHotKey(g_hwnd, kRecHotkeyId);
     UnregisterHotKey(g_hwnd, kVideoHotkeyId);
+    UnregisterHotKey(g_hwnd, kSourceStaticHotkeyId);
+    UnregisterHotKey(g_hwnd, kSourceVideoHotkeyId);
+    UnregisterHotKey(g_hwnd, kSourceCameraHotkeyId);
     DestroyWindow(g_hwnd);
     g_hwnd = nullptr;
 

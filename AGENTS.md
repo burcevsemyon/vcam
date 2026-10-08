@@ -48,12 +48,15 @@
   (`.agents/skills/vcam-e2e/SKILL.md`) — читать его, а не пересматривать скрипт.
 - **Юниты**: `VCamTests` (doctest C++) — сборка только через sln, bin в
   `src\VCamTests\build\`; `VCamUiTests` (FlaUI+xUnit) —
-  `dotnet test src\VCamUiTests\VCamUiTests.csproj -c Release`.
+  `dotnet test src\VCamUiTests\VCamUiTests.csproj -c Release`. Не добавлять
+  `-p:Platform=x64` к `dotnet test`: вывод уезжает в `bin\x64\...` (на уровень
+  глубже), `UiAppFixture.UiExePath` ищет `bin\<cfg>`/`bin\x64\<cfg>` из фикс.
+  числа `..` и не находит exe UI → ModeSwitch-тесты падают FileNotFound.
 
 ## Настройки и среда
 
 - `%APPDATA%\VCam\settings.json` — новая схема
-  `{"source":{"type":"static|video|camera"},"static":{...},"video":{...},"camera":{...},"quality":...,"hotkey":{...},"recordHotkey":{...},"record":{...},"autostart":bool}`;
+  `{"source":{"type":"static|video|camera"},"static":{...},"video":{...},"camera":{...},"quality":...,"hotkey":{...},"recordHotkey":{...},"videoHotkey":{...},"sourceStaticHotkey":{...},"sourceVideoHotkey":{...},"sourceCameraHotkey":{...},"record":{...},"autostart":bool}`;
   пишет UI и e2e, читают хост и CLI; **UTF-8 без BOM**
   (`Set-Content -Encoding UTF8` даёт BOM — не использовать); файл не блокируется,
   изменения подхватываются на лету.

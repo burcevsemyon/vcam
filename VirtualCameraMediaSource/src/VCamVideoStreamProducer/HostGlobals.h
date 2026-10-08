@@ -18,6 +18,9 @@ inline constexpr UINT WM_REAPPLY_HOTKEY = WM_APP + 2;
 inline constexpr UINT kHotkeyId = 1;
 inline constexpr UINT kRecHotkeyId = 2;
 inline constexpr UINT kVideoHotkeyId = 3;
+inline constexpr UINT kSourceStaticHotkeyId = 4;
+inline constexpr UINT kSourceVideoHotkeyId = 5;
+inline constexpr UINT kSourceCameraHotkeyId = 6;
 inline constexpr UINT ID_STATUS = 101;
 inline constexpr UINT ID_SETTINGS = 102;
 inline constexpr UINT ID_PREVIEW = 103;
@@ -58,6 +61,13 @@ extern ULONGLONG g_hotkeyBorrowTickMs;
 // engine.ToggleVideoPlay() (мьютекса источника у UI нет — только флаг).
 extern VideoHotkeySection g_videoHotkey;
 extern bool g_videoToggleRequested;
+
+// Хоткеи переключения источника (static/video/camera): выставляют source.type
+// (как подменю «Источник» в трее), без переоткрытия по своей инициативе —
+// watcher подхватит запись.
+extern SourceSwitchHotkeySection g_sourceStaticHotkey;
+extern SourceSwitchHotkeySection g_sourceVideoHotkey;
+extern SourceSwitchHotkeySection g_sourceCameraHotkey;
 
 extern ATL::CComAutoCriticalSection g_settingsCs;
 struct SettingsFileGuard {

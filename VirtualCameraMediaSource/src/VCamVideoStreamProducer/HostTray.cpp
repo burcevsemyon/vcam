@@ -72,24 +72,25 @@ void ShowTrayMenu(HWND hwnd)
     if (cmd) SendMessageW(hwnd, WM_COMMAND, cmd, 0);
 }
 
-void SwitchTraySource(const wchar_t* type)
+// origin — источник команды для лога: "tray" (подменю) или "hotkey".
+void SwitchSource(const wchar_t* type, const wchar_t* origin)
 {
     std::wstring path = DefaultSettingsPath();
     if (path.empty()) {
-        Log(L"tray: settings path is empty");
+        Log(L"%s: settings path is empty", origin);
         return;
     }
     SettingsFileGuard fsg;
     SourceSwitchResult r = ApplySourceSwitch(path, type);
     if (r == SourceSwitchResult::LoadFailed) {
-        Log(L"tray: settings unreadable - source switch ignored");
+        Log(L"%s: settings unreadable - source switch ignored", origin);
         return;
     }
     if (r == SourceSwitchResult::SaveFailed) {
-        Log(L"tray: source switch -> %s: settings save failed", type);
+        Log(L"%s: source switch -> %s: settings save failed", origin, type);
         return;
     }
-    // явный выбор из меню сбрасывает borrow, иначе автовозврат перезапишет выбор
+    // явный выбор сбрасывает borrow, иначе автовозврат перезапишет выбор
     bool borrowed;
     {
         ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(g_hotkeyCs);
@@ -99,9 +100,9 @@ void SwitchTraySource(const wchar_t* type)
     }
     if (borrowed) {
         ClearHotkeyState();
-        Log(L"tray: source switch -> %s (borrow dropped)", type);
+        Log(L"%s: source switch -> %s (borrow dropped)", origin, type);
     } else if (r == SourceSwitchResult::Saved) {
-        Log(L"tray: source switch -> %s", type);
+        Log(L"%s: source switch -> %s", origin, type);
     }
 }
 
@@ -116,6 +117,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (wp == kHotkeyId) OnHotkeyPressed();
         else if (wp == kRecHotkeyId) OnRecordHotkeyPressed();
         else if (wp == kVideoHotkeyId) OnVideoPlayHotkeyPressed();
+        else if (wp == kSourceStaticHotkeyId) SwitchSource(L"static", L"hotkey");
+        else if (wp == kSourceVideoHotkeyId) SwitchSource(L"video", L"hotkey");
+        else if (wp == kSourceCameraHotkeyId) SwitchSource(L"camera", L"hotkey");
         return 0;
     case WM_REAPPLY_HOTKEY:
         ApplyHotkeyRegistration();
@@ -124,9 +128,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         switch (LOWORD(wp)) {
         case ID_SETTINGS: OpenSettingsUi(); break;
         case ID_PREVIEW: OpenPreview(); break;
-        case ID_SOURCE_STATIC: SwitchTraySource(L"static"); break;
-        case ID_SOURCE_VIDEO: SwitchTraySource(L"video"); break;
-        case ID_SOURCE_CAMERA: SwitchTraySource(L"camera"); break;
+        case ID_SOURCE_STATIC: SwitchSource(L"static", L"tray"); break;
+        case ID_SOURCE_VIDEO: SwitchSource(L"video", L"tray"); break;
+        case ID_SOURCE_CAMERA: SwitchSource(L"camera", L"tray"); break;
         case ID_AUTOSTART: ToggleAutostart(); break;
         case ID_ABOUT: ShowAbout(); break;
         case ID_EXIT:

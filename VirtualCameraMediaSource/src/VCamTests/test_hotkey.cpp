@@ -114,3 +114,39 @@ TEST_CASE("videoHotkey: vk clamped to 0x08-0xFE (default 0x50)")
     Settings sMods = LoadJson(R"({"static":{},"videoHotkey":{"modifiers":16,"vk":80}})");
     CHECK(sMods.videoHotkey.modifiers == 3);
 }
+
+TEST_CASE("source switch hotkeys: defaults Ctrl+Alt+1/2/3 when missing")
+{
+    Settings s = LoadJson("{}");
+    CHECK(s.sourceStaticHotkey.modifiers == 3);
+    CHECK(s.sourceStaticHotkey.vk == 0x31); // '1'
+    CHECK(s.sourceVideoHotkey.modifiers == 3);
+    CHECK(s.sourceVideoHotkey.vk == 0x32); // '2'
+    CHECK(s.sourceCameraHotkey.modifiers == 3);
+    CHECK(s.sourceCameraHotkey.vk == 0x33); // '3'
+}
+
+TEST_CASE("source switch hotkeys: valid values pass through")
+{
+    Settings s = LoadJson(R"({"static":{},"sourceStaticHotkey":{"modifiers":6,"vk":65},)"
+                          R"("sourceVideoHotkey":{"modifiers":7,"vk":66},)"
+                          R"("sourceCameraHotkey":{"modifiers":5,"vk":67}})");
+    CHECK(s.sourceStaticHotkey.modifiers == 6);
+    CHECK(s.sourceStaticHotkey.vk == 65);
+    CHECK(s.sourceVideoHotkey.modifiers == 7);
+    CHECK(s.sourceVideoHotkey.vk == 66);
+    CHECK(s.sourceCameraHotkey.modifiers == 5);
+    CHECK(s.sourceCameraHotkey.vk == 67);
+}
+
+TEST_CASE("source switch hotkeys: vk/mods clamp to per-section default")
+{
+    Settings s0 = LoadJson(R"({"static":{},"sourceVideoHotkey":{"modifiers":3,"vk":0}})");
+    CHECK(s0.sourceVideoHotkey.vk == 0x32);
+    Settings sFF = LoadJson(R"({"static":{},"sourceCameraHotkey":{"modifiers":3,"vk":255}})");
+    CHECK(sFF.sourceCameraHotkey.vk == 0x33);
+    Settings s8 = LoadJson(R"({"static":{},"sourceStaticHotkey":{"modifiers":3,"vk":8}})");
+    CHECK(s8.sourceStaticHotkey.vk == 8);
+    Settings sMods = LoadJson(R"({"static":{},"sourceStaticHotkey":{"modifiers":16,"vk":65}})");
+    CHECK(sMods.sourceStaticHotkey.modifiers == 3);
+}

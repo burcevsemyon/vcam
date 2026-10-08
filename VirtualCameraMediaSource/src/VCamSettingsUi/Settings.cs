@@ -17,6 +17,9 @@ namespace VCamSettingsUi;
 //     "hotkey": { "modifiers": int 1-15, "vk": int 0x08-0xFE },
 //     "recordHotkey": { "modifiers": int 1-15, "vk": int 0x08-0xFE },
 //     "videoHotkey": { "modifiers": int 1-15, "vk": int 0x08-0xFE },
+//     "sourceStaticHotkey": { "modifiers": int 1-15, "vk": int 0x08-0xFE },
+//     "sourceVideoHotkey": { "modifiers": int 1-15, "vk": int 0x08-0xFE },
+//     "sourceCameraHotkey": { "modifiers": int 1-15, "vk": int 0x08-0xFE },
 //     "record": { "path": "..." },
 //     "autostart": bool }
 // Unknown sections (e.g. legacy "effects" from older versions) are ignored
@@ -125,6 +128,17 @@ public sealed class Settings
     // Ctrl+Alt+P (3, 0x50).
     public int VideoHotkeyModifiers { get; set; } = 3;
     public int VideoHotkeyVk { get; set; } = 0x50;
+
+    // Sections "sourceStaticHotkey"/"sourceVideoHotkey"/"sourceCameraHotkey"
+    // (host source-switch hotkeys: set source.type, like the tray submenu).
+    // Mirrors SourceSwitchHotkeySection on the C++ side. Same rules as hotkey,
+    // defaults Ctrl+Alt+1/2/3 (3, 0x31/0x32/0x33).
+    public int SourceStaticHotkeyModifiers { get; set; } = 3;
+    public int SourceStaticHotkeyVk { get; set; } = 0x31;
+    public int SourceVideoHotkeyModifiers { get; set; } = 3;
+    public int SourceVideoHotkeyVk { get; set; } = 0x32;
+    public int SourceCameraHotkeyModifiers { get; set; } = 3;
+    public int SourceCameraHotkeyVk { get; set; } = 0x33;
 
     // Section "record" (default output path for the ether recording): mirrors
     // RecordSection on the C++ side. Empty = the host generates
@@ -239,6 +253,24 @@ public sealed class Settings
                     s.VideoHotkeyVk = ParseVideoHotkeyVk(GetInt(vhk, "vk", 0x50));
                 }
 
+                if (root.TryGetProperty("sourceStaticHotkey", out var sshk) && sshk.ValueKind == JsonValueKind.Object)
+                {
+                    s.SourceStaticHotkeyModifiers = ParseHotkeyModifiers(GetInt(sshk, "modifiers", 3));
+                    s.SourceStaticHotkeyVk = ParseSourceHotkeyVk(GetInt(sshk, "vk", 0x31), 0x31);
+                }
+
+                if (root.TryGetProperty("sourceVideoHotkey", out var svhk) && svhk.ValueKind == JsonValueKind.Object)
+                {
+                    s.SourceVideoHotkeyModifiers = ParseHotkeyModifiers(GetInt(svhk, "modifiers", 3));
+                    s.SourceVideoHotkeyVk = ParseSourceHotkeyVk(GetInt(svhk, "vk", 0x32), 0x32);
+                }
+
+                if (root.TryGetProperty("sourceCameraHotkey", out var schk) && schk.ValueKind == JsonValueKind.Object)
+                {
+                    s.SourceCameraHotkeyModifiers = ParseHotkeyModifiers(GetInt(schk, "modifiers", 3));
+                    s.SourceCameraHotkeyVk = ParseSourceHotkeyVk(GetInt(schk, "vk", 0x33), 0x33);
+                }
+
                 if (root.TryGetProperty("record", out var rc) && rc.ValueKind == JsonValueKind.Object)
                     s.RecordPath = GetString(rc, "path");
 
@@ -339,6 +371,21 @@ public sealed class Settings
             {
                 ["modifiers"] = VideoHotkeyModifiers,
                 ["vk"] = VideoHotkeyVk,
+            },
+            ["sourceStaticHotkey"] = new Dictionary<string, object>
+            {
+                ["modifiers"] = SourceStaticHotkeyModifiers,
+                ["vk"] = SourceStaticHotkeyVk,
+            },
+            ["sourceVideoHotkey"] = new Dictionary<string, object>
+            {
+                ["modifiers"] = SourceVideoHotkeyModifiers,
+                ["vk"] = SourceVideoHotkeyVk,
+            },
+            ["sourceCameraHotkey"] = new Dictionary<string, object>
+            {
+                ["modifiers"] = SourceCameraHotkeyModifiers,
+                ["vk"] = SourceCameraHotkeyVk,
             },
             ["record"] = new Dictionary<string, object>
             {
@@ -442,6 +489,11 @@ public sealed class Settings
     // default Ctrl+Alt+P (0x50).
     private static int ParseVideoHotkeyVk(int vk) =>
         vk >= 0x08 && vk <= 0xFE ? vk : 0x50;
+
+    // Mirrors the C++ SourceSwitchHotkeySection parsing exactly: same ranges,
+    // per-section default passed in (Ctrl+Alt+1/2/3 = 0x31/0x32/0x33).
+    private static int ParseSourceHotkeyVk(int vk, int defVk) =>
+        vk >= 0x08 && vk <= 0xFE ? vk : defVk;
 
     // Mirrors the C++ ParseCapture exactly: only "720p"/"1080p" pass (ordinal),
     // everything else (missing/garbage/future tokens) is Max.
