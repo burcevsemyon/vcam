@@ -42,8 +42,24 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="CaptureTestPCH.h" />
+    <ClInclude Include="CaptureTestTypes.h" />
+    <ClInclude Include="CaptureTestCommon.h" />
+  </ItemGroup>
+  <ItemGroup>
     <ClCompile Include="main.cpp" />
     <ClCompile Include="MfGuids.cpp" />
+    <ClCompile Include="common.cpp" />
+    <ClCompile Include="legacy.cpp" />
+    <ClCompile Include="flicker.cpp" />
+    <ClCompile Include="compare.cpp" />
+    <ClCompile Include="analyze.cpp" />
+    <ClCompile Include="perf.cpp" />
+    <ClCompile Include="formats.cpp" />
+    <ClCompile Include="stress.cpp" />
+    <ClCompile Include="multiconsumer.cpp" />
+    <ClCompile Include="hotswitch.cpp" />
+    <ClCompile Include="scenario.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

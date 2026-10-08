@@ -158,7 +158,13 @@ powershell -ExecutionPolicy Bypass -File e2e_test.ps1   # exit 0 = SUCCESS
   VCam = устройство с `mediaTypes>=3` И 720p И 640p-типами (логика `Find-VCamDevice`
   в e2e: `mt -ge 3` + `has720` + `has640`; сейчас 4 типа — RGB32/NV12 720p + RGB32
   640p + ladder; было 3 — не матчить ровно 3); числовой фильтр = принудительный индекс
-  (`CaptureTest device 1 640 480 out`).
+   (`CaptureTest device 1 640 480 out`).
+- **Negative probe фазы H (`Find-VCamDeviceNative`) scoped по индексу VCam**:
+  она матчила `size=1920x1080` по ЛЮБОМУ устройству → физ. камера (Brio, 339
+  типов, легитимный 1920×1080) давала ложный FAIL «ladder advertises native»
+  (08.10.2026). Теперь probe получает индекс из `Find-VCamDevice` и ищет натив
+  только внутри типов этого устройства; VCam-устройство не найдено → честный
+  FAIL «not enumerated», а не тихий пропуск.
 - **Direct-режим НЕ использует shared allocator** (без прокси m_pAllocator =
   null → `local buffer (no shared allocator)`) — строк `Lock maxLen=` и
   `buffer too small` в логе не будет. Ассерты аллокатора проверяются только

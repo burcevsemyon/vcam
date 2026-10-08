@@ -218,7 +218,8 @@ function Capture-Device([int]$idx, [int]$w, [int]$h, [string]$prefix) {
 }
 
 # Finds the VCam device index in `CaptureTest inspect` output by capability:
-# at least 3 media types (RGB32 1280x720 + NV12 1280x720 + RGB32 640x480); the v2 quality ladder may add more (native size).
+# exactly 3 media types (RGB32 1280x720 + NV12 1280x720 + RGB32 640x480).
+# Native types are never advertised (proxy stability policy 07.10.2026).
 # (FRIENDLY_NAME is empty, so name filters fall back to device[0] = real camera.)
 function Find-VCamDevice {
     $logPath = Join-Path $OutDir "inspect_vcam.log"
@@ -303,22 +304,22 @@ function Test-DualWriteHeaders {
     }
 }
 
-# Finds the VCam device index whose ladder includes a native type WxH
-# (vcam-quality-v2 phase H: mediaTypes=4 with size=1920x1080). Returns $null
-# when the native type is not advertised.
-function Find-VCamDeviceNative([int]$w, [int]$h) {
+# Negative probe: true when device $devIdx's media-type list includes WxH.
+# Scoped to the VCam device index (from Find-VCamDevice): a physical camera
+# legitimately advertises 1920x1080 and must not trip the check.
+# VCam must never advertise native (native advertise is disabled, 07.10.2026).
+function Find-VCamDeviceNative([int]$devIdx, [int]$w, [int]$h) {
     $logPath = Join-Path $OutDir "inspect_vcam_native.log"
     $errPath = Join-Path $OutDir "inspect_vcam_native.err"
     $p = Start-Process -FilePath $CaptureTest -ArgumentList @("inspect") `
         -PassThru -WindowStyle Hidden -RedirectStandardOutput $logPath -RedirectStandardError $errPath -Wait
-    if ($p.ExitCode -ne 0) { return $null }
-    $idx = -1; $found = -1
+    if ($p.ExitCode -ne 0) { return $false }
+    $idx = -1
     foreach ($line in @(Get-Content -LiteralPath $logPath)) {
         if ($line -match "device\[(\d+)\]") { $idx = [int]$Matches[1] }
-        elseif ($line -match "size=${w}x${h}") { if ($idx -ge 0 -and $found -lt 0) { $found = $idx } }
+        elseif ($idx -eq $devIdx -and $line -match "size=${w}x${h}") { return $true }
     }
-    if ($found -ge 0) { return $found }
-    return $null
+    return $false
 }
 
 # $expectMoving: $true = video (кадры должны различаться), $false = static (идентичны).
@@ -547,7 +548,7 @@ try {
     Stop-Cli $cliProc
     $cliProc = $null
 
-    Write-Host "=== 5c. Phase H: ladder - native 1080p source advertises 4 types ==="
+    Write-Host "=== 5c. Phase H: v2 native 1920x1080 written, ladder stays 3 types (no native advertise) ==="
     # Источник >720p для лесенки: генерируем 1080p-BMP в OUTDIR (ffmpeg testsrc2;
     # fallback — System.Drawing заливка). Brio-камера машины 640x480 <720p и для
     # лесенки вверх не годится — покрытие идёт generated-static (см. шапку).
@@ -595,11 +596,49 @@ try {
             Fail "phase H: v2 dims $($v2h.W)x$($v2h.H) (want 1920x1080 = native of the 1080p static)"
         } else { Pass "phase H: v2 dims 1920x1080 (native of the 1080p static)" }
         Test-Frames "e2e_ladder" $false
-        $vcamNat = Find-VCamDeviceNative 1920 1080
-        if ($null -eq $vcamNat) {
-            Fail "phases H: ladder has no native 1920x1080 type (see inspect_vcam_native.log)"
+        $vcamIdx = Find-VCamDevice
+        if ($null -eq $vcamIdx) {
+            Fail "phase H: VCam device not enumerated (native probe cannot run)"
+        } elseif (Find-VCamDeviceNative $vcamIdx 1920 1080) {
+            Fail "phase H REGRESSION: ladder advertises native 1920x1080 (device index $vcamIdx, see inspect_vcam_native.log)"
         } else {
-            Pass "phase H: ladder advertises native 1920x1080 (device index $vcamNat)"
+            Pass "phase H: ladder does NOT advertise native 1920x1080 (proxy stability policy)"
+        }
+        # Proxy serves 720p while v2 carries 1920x1080 (the ktalk scenario):
+        # every delivered frame must be identical - a black flicker frame
+        # would break uniqueness.
+        if (-not $DevicePhaseOk) {
+            Pass "SKIP: phase H proxy check (installed DLL is not the build - deploy first)"
+        } else {
+            $vcamH = Find-VCamDevice
+            if ($null -eq $vcamH) {
+                Fail "phase H proxy: VCam device not enumerated"
+            } else {
+                $resH = Capture-Device $vcamH 1280 720 "e2e_proxy720"
+                if ($resH.ExitCode -ne 0) {
+                    $devTextH = Get-Content -LiteralPath $resH.LogPath -Raw -ErrorAction SilentlyContinue
+                    if ($devTextH -match "0xC00D3E9B|WRONGSTATE") {
+                        Pass "SKIP: phase H proxy - session busy (another consumer holds the camera)"
+                    } else {
+                        Fail "phase H proxy: CaptureTest device 1280x720 exit $($resH.ExitCode) - see $($resH.LogPath)"
+                    }
+                } elseif ($resH.Files.Count -lt 5) {
+                    Fail "phase H proxy: captured $($resH.Files.Count) of 10 frames"
+                } else {
+                    Pass "phase H proxy: captured $($resH.Files.Count) frames (1280x720 via proxy while v2=1920x1080)"
+                    $hInfos = @()
+                    foreach ($f in $resH.Files) { $hInfos += Get-FrameInfo $f }
+                    $hUniq = ($hInfos | Select-Object -ExpandProperty Hash -Unique).Count
+                    if ($hUniq -ne 1) {
+                        Fail "phase H proxy REGRESSION: $hUniq unique frames of $($resH.Files.Count) (static source must be identical - black flicker?)"
+                    } else {
+                        Pass "phase H proxy: all frames identical (no flicker)"
+                    }
+                    $winH = Read-DiagWindow $diagOffsets
+                    if ($winH -match "negotiated 1280x720 RGB32 -> allocator type RGB720") { Pass "phase H proxy: negotiated 1280x720 RGB32 -> RGB720 (native not selected)" }
+                    else { Fail "phase H proxy: no 'negotiated 1280x720 RGB32 -> allocator type RGB720' line in diag window" }
+                }
+            }
         }
         # quality hot-switch без рестарта: fixed720p -> v2 == 720p -> source -> v2 == 1920x1080.
         Write-TestSettings "static" "fixed720p" $TestImage1080

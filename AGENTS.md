@@ -66,6 +66,7 @@
 - **Деплой MediaSource.dll** — только через ритуал FrameServer: `sc stop FrameServer` → copy → `sc start FrameServer` (иначе старая DLL в svchost).
 - **MF API**: IMFSourceReader не имеет GetStreamCount/SetPosition; IMFMediaType — только SetGUID (нет SetMajorType/SetSubtype); `MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING=TRUE` обязателен для RGB32.
 - **CComPtr**: `#include <cguid.h>` после windows.h (INITGUID не даёт GUID_NULL); порядок Release в Shutdown/Close критичен — `= nullptr` до MFShutdown/CoUninitialize.
+- **Native-типы НЕ рекламировать** (`ShouldAdvertiseNative=false`, `V2FrameReader.h`): FrameServer-прокси нестабилен на native RGB32 — 1920×1080 мерцал ~2-3 Гц, 1920×1072 не выводился вообще (shared-буфер при этом всегда яркий; вина consumer-стороны). Лесенка = 3 типа (RGB720/NV12720/RGB640). Замки: юнит `test_native_advertise.cpp`, e2e фаза H (negative probe + proxy-check 720p при v2=1920×1080). Проверено 07.10.2026 (ktalk-инцидент).
 
 ### Камера / захват
 - **trySet S_OK ≠ итоговый формат** — верить только GetCurrentMediaType + ReadSample (конкурентный потребитель может залочить пин).
@@ -113,6 +114,7 @@
 - **E2E матчит подстроки логов CLI** — `writer ready`, `[cli] switch:`, `[cli] active:`, `frames are being written`; переименование лог-строк ломает фазы (проверено: молчание `SetTarget` роняло B/H).
 - **Фаза B flaky** — `frames differ (unique=2), static source expected`: захват стартовал до применения hot-switch после перезаписи settings.json (гонка, не регрессия) → перепрогнать.
 - **«installed DLL is STALE»** — после пересборки MediaSource.dll e2e даёт exit 1 и D/E SKIP: guard деплоя, не регрессия → обновить установленную копию (ритуал FrameServer) или дождаться деплоя.
+- **Фаза H — страж native-рекламы**: v2-секция несёт 1920×1080, но лесенка обязана остаться из 3 типов (negative probe `Find-VCamDeviceNative` → false) + proxy-захват 720p покадрово идентичен (моргание чёрным дало бы unique>1). Инвертировано 07.10.2026: раньше H требовала рекламу натива (кодировала баг). **Probe scoped по индексу VCam** (из `Find-VCamDevice`): без этого физ. камера с легитимным 1920×1080 (Brio: 339 типов) даёт ложный FAIL (проверено 08.10.2026).
 
 ### Превью
 - **GDI+ HighQualityBicubic** — MAE 0.023 к эталону (nearest даёт 7.174); ~11 мс/кадр (бюджет 4 мс превышен, кадры не срываются).

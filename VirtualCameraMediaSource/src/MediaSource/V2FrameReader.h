@@ -36,14 +36,18 @@ inline bool IsV2HeaderValid(const vcam::VCamSectionHeader* h, SIZE_T mappedSize)
     return true;
 }
 
-// Натив рекламируем отдельной RGB32-парой только если он валиден, в cap'е и
-// НЕ совпадает с базовым 720p (дубликат запрещён).
+// Натив-тип НЕ рекламируем (07.10.2026): FrameServer-прокси нестабилен на
+// native RGB32 форматах — 1920x1080 даёт мерцание ~2-3 Гц (consumer-сторона,
+// shared-буфер при этом всегда яркий), 1920x1072 не выводится вообще;
+// 720p/640x480 через прокси идут стабильно. Лесенка = 3 типа
+// (RGB720/NV12720/RGB640); v2-натив продолжает писаться для VCamPreview/записи.
+// Вернуть native-advertise можно только после диагностики прокси
+// (см. backlog/pipeline-first.md).
 inline bool ShouldAdvertiseNative(UINT32 w, UINT32 h)
 {
-    if (w == 0 || h == 0) return false;
-    if (w > vcam::VCamV2MaxWidth || h > vcam::VCamV2MaxHeight) return false;
-    if (w == vcam::VCamWidth && h == vcam::VCamHeight) return false;
-    return true;
+    (void)w;
+    (void)h;
+    return false;
 }
 
 // Letterbox-fit даунскейл (/апскейл) RGB32 nearest-neighbour: 16:9 в 16:9 —
