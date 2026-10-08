@@ -48,18 +48,23 @@ public sealed class UiAppFixture : IDisposable
         Directory.CreateDirectory(_workDir);
         string imagePath = Path.Combine(_workDir, "mode_4x3.bmp");
         MakeTestImage(imagePath);
-        WriteTestSettings(settingsPath, imagePath);
 
+        // Resolve the exe BEFORE writing test settings: UiExePath throws when
+        // the UI is not built, and the user's settings.json must not be left
+        // overwritten with the test payload (leak seen 08.10.2026).
         string exe = UiExePath(); // бросает FileNotFoundException со списком мест
 
         Automation = new UIA2Automation();
         try
         {
+            WriteTestSettings(settingsPath, imagePath);
             App = Application.Launch(exe);
             var main = App.GetMainWindow(Automation, TimeSpan.FromSeconds(15));
             if (main is null || !main.Title.Contains("VCam"))
                 throw new InvalidOperationException("Главное окно настроек не найдено.");
             Main = main;
+            BringToFront();
+            WaitForPreviewContent(TimeSpan.FromSeconds(15));
         }
         catch
         {
@@ -67,9 +72,6 @@ public sealed class UiAppFixture : IDisposable
             RestoreSettings();
             throw;
         }
-
-        BringToFront();
-        WaitForPreviewContent(TimeSpan.FromSeconds(15));
     }
 
     // Путь к свежесобранному UI: output соседнего проекта той же конфигурации.
