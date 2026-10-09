@@ -48,7 +48,8 @@ TEST_CASE("tray menu: source submenu items and checkmark")
 
         REQUIRE(GetMenuItemCount(sub.hSubMenu) == 3);
         struct { UINT id; const wchar_t* text; } want[] = {
-            { 107, L"Static" }, { 108, L"Video" }, { 109, L"Camera" },
+            { 107, L"Static\tCtrl+Alt+1" }, { 108, L"Video\tCtrl+Alt+2" },
+            { 109, L"Camera\tCtrl+Alt+3" },
         };
         for (UINT i = 0; i < 3; ++i)
         {
@@ -68,6 +69,34 @@ TEST_CASE("tray menu: source submenu items and checkmark")
 
         DestroyMenu(parent);
     }
+}
+
+TEST_CASE("tray menu: source submenu shows current hotkey combinations")
+{
+    HMENU parent = CreatePopupMenu();
+    REQUIRE(parent != nullptr);
+
+    Settings s;
+    s.sourceStaticHotkey = { 6, 0x41 }; // Ctrl+Shift+A
+    s.sourceVideoHotkey = { 1, 0x70 };  // Alt+F1
+    s.sourceCameraHotkey = { 3, 0x20 }; // Ctrl+Alt+Space
+    AppendSourceSubmenu(parent, s, 107, 108, 109);
+
+    MENUITEMINFOW sub = {};
+    sub.cbSize = sizeof(sub);
+    sub.fMask = MIIM_SUBMENU;
+    REQUIRE(GetMenuItemInfoW(parent, 0, TRUE, &sub));
+    REQUIRE(sub.hSubMenu != nullptr);
+
+    wchar_t buf[64] = {};
+    GetMenuStringW(sub.hSubMenu, 107, buf, 64, MF_BYCOMMAND);
+    CHECK(std::wstring(buf) == L"Static\tCtrl+Shift+A");
+    GetMenuStringW(sub.hSubMenu, 108, buf, 64, MF_BYCOMMAND);
+    CHECK(std::wstring(buf) == L"Video\tAlt+F1");
+    GetMenuStringW(sub.hSubMenu, 109, buf, 64, MF_BYCOMMAND);
+    CHECK(std::wstring(buf) == L"Camera\tCtrl+Alt+Space");
+
+    DestroyMenu(parent);
 }
 
 TEST_CASE("tray menu: ApplySourceSwitch saves once, then unchanged")

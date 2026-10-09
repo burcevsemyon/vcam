@@ -7,6 +7,7 @@
 #include "HostLogging.h"
 #include "HostRecording.h"
 #include "HostHotkey.h"
+#include "HotkeyDisplay.h"
 #include "FailOpenCounters.h"
 
 std::wstring HotkeyStatePath()
@@ -20,31 +21,7 @@ std::wstring HotkeyStatePath()
 template <typename T>
 std::wstring HotkeyDisplay(const T& hk)
 {
-    std::wstring s;
-    if (hk.modifiers & MOD_CONTROL) s += L"Ctrl+";
-    if (hk.modifiers & MOD_ALT) s += L"Alt+";
-    if (hk.modifiers & MOD_SHIFT) s += L"Shift+";
-    if (hk.modifiers & MOD_WIN) s += L"Win+";
-    wchar_t key[32] = {};
-    if ((hk.vk >= '0' && hk.vk <= '9') || (hk.vk >= 'A' && hk.vk <= 'Z')) {
-        swprintf_s(key, L"%c", (wchar_t)hk.vk);
-    } else if (hk.vk >= VK_F1 && hk.vk <= VK_F24) {
-        swprintf_s(key, L"F%d", hk.vk - VK_F1 + 1);
-    } else {
-        switch (hk.vk) {
-        case VK_SPACE: wcscpy_s(key, L"Space"); break;
-        case VK_RETURN: wcscpy_s(key, L"Enter"); break;
-        case VK_TAB: wcscpy_s(key, L"Tab"); break;
-        case VK_ESCAPE: wcscpy_s(key, L"Esc"); break;
-        case VK_LEFT: wcscpy_s(key, L"Left"); break;
-        case VK_RIGHT: wcscpy_s(key, L"Right"); break;
-        case VK_UP: wcscpy_s(key, L"Up"); break;
-        case VK_DOWN: wcscpy_s(key, L"Down"); break;
-        default: swprintf_s(key, L"VK 0x%02X", (unsigned)hk.vk); break;
-        }
-    }
-    s += key;
-    return s;
+    return vcam::FormatHotkey(hk.modifiers, hk.vk);
 }
 
 void WriteHotkeyState(const std::wstring& returnTo)
