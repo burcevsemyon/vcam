@@ -327,5 +327,4 @@ src/VCamTests/                  doctest-юниты C++ (сборка через 
 src/VCamUiTests/                UIA-тесты формы настроек (FlaUI + xUnit, dotnet test)
 register.bat, unregister.bat     регистрация (от администратора)
 e2e_test.ps1                     автоматический E2E-тест (через VCamProducerCli run)
-memory.md                        состояние проекта (resume-документ)
 ```
