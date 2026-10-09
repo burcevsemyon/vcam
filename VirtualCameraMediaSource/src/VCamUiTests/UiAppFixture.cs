@@ -176,9 +176,29 @@ public sealed class UiAppFixture : IDisposable
     public AutomationElement? FindByName(string name) =>
         Main.FindFirstDescendant(cf => cf.ByName(name));
 
-    // Переключение комбо fit(0)/cover(1)/crop(2) с клавиатуры: WinForms под
-    // UIA2 не отдаёт пункты раскрытого ComboBox в дерево (ни Items, ни
-    // ListItem), поэтому ведём фокус + HOME/DOWN и сверяем текст значения.
+    // Переключение комбо fit(0)/cover(1)/crop(2). Раньше крутили HOME/DOWN
+    // с клавиатуры (WinForms под UIA2 не отдаёт пункты раскрытого ComboBox в
+    // дерево), но первое взаимодействие со свежеоткрытой формой брать фокус
+    // не гарантировано: SetForegroundWindow тестовому процессу ОС может
+    // отказать — HOME/DOWN уходили мимо комбо, значение оставалось 'fit'
+    // (BackToFit падал ровно на первом SelectMode). Теперь шлём нативные
+    // сообщения в сам HWND комбо — ровно то, что ОС шлёт при реальном выборе
+    // (CB_SETCURSEL + CBN_SELCHANGE через WM_COMMAND родителю); фокус и
+    // активность окна для этого не нужны, SelectedIndexChanged идёт тем же
+    // путём, что и при клике пользователя.
+    [DllImport("user32.dll")]
+    private static extern IntPtr SendMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetParent(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern int GetDlgCtrlID(IntPtr hWnd);
+
+    private const uint CB_SETCURSEL = 0x014E;
+    private const uint WM_COMMAND = 0x0111;
+    private const int CBN_SELCHANGE = 1;
+
     public void SelectMode(int index)
     {
         string[] tokens = ["fit", "cover", "crop"];
@@ -187,18 +207,24 @@ public sealed class UiAppFixture : IDisposable
         var combo = FindById("modeCombo")?.AsComboBox()
             ?? throw new InvalidOperationException("modeCombo не найден.");
         BringToFront();
-        combo.Focus();
-        FlaUI.Core.Input.Keyboard.Press(FlaUI.Core.WindowsAPI.VirtualKeyShort.HOME);
-        Thread.Sleep(150);
-        for (int k = 0; k < index; k++)
+
+        IntPtr hwnd = new IntPtr(combo.Properties.NativeWindowHandle.ValueOrDefault);
+        IntPtr parent = GetParent(hwnd);
+        if (hwnd == IntPtr.Zero || parent == IntPtr.Zero)
+            throw new InvalidOperationException("modeCombo: UIA не отдал HWND комбо.");
+
+        string value = "";
+        for (int attempt = 0; attempt < 3 &&
+             !value.StartsWith(tokens[index], StringComparison.OrdinalIgnoreCase); attempt++)
         {
-            FlaUI.Core.Input.Keyboard.Press(FlaUI.Core.WindowsAPI.VirtualKeyShort.DOWN);
-            Thread.Sleep(150); // WinForms глотает слипшиеся нажатия без паузы
+            SendMessage(hwnd, CB_SETCURSEL, new IntPtr(index), IntPtr.Zero);
+            // MAKEWPARAM(ctrlId, CBN_SELCHANGE), lParam = HWND дочернего комбо.
+            IntPtr wParam = new IntPtr((GetDlgCtrlID(hwnd) & 0xFFFF) | (CBN_SELCHANGE << 16));
+            SendMessage(parent, WM_COMMAND, wParam, hwnd);
+            Thread.Sleep(400); // SelectedIndexChanged + синхронный UpdateLayout
+            try { value = combo.Value ?? ""; }
+            catch { value = ""; }
         }
-        Thread.Sleep(400); // синхронный UpdateLayout + перерисовка
-        string value;
-        try { value = combo.Value ?? ""; }
-        catch { value = ""; }
         if (!value.StartsWith(tokens[index], StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException(
                 $"modeCombo: ожидали '{tokens[index]}', показывает '{value}'.");
