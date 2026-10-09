@@ -136,4 +136,5 @@
 
 Идеи и планы — в `VirtualCameraMediaSource/backlog/` (по одному .md на тему):
 `pipeline-first.md`, `observability.md`, `regression-safety.md`, `testing.md`.
-Новые темы: `audio-mix.md`, `drag-drop-source.md`, `tray-source-switch.md`, `preview-crop-frame.md`.
+Новые темы: `audio-mix.md`, `drag-drop-source.md`, `tray-source-switch.md`, `preview-crop-frame.md`,
+`auto-source-detect.md`.
