@@ -19,6 +19,11 @@
 
 using vcam::HrHex;
 
+namespace {
+constexpr DWORD kReopenDelayMs = 500;
+constexpr DWORD kResyncThresholdMs = 250;
+}
+
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "mfplat.lib")
@@ -518,7 +523,7 @@ static DWORD WINAPI DecodeThread(LPVOID)
             // video frames and the 30 FPS writer cadence).
             ULONGLONG now = GetTickCount64() - wallStart;
             LONGLONG target = baseMs + ts / 10000;
-            if ((LONGLONG)now > target + 250) {
+            if ((LONGLONG)now > target + kResyncThresholdMs) {
                 baseMs = (LONGLONG)now - ts / 10000; // too late: resync
                 target = now;
             }
@@ -568,7 +573,7 @@ static DWORD WINAPI DecodeThread(LPVOID)
                 fflush(stdout);
                 CloseVideo(vs);
                 activePath.clear();
-                if (WaitForSingleObject(g_hStopEvent, 500) != WAIT_TIMEOUT) break;
+            if (WaitForSingleObject(g_hStopEvent, kReopenDelayMs) != WAIT_TIMEOUT) break;
             }
         }
     }

@@ -11,6 +11,7 @@ constexpr DWORD kFrameMs = 33;
 constexpr DWORD kSwitchWindowMs = 5000;
 constexpr DWORD kOpenRetryMs = 250;
 constexpr DWORD kFallbackRetryMs = 1000;
+constexpr DWORD kMaxWaitMs = 500;
 
 } // namespace
 
@@ -175,7 +176,7 @@ DWORD PipelineEngine::Step()
         }
         DWORD wait = 0;
         if (m_nextAttempt > now) wait = (DWORD)(m_nextAttempt - now);
-        return wait > 500 ? 500 : wait;
+        return wait > kMaxWaitMs ? kMaxWaitMs : wait;
     }
     }
     return 0;

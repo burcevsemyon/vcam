@@ -15,6 +15,11 @@
 #pragma comment(lib, "windowscodecs.lib")
 #pragma comment(lib, "advapi32.lib")
 
+namespace {
+constexpr DWORD kSettingsPollMs = 500;
+constexpr DWORD kDebounceMs = 200;
+}
+
 // Scale modes must stay in sync with VCamSettingsUi (C#) preview rendering.
 enum class ScaleMode { Fit, Cover, Crop };
 
@@ -356,7 +361,7 @@ static DWORD WINAPI SettingsWatcherThread(LPVOID)
     std::wstring path = SettingsFilePath();
     ULARGE_INTEGER lastWrite = {};
     for (;;) {
-        if (WaitForSingleObject(g_hStopEvent, 500) != WAIT_TIMEOUT) break;
+        if (WaitForSingleObject(g_hStopEvent, kSettingsPollMs) != WAIT_TIMEOUT) break;
 
         WIN32_FILE_ATTRIBUTE_DATA fad;
         if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad)) {
@@ -368,7 +373,7 @@ static DWORD WINAPI SettingsWatcherThread(LPVOID)
         ft.HighPart = fad.ftLastWriteTime.dwHighDateTime;
         if (ft.QuadPart == lastWrite.QuadPart) continue;
 
-        Sleep(200); // debounce: let the writer finish
+        Sleep(kDebounceMs);
         lastWrite = ft;
 
         Settings s;

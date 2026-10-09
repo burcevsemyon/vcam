@@ -222,6 +222,9 @@ HRESULT SharedMemoryFrameSource::AcquireFrame(BYTE* pDest, DWORD timeoutMs)
     } else if (!progressed) {
         return FallbackFrame(pDest);
     }
+    // Seqlock: читаем seq до и после копирования кадра. Если seq нечётный —
+    // писатель в момент чтения обновляет данные, повторяем. Если seq изменился
+    // между двумя чтениями — кадр может быть смесью двух кадров, повторяем.
     for (int spin = 0; ; ++spin) {
         LONGLONG seq = m_pHeader->seq;
         if (seq & 1) {

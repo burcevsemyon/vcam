@@ -6,6 +6,10 @@
 #include "ControlServer.h"
 
 #include <atlbase.h>
+
+namespace {
+constexpr DWORD kPipeRetryMs = 500;
+}
 #include <sddl.h>
 
 #include <cstdio>
@@ -386,7 +390,7 @@ void ControlServer::AcceptLoop()
             OutputDebugStringW(
                 (L"[ControlServer] CreateNamedPipe failed: " + WinErr(e) + L"\n")
                     .c_str());
-            Sleep(500);
+            Sleep(kPipeRetryMs);
             bool stop = false;
             {
                 ATL::CComCritSecLock<ATL::CComAutoCriticalSection> guard(cs_);

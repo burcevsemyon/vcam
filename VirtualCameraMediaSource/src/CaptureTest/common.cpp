@@ -1,5 +1,6 @@
 #include "CaptureTestPCH.h"
 #include "CaptureTestTypes.h"
+#include "CaptureTestCommon.h"
 
 static HANDLE g_logFile = INVALID_HANDLE_VALUE;
 
@@ -76,7 +77,7 @@ PixelStats ComputePixelStats(const BYTE* pBits, DWORD curLen, int w, int h, int 
         const BYTE* row = pBits + (SIZE_T)y * stride;
         for (int x = 0; x < w; x += 8) {
             int b = row[x * 4], g = row[x * 4 + 1], r = row[x * 4 + 2];
-            int lum = (r * 299 + g * 587 + b * 114) / 1000;
+            int lum = LuminanceBt601(r, g, b);
             sum += lum;
             sumSq += (double)lum * lum;
             if (lum < mn) mn = lum;

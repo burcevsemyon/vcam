@@ -32,6 +32,9 @@ constexpr DWORD kFrameMs = 33;
 constexpr DWORD kSwitchWindowMs = 5000; // окно hot-switch: FlushLast, пока новый источник не готов
 constexpr DWORD kOpenRetryMs = 250;
 constexpr DWORD kFallbackRetryMs = 1000;
+constexpr DWORD kFrameSettleDelayMs = 300; // пауза для проверки роста seq в секции
+constexpr DWORD kLivenessPollMs = 100; // живость: при 30 FPS за 100 мс seq вырастет на ~3 кадра
+constexpr DWORD kUiPollMs = 50; // опрос клавиатуры в цикле ожидания остановки
 
 ATL::CHandle g_stop;
 ATL::CHandle g_dirty;
@@ -292,7 +295,7 @@ void PrintSectionState()
         return;
     }
     LONGLONG seq1 = view.GetAs<vcam::VCamSectionHeader>()->seq;
-    Sleep(300);
+    Sleep(kFrameSettleDelayMs);
     LONGLONG seq2 = view.GetAs<vcam::VCamSectionHeader>()->seq;
     if (seq2 != seq1) {
         Log(L"writer section %s: open, frames are being written (seq %lld -> %lld)",
@@ -335,7 +338,7 @@ void PrintV2SectionState()
         return;
     }
     LONGLONG seq1 = hdr->seq;
-    Sleep(300);
+    Sleep(kFrameSettleDelayMs);
     LONGLONG seq2 = hdr->seq;
     if (seq2 != seq1) {
         Log(L"v2 section %s: open, ver=%u %ux%u stride=%u slots=%u, frames are being written (seq %lld -> %lld)",
@@ -626,7 +629,7 @@ bool CheckWriterReady(LONGLONG& seqOut, std::wstring& nameOut)
     auto* hdr = view.GetAs<vcam::VCamSectionHeader>();
     LONGLONG seq1 = hdr->seq;
     if (seq1 <= 0) return false;
-    Sleep(100); // живость: при 30 FPS за 100 мс seq вырастет на ~3 кадра
+    Sleep(kLivenessPollMs);
     LONGLONG seq2 = hdr->seq; // seq volatile — свежее чтение
     if (seq2 <= seq1) return false;
     seqOut = seq2;
@@ -1005,7 +1008,7 @@ int CmdRun(const std::wstring& settingsPath)
     RunLog(L"running @ 30 FPS - stop: Ctrl+C / Ctrl+Break / Esc");
 
     for (;;) {
-        if (WaitForSingleObject(static_cast<HANDLE>(g_stop), 50) == WAIT_OBJECT_0) break;
+        if (WaitForSingleObject(static_cast<HANDLE>(g_stop), kUiPollMs) == WAIT_OBJECT_0) break;
         if (GetAsyncKeyState(VK_ESCAPE) & 0x8000) {
             RunLog(L"stop requested (Esc)");
             SetEvent(g_stop);

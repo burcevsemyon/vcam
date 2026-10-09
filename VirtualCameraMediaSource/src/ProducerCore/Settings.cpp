@@ -10,6 +10,8 @@
 
 namespace {
 
+constexpr DWORD kFileRetryMs = 50;
+
 std::wstring Utf8ToWide(const std::string& s)
 {
     if (s.empty()) return std::wstring();
@@ -65,7 +67,7 @@ bool WriteUtf8FileNoBom(const std::wstring& path, const std::string& content)
             if (attempt >= 2 || (e != ERROR_SHARING_VIOLATION &&
                                  e != ERROR_ACCESS_DENIED && e != ERROR_LOCK_VIOLATION))
                 return false;
-            Sleep(50);
+            Sleep(kFileRetryMs);
             continue;
         }
         ATL::CHandle h(raw);

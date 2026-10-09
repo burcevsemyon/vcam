@@ -22,3 +22,8 @@ std::wstring JsonEscape(const std::wstring& s);
 ULONGLONG FileMtimeMs(const wchar_t* path);
 double Percentile(std::vector<ULONGLONG>& v, double p);
 bool Sha256Hex(const BYTE* data, DWORD len, wchar_t* out, size_t cch);
+
+inline int LuminanceBt601(int r, int g, int b)
+{
+    return (r * 299 + g * 587 + b * 114) / 1000;
+}

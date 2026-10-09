@@ -61,12 +61,13 @@ inline void Nv12ToRgb32(const uint8_t* src, UINT32 w, UINT32 h, LONG srcStride,
             if (uvX >= sAbs) uvX = (UINT32)(sAbs - 1u) & ~1u;
             const int U = (int)uvRow[uvX];
             const int V = (uvX + 1u < sAbs) ? (int)uvRow[uvX + 1u] : (int)uvRow[uvX];
-            const int C = Y - 16;
-            const int D = U - 128;
-            const int E = V - 128;
-            int R = (298 * C + 409 * E + 128) >> 8;
-            int G = (298 * C - 100 * D - 208 * E + 128) >> 8;
-            int B = (298 * C + 516 * D + 128) >> 8;
+            // BT.601 limited range: Y'CbCr -> RGB, коэффициенты с точностью до 1/256
+            const int yMinus16 = Y - 16;
+            const int uMinus128 = U - 128;
+            const int vMinus128 = V - 128;
+            int R = (298 * yMinus16 + 409 * vMinus128 + 128) >> 8;
+            int G = (298 * yMinus16 - 100 * uMinus128 - 208 * vMinus128 + 128) >> 8;
+            int B = (298 * yMinus16 + 516 * uMinus128 + 128) >> 8;
             if (R < 0) R = 0; else if (R > 255) R = 255;
             if (G < 0) G = 0; else if (G > 255) G = 255;
             if (B < 0) B = 0; else if (B > 255) B = 255;

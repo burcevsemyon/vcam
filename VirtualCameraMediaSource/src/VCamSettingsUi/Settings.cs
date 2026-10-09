@@ -37,6 +37,12 @@ public enum ScaleMode
     Crop,
 }
 
+internal static class Timeouts
+{
+    public const int FileRetryMs = 50;
+    public const int HostStatusPollMs = 1000;
+}
+
 // Which section feeds the camera: source.type in settings.json.
 // В3: raw-строка (C++ хранит токен verbatim: Settings.cpp ParseNewSchema),
 // хост по неизвестному уходит в fallback, но токен живёт. Известные — канон
@@ -415,7 +421,7 @@ public sealed class Settings
                 // UnauthorizedAccess (а не IOException) — тоже retry.
                 catch (Exception ex) when ((ex is IOException || ex is UnauthorizedAccessException) && attempt < 3)
                 {
-                    Thread.Sleep(50);
+                    Thread.Sleep(Timeouts.FileRetryMs);
                 }
             }
         }

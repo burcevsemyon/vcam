@@ -17,6 +17,14 @@
 
 void OnSettingsChanged(const Settings&) { SetEvent(g_dirty); }
 
+static std::wstring FormatElapsedTime(long long seconds)
+{
+    if (seconds < 0) seconds = 0;
+    wchar_t buf[32];
+    swprintf_s(buf, L"%02lld:%02lld", seconds / 60, seconds % 60);
+    return buf;
+}
+
 void ShowTrayMenu(HWND hwnd)
 {
     POINT pt = {};
@@ -41,9 +49,7 @@ void ShowTrayMenu(HWND hwnd)
         long long recStarted = 0;
         if (TryReadRecordState(recPath, recStarted)) {
             long long el = (long long)time(nullptr) - recStarted;
-            if (el < 0) el = 0;
-            wchar_t t[32];
-            swprintf_s(t, L"%02lld:%02lld", el / 60, el % 60);
+            std::wstring t = FormatElapsedTime(el);
             size_t bs = recPath.find_last_of(L"\\/");
             std::wstring fn = (bs == std::wstring::npos) ? recPath : recPath.substr(bs + 1);
             status += L" [● REC ";

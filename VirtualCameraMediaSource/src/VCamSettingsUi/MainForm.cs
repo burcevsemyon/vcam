@@ -419,7 +419,7 @@ public sealed class MainForm : Form
     {
         _previewExe = FindPreviewExe();
         _hostExe = FindHostExe();
-        _hostTimer.Interval = 1000;
+        _hostTimer.Interval = Timeouts.HostStatusPollMs;
         _hostTimer.Tick += (_, _) => UpdateHostStatus();
         _hostTimer.Start();
         UpdateHostStatus();
@@ -1546,8 +1546,7 @@ public sealed class MainForm : Form
             _recRecording = true;
             if (!string.IsNullOrEmpty(path)) _lastRecPath = path;
             var el = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - started;
-            if (el < 0) el = 0;
-            var status = $"● REC {el / 60:D2}:{el % 60:D2} — {path}";
+            var status = $"● REC {FormatElapsedTime(el)} — {path}";
             if (_recStatus.Text != status)
             {
                 _recStatus.ForeColor = Color.Red;
@@ -2182,5 +2181,11 @@ public sealed class MainForm : Form
         _preview.Image = null;
         img?.Dispose();
         base.OnFormClosed(e);
+    }
+
+    private static string FormatElapsedTime(long seconds)
+    {
+        if (seconds < 0) seconds = 0;
+        return $"{seconds / 60:D2}:{seconds % 60:D2}";
     }
 }

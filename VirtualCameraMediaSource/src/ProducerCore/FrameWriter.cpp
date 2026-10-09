@@ -308,6 +308,7 @@ void FrameWriter::Pace()
     if (freq_.QuadPart == 0) return;
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
+    // Целевой момент следующего кадра в тиках QPC
     LONGLONG interval = freq_.QuadPart * kFrameIntervalMs / 1000;
     LONGLONG target = lastEmit_ + interval;
     if (target > now.QuadPart) {

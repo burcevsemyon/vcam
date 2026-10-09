@@ -64,7 +64,7 @@ int RunAnalyzeMode(const ModeArgs& a)
         for (int y = y0; y < y1; y += 4) {
             const BYTE* row = last.pBits + (SIZE_T)y * w * 4;
             for (int x = 0; x < w; x += 4) {
-                int lum = (row[x * 4 + 2] * 299 + row[x * 4 + 1] * 587 + row[x * 4] * 114) / 1000;
+                int lum = LuminanceBt601(row[x * 4 + 2], row[x * 4 + 1], row[x * 4]);
                 sum += lum;
                 ++count;
             }
