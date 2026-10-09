@@ -170,8 +170,8 @@ public sealed class MainForm : Form
         MaximizeBox = true;
         MinimizeBox = true;
         StartPosition = FormStartPosition.CenterScreen;
-        ClientSize = new Size(880, 848);
-        MinimumSize = new Size(900, 898);
+        ClientSize = new Size(880, 872);
+        MinimumSize = new Size(900, 922);
         Font = new Font("Segoe UI", 9f);
         try
         {
@@ -222,6 +222,7 @@ public sealed class MainForm : Form
         _cropView.Location = _preview.Location;
         _cropView.Size = _preview.Size;
         _cropView.Visible = false;
+        _cropView.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         _cropView.SelectionChanged += OnCropSelectionChanged;
     }
 
@@ -231,6 +232,7 @@ public sealed class MainForm : Form
         _pathLabel.Size = new Size(856, 20);
         _pathLabel.Text = "(файл не выбран)";
         _pathLabel.AutoEllipsis = true;
+        _pathLabel.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         _pathLabel.Name = "pathLabel";
 
         _mediaLabel.Location = new Point(12, 502);
@@ -249,6 +251,7 @@ public sealed class MainForm : Form
         _qualityLabel.Location = new Point(494, 502);
         _qualityLabel.Size = new Size(64, 18);
         _qualityLabel.Text = "Качество:";
+        _qualityLabel.Anchor = AnchorStyles.Top | AnchorStyles.Right;
         _qualityLabel.Name = "qualityLabel";
 
         _qualityCombo.Location = new Point(562, 498);
@@ -256,6 +259,7 @@ public sealed class MainForm : Form
         _qualityCombo.DropDownStyle = ComboBoxStyle.DropDownList;
         _qualityCombo.Items.AddRange(QualityNames);
         _qualityCombo.SelectedIndex = 0;
+        _qualityCombo.Anchor = AnchorStyles.Top | AnchorStyles.Right;
         _qualityCombo.Name = "qualityCombo";
 
         _mode.Location = new Point(12, 532);
@@ -281,6 +285,7 @@ public sealed class MainForm : Form
         _saveButton.Location = new Point(680, 498);
         _saveButton.Size = new Size(188, 30);
         _saveButton.Text = "Сохранить настройки";
+        _saveButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
         _saveButton.Name = "saveButton";
         _saveButton.Click += OnSaveClicked;
     }
@@ -289,31 +294,34 @@ public sealed class MainForm : Form
     {
         // Manual reload from settings.json (always available; also the way out
         // when the file changed externally while the form is dirty).
-        _reloadButton.Location = new Point(566, 632);
+        _reloadButton.Location = new Point(566, 824);
         _reloadButton.Size = new Size(116, 40);
         _reloadButton.Text = "Обновить";
         _reloadButton.Name = "reloadButton";
         _reloadButton.Click += OnReloadClicked;
-        _reloadButton.Anchor = AnchorStyles.Bottom;
+        _reloadButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
 
         _hostStatusLabel.Location = new Point(430, 538);
         _hostStatusLabel.Size = new Size(244, 22);
         _hostStatusLabel.ForeColor = Color.DimGray;
+        _hostStatusLabel.Anchor = AnchorStyles.Top | AnchorStyles.Right;
         _hostStatusLabel.Name = "hostStatusLabel";
 
         _hostButton.Location = new Point(680, 532);
         _hostButton.Size = new Size(188, 30);
+        _hostButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
         _hostButton.Name = "hostButton";
         _hostButton.Click += OnHostButtonClicked;
 
         // Hotkey hint: single always-visible line under the mode row.
-        _hotkeyHint.Location = new Point(12, 562);
+        _hotkeyHint.Location = new Point(12, 574);
         _hotkeyHint.Size = new Size(740, 22);
         _hotkeyHint.ForeColor = Color.DimGray;
+        _hotkeyHint.AutoEllipsis = true;
         _hotkeyHint.Name = "hotkeyHint";
-        _hotkeyHint.Anchor = AnchorStyles.Top | AnchorStyles.Left;
+        _hotkeyHint.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
 
-        _hotkeyEdit.Location = new Point(758, 558);
+        _hotkeyEdit.Location = new Point(758, 570);
         _hotkeyEdit.Size = new Size(110, 28);
         _hotkeyEdit.Text = "Изменить…";
         _hotkeyEdit.Name = "hotkeyEditButton";
@@ -326,7 +334,7 @@ public sealed class MainForm : Form
     // host re-registers live (~1 с) and sets source.type on press.
     private void SetupSourceHotkeyGroup()
     {
-        _sourceHotkeyGroup.Location = new Point(12, 586);
+        _sourceHotkeyGroup.Location = new Point(12, 605);
         _sourceHotkeyGroup.Size = new Size(856, 62);
         _sourceHotkeyGroup.Text = "Хоткеи источников";
         _sourceHotkeyGroup.Name = "sourceHotkeyGroup";
@@ -358,7 +366,7 @@ public sealed class MainForm : Form
 
     private void SetupCropFields()
     {
-        int fieldY = 652;
+        int fieldY = 674;
         PlaceCropField(_cropXLabel, _cropX, 12, fieldY, "X");
         PlaceCropField(_cropYLabel, _cropY, 140, fieldY, "Y");
         PlaceCropField(_cropWLabel, _cropW, 268, fieldY, "Ширина");
@@ -374,19 +382,19 @@ public sealed class MainForm : Form
 
     private void SetupFooter()
     {
-        _hintLabel.Location = new Point(12, 634);
+        _hintLabel.Location = new Point(12, 824);
         _hintLabel.Size = new Size(548, 38);
         _hintLabel.ForeColor = Color.DimGray;
         _hintLabel.Text = $"Настройки: {Settings.FilePath} — хост VCam подхватит их автоматически (~1 с).";
         _hintLabel.Name = "hintLabel";
-        _hintLabel.Anchor = AnchorStyles.Left | AnchorStyles.Bottom;
+        _hintLabel.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
 
-        _helpButton.Location = new Point(688, 632);
+        _helpButton.Location = new Point(688, 824);
         _helpButton.Size = new Size(180, 40);
         _helpButton.Text = "Справка…";
         _helpButton.Name = "helpButton";
         _helpButton.Click += OnHelpClicked;
-        _helpButton.Anchor = AnchorStyles.Right | AnchorStyles.Bottom;
+        _helpButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
     }
 
     private void SetupTabOrder()
@@ -447,19 +455,23 @@ public sealed class MainForm : Form
         _videoPanel.BackColor = Color.White;
         _videoPanel.Visible = false;
         _videoPanel.Name = "videoPanel";
+        _videoPanel.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
 
         _videoTitle.Font = new Font(Font.FontFamily, 11f, FontStyle.Bold);
         _videoTitle.Location = new Point(16, 16);
         _videoTitle.Size = new Size(820, 26);
+        _videoTitle.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         _videoTitle.Text = "Видеоролик";
 
         _videoPathLabel.Location = new Point(16, 50);
         _videoPathLabel.Size = new Size(820, 22);
         _videoPathLabel.AutoEllipsis = true;
+        _videoPathLabel.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         _videoPathLabel.Name = "videoPathLabel";
 
         _videoInfoLabel.Location = new Point(16, 84);
         _videoInfoLabel.Size = new Size(820, 94);
+        _videoInfoLabel.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         _videoInfoLabel.ForeColor = Color.DimGray;
         _videoInfoLabel.Text =
             "Ролик декодируется хостом VCamVideoStreamProducer.exe и всегда масштабируется letterbox в 1280×720.\r\n" +
@@ -488,18 +500,21 @@ public sealed class MainForm : Form
         _previewHint.Location = new Point(16, 228);
         _previewHint.Size = new Size(820, 64);
         _previewHint.ForeColor = Color.DimGray;
+        _previewHint.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         _previewHint.Name = "previewHint";
 
         // videoHotkey row (play/pause): hint + editor, mirrors the record row.
         _videoHotkeyHint.Location = new Point(16, 298);
         _videoHotkeyHint.Size = new Size(640, 22);
         _videoHotkeyHint.ForeColor = Color.DimGray;
+        _videoHotkeyHint.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         _videoHotkeyHint.Name = "videoHotkeyHint";
         UpdateVideoHotkeyHint();
 
         _videoHotkeyEdit.Location = new Point(666, 294);
         _videoHotkeyEdit.Size = new Size(110, 28);
         _videoHotkeyEdit.Text = "Изменить…";
+        _videoHotkeyEdit.Anchor = AnchorStyles.Top | AnchorStyles.Right;
         _videoHotkeyEdit.Name = "videoHotkeyEditButton";
         _videoHotkeyEdit.Click += OnVideoHotkeyEditClicked;
 
@@ -508,6 +523,7 @@ public sealed class MainForm : Form
         _hotkeyBorrowLabel.Location = new Point(16, 330);
         _hotkeyBorrowLabel.Size = new Size(820, 110);
         _hotkeyBorrowLabel.ForeColor = Color.DimGray;
+        _hotkeyBorrowLabel.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         _hotkeyBorrowLabel.Name = "hotkeyBorrowLabel";
 
         _videoPanel.Controls.AddRange(new Control[] { _videoTitle, _videoPathLabel, _videoInfoLabel, _previewButton, _videoLoopCheck, _previewHint, _videoHotkeyHint, _videoHotkeyEdit, _hotkeyBorrowLabel });
@@ -522,10 +538,12 @@ public sealed class MainForm : Form
         _cameraPanel.BackColor = Color.White;
         _cameraPanel.Visible = false;
         _cameraPanel.Name = "cameraPanel";
+        _cameraPanel.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
 
         _cameraTitle.Font = new Font(Font.FontFamily, 11f, FontStyle.Bold);
         _cameraTitle.Location = new Point(16, 16);
         _cameraTitle.Size = new Size(820, 26);
+        _cameraTitle.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         _cameraTitle.Text = "Физическая камера";
 
         _cameraDevLabel.Location = new Point(16, 56);
@@ -536,11 +554,13 @@ public sealed class MainForm : Form
         _cameraCombo.Location = new Point(80, 52);
         _cameraCombo.Size = new Size(556, 28);
         _cameraCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+        _cameraCombo.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         _cameraCombo.Name = "cameraCombo";
 
         _cameraRefresh.Location = new Point(648, 51);
         _cameraRefresh.Size = new Size(190, 30);
         _cameraRefresh.Text = "Обновить список";
+        _cameraRefresh.Anchor = AnchorStyles.Top | AnchorStyles.Right;
         _cameraRefresh.Name = "cameraRefresh";
 
         _captureLabel.Location = new Point(16, 94);
@@ -559,6 +579,7 @@ public sealed class MainForm : Form
         _cameraIdLabel.Size = new Size(820, 20);
         _cameraIdLabel.AutoEllipsis = true;
         _cameraIdLabel.ForeColor = Color.DimGray;
+        _cameraIdLabel.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         _cameraIdLabel.Name = "cameraIdLabel";
 
         // Live camera knobs (left) + hint/status column (right). The hint keeps
@@ -574,6 +595,7 @@ public sealed class MainForm : Form
         _cameraHint.BorderStyle = BorderStyle.None;
         _cameraHint.BackColor = Color.White;
         _cameraHint.ForeColor = Color.DimGray;
+        _cameraHint.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         _cameraHint.Name = "cameraHint";
         _cameraHint.Text =
             "Выберите камеру — она будет транслироваться в виртуальную камеру VCam.\r\n" +
@@ -587,6 +609,7 @@ public sealed class MainForm : Form
         _cameraStatus.Location = new Point(548, 316);
         _cameraStatus.Size = new Size(292, 104);
         _cameraStatus.ForeColor = Color.DimGray;
+        _cameraStatus.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         _cameraStatus.Name = "cameraStatus";
 
         _cameraPanel.Controls.AddRange(new Control[]
@@ -598,7 +621,7 @@ public sealed class MainForm : Form
     // record-hotkey hint. Below the crop fields.
     private void SetupRecGroup()
     {
-        _recGroup.Location = new Point(12, 678);
+        _recGroup.Location = new Point(12, 707);
         _recGroup.Size = new Size(856, 110);
         _recGroup.Text = "Запись эфира";
         _recGroup.Name = "recGroup";
@@ -1399,8 +1422,8 @@ public sealed class MainForm : Form
     private void UpdateHotkeyHint()
     {
         _hotkeyHint.Text = "Горячая клавиша: " + HotkeyDisplayMods(_hotkeyMods, _hotkeyVk) +
-            " — показать видео один раз (повторно — вернуться сразу; " +
-            "после конца ролика — автовозврат, при битом файле — возврат сразу). Комбинация — кнопкой «Изменить…».";
+            " — показать видео один раз; повторно — вернуть сразу, " +
+            "автовозврат после конца ролика.";
     }
 
     // Borrowed-video indicator, polled (host timer tick + panel updates): while
