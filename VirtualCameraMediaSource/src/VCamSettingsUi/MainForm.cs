@@ -69,7 +69,6 @@ public sealed class MainForm : Form
     // Capture height selector (camera.capture): max (default) | 720p | 1080p.
     private readonly Label _captureLabel = new();
     private readonly ComboBox _captureCombo = new();
-    private readonly CameraControlsPanel _controlsPanel = new();
     private string _cameraListStatus = "";
 
     // One ComboBox row: a device (or the remembered device that is missing now).
@@ -443,7 +442,6 @@ public sealed class MainForm : Form
         };
         _cameraCombo.SelectedIndexChanged += (_, _) => UpdateCameraPanel();
         _cameraRefresh.Click += OnCameraRefreshClicked;
-        _controlsPanel.StatusMessage += UpdateCameraStatus;
     }
 
 
@@ -582,11 +580,6 @@ public sealed class MainForm : Form
         _cameraIdLabel.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         _cameraIdLabel.Name = "cameraIdLabel";
 
-        // Live camera knobs (left) + hint/status column (right). The hint keeps
-        // its full text — TextBox with scrolling instead of a clipped Label.
-        _controlsPanel.Location = new Point(16, 150);
-        _controlsPanel.Size = new Size(524, 270);
-
         _cameraHint.Location = new Point(548, 150);
         _cameraHint.Size = new Size(292, 160);
         _cameraHint.Multiline = true;
@@ -614,7 +607,7 @@ public sealed class MainForm : Form
 
         _cameraPanel.Controls.AddRange(new Control[]
             { _cameraTitle, _cameraDevLabel, _cameraCombo, _cameraRefresh, _captureLabel, _captureCombo,
-              _cameraIdLabel, _controlsPanel, _cameraHint, _cameraStatus });
+              _cameraIdLabel, _cameraHint, _cameraStatus });
     }
 
     // Ether recording group: file path + browse + start/stop + REC line +
@@ -1724,7 +1717,7 @@ public sealed class MainForm : Form
         _cameraLoading = true;
         _cameraRefresh.Enabled = false;
         _cameraListStatus = "Получение списка камер…";
-        UpdateCameraStatus(null);
+        _cameraStatus.Text = _cameraListStatus;
         try
         {
             _cliExe ??= FindCliExe();
@@ -1760,7 +1753,7 @@ public sealed class MainForm : Form
             {
                 _cameraRefresh.Enabled = true;
                 FillCameraCombo();
-                UpdateCameraStatus(null);
+                _cameraStatus.Text = _cameraListStatus;
                 UpdateCameraPanel();
             }
         }
@@ -1870,14 +1863,6 @@ public sealed class MainForm : Form
             : item.Missing
                 ? $"ID: {item.Id}  — устройство сейчас недоступно, выбор сохранён."
                 : $"ID: {item.Id}";
-    }
-
-    // Device list status + quiet knob errors from the controls panel.
-    private void UpdateCameraStatus(string? extra)
-    {
-        _cameraStatus.Text = string.IsNullOrEmpty(extra)
-            ? _cameraListStatus
-            : _cameraListStatus + "\r\n" + extra;
     }
 
     private void OnHelpClicked(object? sender, EventArgs e)
