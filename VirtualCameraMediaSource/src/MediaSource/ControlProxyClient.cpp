@@ -29,7 +29,7 @@ void VCamDiagLog(const wchar_t* fmt, ...);
 HRESULT CtlUnsupported()
 {
     vcam::IncFailOpen(vcam::FailOpen::ControlUnavailable);
-    return CtlUnsupported();
+    return E_PROP_ID_UNSUPPORTED;
 }
 
 namespace {
