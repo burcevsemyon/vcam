@@ -60,24 +60,22 @@ void StartCameraHolder()
         Log(L"camera holder already running");
         return;
     }
-    std::wstring p = FindHelperExe(L"Registrar.exe", L"build\\x64\\Release\\Registrar.exe");
-    if (p.empty()) {
-        Log(L"Registrar.exe not found - camera will NOT be registered");
-        return;
-    }
-    std::wstring cmd = L"\"" + p + L"\" add VCam hold-watch";
+    std::wstring p = FindHelperExe(L"Registrar.exe");
+    std::wstring cmd = p.empty()
+        ? L"Registrar.exe add VCam hold-watch"
+        : L"\"" + p + L"\" add VCam hold-watch";
     std::vector<wchar_t> buf(cmd.begin(), cmd.end()); buf.emplace_back(0);
     STARTUPINFOW si = {}; si.cb = sizeof(si);
     si.dwFlags = STARTF_USESHOWWINDOW; si.wShowWindow = SW_HIDE;
     PROCESS_INFORMATION pi = {};
     if (!CreateProcessW(nullptr, buf.data(), nullptr, nullptr, FALSE,
                         CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-        Log(L"camera holder start failed: %s (%lu)", p.c_str(), GetLastError());
+        Log(L"camera holder start failed: %s (%lu)", cmd.c_str(), GetLastError());
         return;
     }
     ATL::CHandle th(pi.hThread);
     ATL::CHandle proc(pi.hProcess);
-    Log(L"camera holder started: %s", p.c_str());
+    Log(L"camera holder started: %s", cmd.c_str());
 }
 
 void StopCameraHolder()

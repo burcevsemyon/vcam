@@ -24,7 +24,7 @@ std::wstring ExeDirectory()
     return slash == std::wstring::npos ? p : p.substr(0, slash);
 }
 
-std::wstring FindHelperExe(const wchar_t* fileName, const wchar_t* rel)
+std::wstring FindHelperExe(const wchar_t* fileName)
 {
     std::wstring root = ExeDirectory();
     for (int i = 0; i < 10; i++) {
@@ -35,12 +35,23 @@ std::wstring FindHelperExe(const wchar_t* fileName, const wchar_t* rel)
         }
         std::wstring direct = root + L"\\" + fileName;
         if (PathExists(direct)) return direct;
-        if (rel) {
-            std::wstring candidate = root + L"\\" + rel;
-            if (PathExists(candidate)) return candidate;
-        }
     }
     return std::wstring();
+}
+
+bool LaunchByName(const wchar_t* fileName)
+{
+    SHELLEXECUTEINFOW sei = {};
+    sei.cbSize = sizeof(sei);
+    sei.lpVerb = L"open";
+    sei.lpFile = fileName;
+    sei.nShow = SW_SHOWNORMAL;
+    if (!ShellExecuteExW(&sei)) {
+        Log(L"launch by name failed: %s (%lu)", fileName, GetLastError());
+        return false;
+    }
+    Log(L"launched by name: %s", fileName);
+    return true;
 }
 
 void LaunchHelper(const std::wstring& path)
@@ -61,28 +72,26 @@ void LaunchHelper(const std::wstring& path)
 
 void OpenSettingsUi()
 {
-    std::wstring p = FindHelperExe(
-        L"VCamSettingsUi.exe",
-        L"src\\Adapters\\SettingsUi\\bin\\x64\\Release\\net10.0-windows\\VCamSettingsUi.exe");
-    if (p.empty()) {
-        Log(L"VCamSettingsUi.exe not found");
-        MessageBoxW(g_hwnd, L"VCamSettingsUi.exe не найден рядом с хостом и в исходниках репозитория.",
-                    L"VCam", MB_OK | MB_ICONWARNING);
+    std::wstring p = FindHelperExe(L"VCamSettingsUi.exe");
+    if (!p.empty()) {
+        LaunchHelper(p);
         return;
     }
-    LaunchHelper(p);
+    if (LaunchByName(L"VCamSettingsUi.exe")) return;
+    MessageBoxW(g_hwnd, L"VCamSettingsUi.exe не найден рядом с хостом и не запускается по имени.",
+                L"VCam", MB_OK | MB_ICONWARNING);
 }
 
 void OpenPreview()
 {
-    std::wstring p = FindHelperExe(L"VCamPreview.exe", L"build\\x64\\Release\\VCamPreview.exe");
-    if (p.empty()) {
-        Log(L"VCamPreview.exe not found");
-        MessageBoxW(g_hwnd, L"VCamPreview.exe не найден рядом с хостом и в папке build\\x64\\Release.",
-                    L"VCam", MB_OK | MB_ICONWARNING);
+    std::wstring p = FindHelperExe(L"VCamPreview.exe");
+    if (!p.empty()) {
+        LaunchHelper(p);
         return;
     }
-    LaunchHelper(p);
+    if (LaunchByName(L"VCamPreview.exe")) return;
+    MessageBoxW(g_hwnd, L"VCamPreview.exe не найден рядом с хостом и не запускается по имени.",
+                L"VCam", MB_OK | MB_ICONWARNING);
 }
 
 std::wstring ProductVersionString()
