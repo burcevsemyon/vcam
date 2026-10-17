@@ -17,7 +17,7 @@ description: >-
 ## Структура дистрибутива и версии
 
 - **Текущая версия**: `0.0.3` (инкрементируется при каждом релизе в `vcam_installer.iss`
-  и `src/VCamVideoStreamProducer/version.rc` — оба места); артефакты в `releases/VCamSetup-<ver>-x64.exe`.
+  и `src/Adapters/Host/version.rc` — оба места); артефакты в `releases/VCamSetup-<ver>-x64.exe`.
 - **Состав продукта (`Release|x64`)**:
   - `MediaSource.dll` → `C:\Program Files\VCam\MediaSource.dll` (фиксированный путь, критично для hash-guard E2E).
   - `VCamVideoStreamProducer.exe` (tray-хост, единственный писатель кадров).
@@ -31,17 +31,17 @@ description: >-
 
 1. **C++ Проекты (Release|x64)**:
    ```bat
-   "C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe" VirtualCameraMediaSource.sln /p:Configuration=Release /p:Platform=x64 /m /v:m /nologo
+   "C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe" VCam.sln /p:Configuration=Release /p:Platform=x64 /m /v:m /nologo
    ```
 2. **C# UI (self-contained x64)**:
    ```powershell
-   dotnet publish VirtualCameraMediaSource/src/VCamSettingsUi/VCamSettingsUi.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true
+   dotnet publish VCam/src/Adapters/SettingsUi/VCamSettingsUi.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true
    ```
 3. **Компиляция установщика (Inno Setup 7)**:
    ```bat
-   "C:\Program Files\Inno Setup 7\ISCC.exe" VirtualCameraMediaSource/vcam_installer.iss
+   "C:\Program Files\Inno Setup 7\ISCC.exe" VCam/vcam_installer.iss
    ```
-   Результат: `VirtualCameraMediaSource/VCamSetup-<ver>-x64.exe` → перенести в `releases/`.
+   Результат: `VCam/VCamSetup-<ver>-x64.exe` → перенести в `releases/`.
 
 ## Меню «Пуск» (`[Icons]`) — ОДИН ярлык
 
@@ -66,7 +66,7 @@ description: >-
 - `vcam_restart_host.ps1` остаётся в `{app}` (диагностика/ручной запуск), но ярлыка на него нет.
 
 В tray-меню хоста также есть **«О программе…»** — версия из VERSIONINFO
-(`src/VCamVideoStreamProducer/version.rc`, `ProductVersionString()`); при смене версии править
+(`src/Adapters/Host/version.rc`, `ProductVersionString()`); при смене версии править
 `version.rc` **и** `AppVersion` в `.iss` (оба = 0.0.3).
 
 ## Ключевые механизмы инсталлятора (`vcam_installer.iss`)

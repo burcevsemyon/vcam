@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{7C4E9A31-52B8-4D6F-9E17-A3B5C8D21F40}</ProjectGuid>
+    <RootNamespace>VCamVideoStreamProducer</RootNamespace>
+    <ProjectName>VCamVideoStreamProducer</ProjectName>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <OutDir>$(SolutionDir)build\$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(SolutionDir)build\obj\$(ProjectName)\$(Platform)\$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <PreprocessorDefinitions>NDEBUG;_WINDOWS;_WIN32_WINNT=0x0A00;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)..\..\Core\Contracts;$(ProjectDir)..\..\Core\Producer;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <AdditionalDependencies>mfplat.lib;mfreadwrite.lib;mfuuid.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="HostPipelineEngine.cpp" />
+    <ClCompile Include="Mp4Recorder.cpp" />
+    <ClCompile Include="VCamVideoStreamProducer.cpp" />
+    <ClCompile Include="HostLogging.cpp" />
+    <ClCompile Include="HostRecording.cpp" />
+    <ClCompile Include="HostHotkey.cpp" />
+    <ClCompile Include="HostCameraLifecycle.cpp" />
+    <ClCompile Include="HostAutostart.cpp" />
+    <ClCompile Include="HostStatus.cpp" />
+    <ClCompile Include="HostUtils.cpp" />
+    <ClCompile Include="HostTray.cpp" />
+    <ResourceCompile Include="version.rc" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="HostPipelineEngine.h" />
+    <ClInclude Include="Mp4Recorder.h" />
+    <ClInclude Include="HostGlobals.h" />
+    <ClInclude Include="HostLogging.h" />
+    <ClInclude Include="HostRecording.h" />
+    <ClInclude Include="HostHotkey.h" />
+    <ClInclude Include="HostCameraLifecycle.h" />
+    <ClInclude Include="HostAutostart.h" />
+    <ClInclude Include="HostStatus.h" />
+    <ClInclude Include="HostUtils.h" />
+    <ClInclude Include="HostTray.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\Core\Producer\ProducerCore.vcxproj">
+      <Project>{4259BECC-52DD-4B64-8ACC-B93D93DDA175}</Project>
+    </ProjectReference>
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

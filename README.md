@@ -45,16 +45,16 @@ VCamProducerCli.exe status              # состояние
 Требуется Visual Studio (C++ и .NET) и x64:
 
 ```bat
-msbuild VirtualCameraMediaSource\VirtualCameraMediaSource.sln /p:Configuration=Release /p:Platform=x64 /m
+msbuild VCam\VCam.sln /p:Configuration=Release /p:Platform=x64 /m
 ```
 
-Результат — в `VirtualCameraMediaSource\build\x64\Release\`. Подробности
-деплоя и запуска — в [README проекта](VirtualCameraMediaSource/README.md).
+Результат — в `VCam\build\x64\Release\`. Подробности
+деплоя и запуска — в [README проекта](VCam/README.md).
 
 ## Тесты
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File VirtualCameraMediaSource\e2e_test.ps1
+powershell -ExecutionPolicy Bypass -File VCam\e2e_test.ps1
 ```
 
 Автоматический E2E-прогон всех режимов (exit code 0 = успех).
@@ -63,7 +63,7 @@ powershell -ExecutionPolicy Bypass -File VirtualCameraMediaSource\e2e_test.ps1
 
 | Путь | Что внутри |
 |---|---|
-| [`VirtualCameraMediaSource/`](VirtualCameraMediaSource/) | Проект: исходники, solution, e2e-тест, скрипты установщика, [подробный README](VirtualCameraMediaSource/README.md) |
+| [`VCam/`](VCam/) | Проект: исходники, solution, e2e-тест, скрипты установщика, [подробный README](VCam/README.md) |
 | [`releases/`](releases/) | Готовые сборки установщика |
 | [`.agents/skills/`](.agents/skills/) | Навыки AI-агентов для разработки и тестирования проекта |
 | [`AGENTS.md`](AGENTS.md) | Инструкции для AI-агентов |

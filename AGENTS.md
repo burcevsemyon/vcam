@@ -1,30 +1,30 @@
 # VCam — виртуальная камера Windows
 
 Виртуальная камера (Media Foundation): in-proc COM DLL + shared-memory
-пайплайн продьюсеров кадров. Весь код — в `VirtualCameraMediaSource/`
+пайплайн продьюсеров кадров. Весь код — в `VCam/`
 (там же `.sln`, `README.md`).
 
-## Структура (`VirtualCameraMediaSource/src/`)
+## Структура (`VCam/src/`)
 
 | Каталог | Что |
 |---|---|
-| `MediaSource/` | Камера (in-proc COM DLL). Регистрация: `build\x64\Release\Registrar.exe add VCam hold` (elevated, процесс не закрывать); страницу «Камеры» Windows Settings перезапускать. |
-| `Common/` | Контракты: `SharedMemoryContract.h` (секция `Global\VCam.FrameBuffer.v1`, 1280×720 BGRX, stride 5120, 8 слотов seqlock — **не менять без согласования**), `ProducerApi.h` (`IFrameSource`/`SourceConfig`/`CreateSource`), `SharedMemoryFrameSource` (чтение камеры). |
-| `ProducerCore/` | Библиотека источников: `StaticImageSource`, `VideoFileSource`, `FrameWriter` (единственный писатель, 30 FPS pacing, `FlushLast` для hot-switch), `Settings` (новая схема + миграция legacy), `SettingsWatcher` (hot-reload), `SourceFactory`, `TraySourceMenu` (подменю «Источник» + `ApplySourceSwitch` для трей-меню). |
-| `VCamVideoStreamProducer/` | Основной tray-хост: single-instance (`VCamVideoStreamProducer.Instance`), Stop-event, автозапуск через задачу Task Scheduler `VCamHost` по `settings.autostart`, hot-switch static↔video (в т.ч. подменю «Источник» в трее), fallback NO SIGNAL. |
-| `VCamProducerCli/` | Консольный хост отладки/e2e: `run [--type --path --settings]`, `status [--json\|--ready]`, `diag`, `list-devices`, `list-controls`/`get-control`/`set-control`. |
-| `VCamPreview/` | Плавающее окно предпросмотра (GDI+ HighQualityBicubic, single-instance `VCamPreview.Instance`). |
-| `VCamSettingsUi/` | C# WinForms настройки (выбор источника, crop, превью, кнопки запуска хоста; single-instance `VCamSettingsUi.Instance`). |
-| `CaptureTest/` | Диагностика: захват кадров камеры в BMP (`inspect`, `device`, direct `<n> <prefix>`). |
-| `VCamTests/` | Doctest-юниты C++ (сборка только через sln; bin в `src\VCamTests\build\`, фильтр `-tc="..."`). |
-| `VCamUiTests/` | Постоянные UIA-тесты UI (FlaUI+xUnit): `dotnet test src\VCamUiTests\VCamUiTests.csproj -c Release`. |
+| `Adapters/Camera/` | Камера (in-proc COM DLL). Регистрация: `build\x64\Release\Registrar.exe add VCam hold` (elevated, процесс не закрывать); страницу «Камеры» Windows Settings перезапускать. |
+| `Core/Contracts/` | Контракты: `SharedMemoryContract.h` (секция `Global\VCam.FrameBuffer.v1`, 1280×720 BGRX, stride 5120, 8 слотов seqlock — **не менять без согласования**), `ProducerApi.h` (`IFrameSource`/`SourceConfig`/`CreateSource`), `SharedMemoryFrameSource` (чтение камеры). |
+| `Core/Producer/` | Библиотека источников: `StaticImageSource`, `VideoFileSource`, `FrameWriter` (единственный писатель, 30 FPS pacing, `FlushLast` для hot-switch), `Settings` (новая схема + миграция legacy), `SettingsWatcher` (hot-reload), `SourceFactory`, `TraySourceMenu` (подменю «Источник» + `ApplySourceSwitch` для трей-меню). |
+| `Adapters/Host/` | Основной tray-хост: single-instance (`VCamVideoStreamProducer.Instance`), Stop-event, автозапуск через задачу Task Scheduler `VCamHost` по `settings.autostart`, hot-switch static↔video (в т.ч. подменю «Источник» в трее), fallback NO SIGNAL. |
+| `Adapters/Cli/` | Консольный хост отладки/e2e: `run [--type --path --settings]`, `status [--json\|--ready]`, `diag`, `list-devices`, `list-controls`/`get-control`/`set-control`. |
+| `Adapters/Preview/` | Плавающее окно предпросмотра (GDI+ HighQualityBicubic, single-instance `VCamPreview.Instance`). |
+| `Adapters/SettingsUi/` | C# WinForms настройки (выбор источника, crop, превью, кнопки запуска хоста; single-instance `VCamSettingsUi.Instance`). |
+| `Tools/Diag/` | Диагностика: захват кадров камеры в BMP (`inspect`, `device`, direct `<n> <prefix>`). |
+| `Tests/` (VCamTests) | Doctest-юниты C++ (сборка только через sln; bin в `src\Tests\build\`, фильтр `-tc="..."`). |
+| `Tests/Ui` (VCamUiTests) | Постоянные UIA-тесты UI (FlaUI+xUnit): `dotnet test src\Tests\Ui\VCamUiTests.csproj -c Release`. |
 | `ProducerTest/` | Анимированный test pattern → общая память. |
 | `StaticProducer/`, `VideoProducer/` | Legacy-утилиты (оставлены для отладки; для работы — хост или CLI). |
 
 ## Сборка
 
 ```bat
-"C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe" VirtualCameraMediaSource.sln /p:Configuration=Release /p:Platform=x64 /m /v:m /nologo
+"C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe" VCam.sln /p:Configuration=Release /p:Platform=x64 /m /v:m /nologo
 ```
 
 - exit 0 = успех; csproj (`VCamSettingsUi`) — сначала `dotnet restore`.
@@ -42,13 +42,13 @@
 ## Тесты
 
 - **E2E**: `powershell -ExecutionPolicy Bypass -File e2e_test.ps1` (из
-  `VirtualCameraMediaSource/`), exit 0 = SUCCESS. Перед прогоном остановить
+  `VCam/`), exit 0 = SUCCESS. Перед прогоном остановить
   tray-хост — два писателя интерливят кадры. Вся эмпирика (фазы A/B, ассерты,
   питфолы, ручная диагностика): skill **vcam-e2e**
   (`.agents/skills/vcam-e2e/SKILL.md`) — читать его, а не пересматривать скрипт.
 - **Юниты**: `VCamTests` (doctest C++) — сборка только через sln, bin в
-  `src\VCamTests\build\`; `VCamUiTests` (FlaUI+xUnit) —
-  `dotnet test src\VCamUiTests\VCamUiTests.csproj -c Release`. Не добавлять
+  `src\Tests\build\`; `VCamUiTests` (FlaUI+xUnit) —
+  `dotnet test src\Tests\Ui/VCamUiTests.csproj -c Release`. Не добавлять
   `-p:Platform=x64` к `dotnet test`: вывод уезжает в `bin\x64\...` (на уровень
   глубже), `UiAppFixture.UiExePath` ищет `bin\<cfg>`/`bin\x64\<cfg>` из фикс.
   числа `..` и не находит exe UI → ModeSwitch-тесты падают FileNotFound.
@@ -127,14 +127,15 @@
 
 ## Конвенции
 
-- Ответы по-русски; код/SQL/deploy/коммит — только после явного разрешения
-  (см. глобальный `AGENTS.md`).
+- Ответы по-русски; код/SQL/deploy/push — только после явного разрешения
+  (см. глобальный `AGENTS.md`). Коммит в этом воркспейсе разрешён без спроса
+  (`opencode.json`: `bash git commit → allow`); push — только спрашивать.
 - Изолируемую работу отдавать субагентам (лимит 2 раунда) с памятью
   вышестоящей задачи в промпте.
 
 ## Бэклог
 
-Идеи и планы — в `VirtualCameraMediaSource/backlog/` (по одному .md на тему):
+Идеи и планы — в `VCam/backlog/` (по одному .md на тему):
 `pipeline-first.md`, `observability.md`, `regression-safety.md`, `testing.md`.
 Новые темы: `audio-mix.md`, `drag-drop-source.md`, `tray-source-switch.md`, `preview-crop-frame.md`,
 `auto-source-detect.md`.

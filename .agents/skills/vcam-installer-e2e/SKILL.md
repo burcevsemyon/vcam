@@ -152,5 +152,5 @@ description: >-
 
 ## Память задач
 
-`memory.md` (в `VirtualCameraMediaSource/`) + `observability-*.memory.md` — **локальные,
+`memory.md` (в `VCam/`) + `observability-*.memory.md` — **локальные,
 в git не идут** (`.gitignore`: `memory.md`, `*.memory.md`); хранят факты прогона, фиксы и питфолы.

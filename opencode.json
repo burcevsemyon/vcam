@@ -1,4 +1,15 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "instructions": ["VirtualCameraMediaSource/src/**/AGENTS.md"]
+  "instructions": ["VCam/src/**/AGENTS.md"],
+  "permission": {
+    "bash": {
+      "*": "allow",
+      "git": "ask",
+      "git *": "ask",
+      "git commit": "allow",
+      "git commit *": "allow",
+      "git push": "ask",
+      "git push *": "ask"
+    }
+  }
 }

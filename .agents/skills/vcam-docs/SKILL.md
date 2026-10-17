@@ -13,7 +13,7 @@ description: >-
 ## Шаг 1. Найти memory-файлы
 
 ```powershell
-Get-ChildItem -Path "VirtualCameraMediaSource" -Filter "*.memory.md" -File
+Get-ChildItem -Path "VCam" -Filter "*.memory.md" -File
 ```
 
 ## Шаг 2. Прочитать каждый и решить
@@ -41,7 +41,7 @@ Get-ChildItem -Path "VirtualCameraMediaSource" -Filter "*.memory.md" -File
 ## Шаг 5. Удалить memory-файлы
 
 ```powershell
-Get-ChildItem -Path "VirtualCameraMediaSource" -Filter "*.memory.md" -File | Remove-Item -Force
+Get-ChildItem -Path "VCam" -Filter "*.memory.md" -File | Remove-Item -Force
 ```
 
 ## Шаг 6. Проверить деградацию документов

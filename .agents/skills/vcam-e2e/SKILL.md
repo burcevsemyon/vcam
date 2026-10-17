@@ -21,8 +21,8 @@ description: >-
 `Global\VCam.FrameBuffer.v1` → **камера** (`MediaSource.dll`) → **захват**
 (`CaptureTest.exe` → BMP) → **ассерты** (nonBlack + SHA256 хэши кадров).
 
-Подробный скрипт: `VirtualCameraMediaSource/e2e_test.ps1`.
-Память задач: `VirtualCameraMediaSource/*.memory.md` (`memory.md` + `observability-*.memory.md`;
+Подробный скрипт: `VCam/e2e_test.ps1`.
+Память задач: `VCam/*.memory.md` (`memory.md` + `observability-*.memory.md`;
 читать память вышестоящей задачи перед работой).
 
 ## Перед прогоном (обязательно)
@@ -60,14 +60,14 @@ description: >-
    со сборкой и при расхождении SKIPает фазы D/E («сначала деплой»).
 3. Тестовые медиа: `e2e_output\test_video.mp4` (5 с, testsrc2 320x240;
    `test_video2.mp4`, `pattern_top_white.mp4` — для hot-reload/ориентации).
-   `test_input.bmp` лежит в корне `VirtualCameraMediaSource/` (в репо) —
+   `test_input.bmp` лежит в корне `VCam/` (в репо) —
    внешние файлы не нужны.
 4. MSB3027 — закрыть свои exe перед сборкой (скрипт сам собирает solution).
 
 ## Запуск
 
 ```powershell
-cd VirtualCameraMediaSource
+cd VCam
 powershell -ExecutionPolicy Bypass -File e2e_test.ps1   # exit 0 = SUCCESS
 ```
 
